@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# Start the ping monitoring script in the background
+/jffs/scripts/monitor_ping.sh &
