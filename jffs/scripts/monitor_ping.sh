@@ -1,5 +1,24 @@
 #!/bin/sh
 
+# The aurargb_val parameter format is: "R,G,B,Mode,Speed,Direction"
+#
+# Available Modes (from UI auraEffectArray):
+#  0: Event
+#  1: Static
+#  2: Breathing
+#  3: Flash
+#  4: Color Cycle
+#  5: Rainbow
+#  6: Strobing
+#  8: Comet
+# 11: Wave
+# 12: Yoyo
+# 13: Starry Night
+#
+# Speed: -2 to 2 (0 is default)
+# Direction: 0 to 2
+# Note: nvram set does not degrade flash memory since we are not calling 'nvram commit'
+
 # Initial state unknown
 CURRENT_STATE="unknown"
 
