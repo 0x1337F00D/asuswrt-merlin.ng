@@ -1,0 +1,139 @@
+name: Build GT-AX11000
+
+on:
+  push:
+    branches:
+      - main
+      - codex/gt-ax11000-ci
+    paths:
+      - .github/ci/gt-ax11000/**
+      - .github/workflows/build-gt-ax11000.yml
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gt-ax11000-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Firmware
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout CI overlay
+        env:
+          OVERLAY_REF: ${{ github.ref_name }}
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --filter=blob:none --sparse \
+            --branch "$OVERLAY_REF" \
+            "https://github.com/${GITHUB_REPOSITORY}.git" overlay
+          git -C overlay sparse-checkout set .github/ci/gt-ax11000
+
+      - name: Checkout current upstream sources
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --filter=blob:none --sparse --branch main \
+            https://github.com/RMerl/asuswrt-merlin.ng.git source
+          git -C source sparse-checkout set \
+            release/src \
+            release/src-rt \
+            release/src-rt-5.02axhnd
+          git -C source rev-parse HEAD
+
+      - name: Checkout required toolchains
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --filter=blob:none --sparse --branch master \
+            https://github.com/RMerl/am-toolchains.git toolchains
+          git -C toolchains sparse-checkout set \
+            brcm-arm-hnd/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1 \
+            brcm-arm-hnd/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1 \
+            brcm-arm-hnd/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25 \
+            brcm-arm-sdk/hndtools-armeabi-2011.09 \
+            brcm-arm-sdk/hndtools-armeabi-2013.11
+          git -C toolchains rev-parse HEAD
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            autoconf autoconf-archive automake autopoint bison build-essential \
+            flex gawk gettext gperf libncurses-dev libtext-unidecode-perl \
+            libtool-bin pkg-config texinfo unzip zlib1g-dev
+
+      - name: Apply local CI overlay
+        run: |
+          set -euxo pipefail
+          for patch in \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/local-features.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-wsl.patch"
+          do
+            git -C source apply --check "$patch"
+            git -C source apply "$patch"
+          done
+          git -C source status --short
+
+      - name: Show disk usage before build
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          du -sh source toolchains overlay
+
+      - name: Build firmware
+        env:
+          AM_TOOLCHAINS: ${{ github.workspace }}/toolchains
+          ASUSWRT_APT_CACHE: ${{ runner.temp }}/asuswrt-apt
+          ASUSWRT_BUILD_MODE: clean
+          ASUSWRT_BUILD_WORKTREE: "1"
+          ASUSWRT_DIRECT_TOOLCHAIN: "1"
+          ASUSWRT_FAKEBIN: ${{ runner.temp }}/asuswrt-fakebin
+          ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
+          ASUSWRT_MAKE_JOBS: "1"
+          ASUSWRT_OUTPUT_DIR: ${{ github.workspace }}/output
+          ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
+          ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
+        run: |
+          set -euo pipefail
+          bash overlay/.github/ci/gt-ax11000/build.sh gt-ax11000 &
+          build_pid=$!
+          while kill -0 "$build_pid" 2>/dev/null; do
+            df -h "$GITHUB_WORKSPACE"
+            du -sh source toolchains output 2>/dev/null || true
+            sleep 60
+          done
+          wait "$build_pid"
+
+      - name: Record build metadata
+        if: success()
+        run: |
+          {
+            echo "upstream_sha=$(git -C source rev-parse HEAD)"
+            echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)"
+            echo "ci_sha=${GITHUB_SHA}"
+            echo "runner_image=${ImageOS:-unknown}"
+          } > output/BUILD-METADATA.txt
+          sha256sum output/GT-AX11000*.w | tee output/SHA256SUMS
+          find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n
+
+      - name: Collect failure log
+        if: failure()
+        run: |
+          mkdir -p output
+          cp -f source/release/src-rt-5.02axhnd/output-gt-ax11000-wsl.log output/ 2>/dev/null || true
+
+      - name: Upload firmware and log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gt-ax11000-${{ github.run_number }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 6
+

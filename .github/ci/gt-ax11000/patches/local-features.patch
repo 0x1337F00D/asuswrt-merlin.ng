@@ -1,0 +1,357 @@
+diff --git a/release/src/router/httpd/data_arrays.c b/release/src/router/httpd/data_arrays.c
+index 46248d77594..444014ca571 100644
+--- a/release/src/router/httpd/data_arrays.c
++++ b/release/src/router/httpd/data_arrays.c
+@@ -796,7 +796,6 @@ ej_lan_ipv6_clients_array(int eid, webs_t wp, int argc, char_t **argv)
+ #endif
+ 
+ 
+-#ifdef RTCONFIG_BWDPI
+ int parseTcFilter(webs_t wp, const char *interface) {
+ 	char command[256];
+ 	char buffer[1024];
+@@ -856,7 +855,6 @@ int ej_tcfilter_array(int eid, webs_t wp, int argc, char_t **argv) {
+ 
+ 	return parseTcFilter(wp, "br0");
+ }
+-#endif
+ 
+ int ej_tcclass_dump_array(int eid, webs_t wp, int argc, char_t **argv) {
+ 	FILE *fp;
+@@ -1065,8 +1063,132 @@ int ej_connlist_array(int eid, webs_t wp, int argc, char **argv) {
+ 	return ret;
+ }
+ 
++static int extract_conntrack_value(const char *line, const char *key, char *value, size_t value_len)
++{
++	const char *p = line;
++	size_t key_len = strlen(key);
++	size_t len;
++
++	while ((p = strstr(p, key)) != NULL) {
++		if ((p == line || isspace((unsigned char)p[-1])) && p[key_len] == '=') {
++			p += key_len + 1;
++			len = strcspn(p, " \t\r\n");
++			if (len >= value_len)
++				len = value_len - 1;
++			memcpy(value, p, len);
++			value[len] = '\0';
++			return 1;
++		}
++		p += key_len;
++	}
++
++	return 0;
++}
++
++static int conntrack_port_matches(int sport, int dport, int port)
++{
++	return sport == port || dport == port;
++}
++
++static int conntrack_port_in_range(int sport, int dport, int low, int high)
++{
++	return (sport >= low && sport <= high) || (dport >= low && dport <= high);
++}
++
++static void classify_local_conntrack(const char *proto, int sport, int dport, int *category, int *appid, char *desc, size_t desc_len)
++{
++	*appid = 0;
++
++	if (!strcmp(proto, "icmp") || !strcmp(proto, "icmpv6") || !strcmp(proto, "gre")) {
++		*category = 9;
++		strlcpy(desc, "Local network control", desc_len);
++	} else if (conntrack_port_matches(sport, dport, 53)) {
++		*category = 9;
++		strlcpy(desc, "Local DNS", desc_len);
++	} else if (conntrack_port_matches(sport, dport, 67) || conntrack_port_matches(sport, dport, 68)) {
++		*category = 9;
++		strlcpy(desc, "Local DHCP", desc_len);
++	} else if (conntrack_port_matches(sport, dport, 123)) {
++		*category = 9;
++		strlcpy(desc, "Local NTP", desc_len);
++	} else if (conntrack_port_matches(sport, dport, 80) || conntrack_port_matches(sport, dport, 443) ||
++		   conntrack_port_matches(sport, dport, 8080) || conntrack_port_matches(sport, dport, 8443) ||
++		   conntrack_port_matches(sport, dport, 853)) {
++		*category = 13;
++		strlcpy(desc, "Local web", desc_len);
++	} else if (conntrack_port_matches(sport, dport, 554) || conntrack_port_matches(sport, dport, 1935) ||
++		   conntrack_port_matches(sport, dport, 5004) || conntrack_port_matches(sport, dport, 5005)) {
++		*category = 4;
++		strlcpy(desc, "Local streaming", desc_len);
++	} else if (conntrack_port_matches(sport, dport, 3478) || conntrack_port_matches(sport, dport, 5060) ||
++		   conntrack_port_matches(sport, dport, 5061) || conntrack_port_matches(sport, dport, 5222) ||
++		   conntrack_port_matches(sport, dport, 5223)) {
++		*category = 5;
++		strlcpy(desc, "Local messaging/voice", desc_len);
++	} else if (conntrack_port_matches(sport, dport, 20) || conntrack_port_matches(sport, dport, 21) ||
++		   conntrack_port_matches(sport, dport, 22) || conntrack_port_matches(sport, dport, 445) ||
++		   conntrack_port_matches(sport, dport, 873) || conntrack_port_in_range(sport, dport, 6881, 6999)) {
++		*category = 1;
++		strlcpy(desc, "Local file transfer", desc_len);
++	} else {
++		*category = 7;
++		strlcpy(desc, "Local other", desc_len);
++	}
++}
++
++static int ej_local_conntrack(int eid, webs_t wp, int argc, char **argv_)
++{
++	FILE *fp = NULL;
++	char line[512];
++	char proto[16], src_ip[64], dst_ip[64], sport_s[16], dport_s[16];
++	char desc[64];
++	int sport, dport, category, appid;
++	int ret;
++	char comma = ' ';
++
++	(void)eid;
++	(void)argc;
++	(void)argv_;
++
++	fp = fopen("/proc/net/nf_conntrack", "r");
++	if (fp == NULL)
++		fp = fopen("/proc/net/ip_conntrack", "r");
++	if (fp == NULL)
++		return websWrite(wp, "bwdpi_conntrack=[];");
++
++	ret = websWrite(wp, "bwdpi_conntrack=[");
++
++	while (fgets(line, sizeof(line), fp)) {
++		if (sscanf(line, "%*s %*d %15s", proto) != 1)
++			continue;
++		if (!extract_conntrack_value(line, "src", src_ip, sizeof(src_ip)) ||
++		    !extract_conntrack_value(line, "dst", dst_ip, sizeof(dst_ip)))
++			continue;
++
++		if (!extract_conntrack_value(line, "sport", sport_s, sizeof(sport_s)))
++			sport = 0;
++		else
++			sport = atoi(sport_s);
++
++		if (!extract_conntrack_value(line, "dport", dport_s, sizeof(dport_s)))
++			dport = 0;
++		else
++			dport = atoi(dport_s);
++
++		classify_local_conntrack(proto, sport, dport, &category, &appid, desc, sizeof(desc));
++
++		ret += websWrite(wp, "%c[\"%s\", \"%s\", \"%d\", \"%s\", \"%d\", \"%s\", \"%d\", \"%d\"]",
++				  comma, proto, src_ip, sport, dst_ip, dport, desc, category, appid);
++		comma = ',';
++	}
++	fclose(fp);
++
++	ret += websWrite(wp, "];\n");
++	return ret;
++}
++
+ #ifdef RTCONFIG_BWDPI
+-int ej_bwdpi_conntrack(int eid, webs_t wp, int argc, char **argv_) {
++static int ej_tm_bwdpi_conntrack(int eid, webs_t wp, int argc, char **argv_) {
+ 	char comma;
+ 	char line[256];
+ 	FILE *fp;
+@@ -1175,7 +1297,17 @@ int ej_bwdpi_conntrack(int eid, webs_t wp, int argc, char **argv_) {
+ 	ret += websWrite(wp, "];\n");
+ 	return ret;
+ }
++#endif
+ 
++int ej_bwdpi_conntrack(int eid, webs_t wp, int argc, char **argv_) {
++#ifdef RTCONFIG_BWDPI
++	if (access("/proc/bw_cte_dump", R_OK) == 0 && access(APPDB, R_OK) == 0)
++		return ej_tm_bwdpi_conntrack(eid, wp, argc, argv_);
++#endif
++	return ej_local_conntrack(eid, wp, argc, argv_);
++}
++
++#ifdef RTCONFIG_BWDPI
+ // TM puts columns between every octet pairs
+ // Reformat that into quads rather than pairs
+ // Also TM is missing the last two octets, so pad
+diff --git a/release/src/router/httpd/data_arrays.h b/release/src/router/httpd/data_arrays.h
+index d9768730e2d..b5a81ec90ca 100644
+--- a/release/src/router/httpd/data_arrays.h
++++ b/release/src/router/httpd/data_arrays.h
+@@ -39,10 +39,10 @@ extern void iptraffic_conntrack_init();
+ extern void ctvbuf(FILE *f);
+ #endif
+ 
+-#ifdef RTCONFIG_BWDPI
+ extern int ej_bwdpi_conntrack(int eid, webs_t wp, int argc, char **argv_);
+-void _fix_TM_ipv6(char* str);
+ extern int ej_tcfilter_array(int eid, webs_t wp, int argc, char_t **argv);
++#ifdef RTCONFIG_BWDPI
++void _fix_TM_ipv6(char* str);
+ #endif
+ 
+ int ej_connlist_array(int eid, webs_t wp, int argc, char **argv);
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 67eabb5388f..76d4db6641d 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -63,6 +63,7 @@
+ #include <bcmnvram_f.h>
+ #include <common.h>
+ #include <shared.h>
++#include <mtlan_utils.h>
+ #include <rtstate.h>
+ #include <timezone.h>
+ #include <nvram_config.h>
+@@ -25085,7 +25086,7 @@ do_set_ledg_cgi(char *url, FILE *stream) {
+ #ifdef RTCONFIG_SDN_PRIORITY
+ 	int checkIfSDNProfileCreated=0;
+ #endif
+-#if defined(RTCONFIG_CFGSYNC) && (defined(RTCONFIG_AMAS_SYNC_LEDG) || defined(RTCONFIG_AURALED_NIGHT))
++#if defined(RTCONFIG_CFGSYNC) && (defined(RTCONFIG_AMAS_SYNC_LEDG) || defined(RTCONFIG_AURALED_NIGHT) || defined(RTCONFIG_AURA_SCHED) || defined(RTCONFIG_AURA_NIGHT_SCHED))
+ 	json_object *cfg_root = json_object_new_object();
+ #endif
+ 
+@@ -42504,10 +42505,8 @@ struct ej_handler ej_handlers[] = {
+ 	{ "iptmon", ej_iptmon},
+ 	{ "ipt_bandwidth", ej_ipt_bandwidth},
+ #endif
+-#ifdef RTCONFIG_BWDPI
+ 	{ "bwdpi_conntrack", ej_bwdpi_conntrack},
+ 	{ "get_tcfilter_array", ej_tcfilter_array},
+-#endif
+ 	{ "bandwidth", ej_bandwidth},
+ #ifdef RTCONFIG_DSL
+ 	{ "spectrum", ej_spectrum}, //Ren
+@@ -43051,7 +43050,7 @@ struct ej_handler ej_handlers[] = {
+ 	{ "lacp_wan", ej_lacp_wan },
+ #endif
+ #ifdef RTCONFIG_SCHED_V2
+-#if defined(RTCONFIG_LED_SCHED) || defined(RTCONFIG_LED_NIGHT_SCHED) || defined(RTCONFIG_AURA_SCHED) || defined(RTCONFIG_AURA_NIGHT_SCHED)
++#if defined(RTCONFIG_MULTILAN_CFG) && (defined(RTCONFIG_LED_SCHED) || defined(RTCONFIG_LED_NIGHT_SCHED) || defined(RTCONFIG_AURA_SCHED) || defined(RTCONFIG_AURA_NIGHT_SCHED))
+ 	{ "get_led_aura_next_sched", ej_get_led_aura_next_sched },
+ #endif
+ #endif
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 023a7aa9abe..89ee6d39c2c 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -330,7 +330,11 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl_rateset", "ofdm", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* default or ofdm */
+ #else
+ 	{ "wl_noisemitigation", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++#if defined(GTAX11000)
++	{ "wl_reg_mode", "h", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Regulatory: 802.11H(h)/802.11D(d)/off(off) */
++#else
+ 	{ "wl_reg_mode", "off", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Regulatory: 802.11H(h)/802.11D(d)/off(off) */
++#endif
+ 	{ "wl_rate", "0", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Rate (bps */
+ #if 0
+ 	{ "wl_mrate", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* Mcast Rate (bps */
+@@ -1304,7 +1308,7 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl_hwol", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 }, 			/* Hardware WiFi Offloading */
+ #endif
+ 	{ "acs_band1", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-#if defined(XT8PRO) || defined(BT12) || defined(BQ16) || defined(BQ16_PRO) || defined(BM68)
++#if defined(GTAX11000) || defined(XT8PRO) || defined(BT12) || defined(BQ16) || defined(BQ16_PRO) || defined(BM68)
+ 	/* used for RTCONFIG_AMAS_ADTBW */
+ 	{ "acs_band3", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #else
+@@ -5936,7 +5940,11 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl1_rast_sens_level", "2", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl1_rate", "0", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl1_rateset", "ofdm", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++#if defined(GTAX11000)
++	{ "wl1_reg_mode", "h", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++#else
+ 	{ "wl1_reg_mode", "off", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++#endif
+ 	{ "wl1_rifs_advert", "auto", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl1_rrm", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl1_rts", "2347", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -6178,7 +6186,11 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wl2_rast_sens_level", "2", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl2_rate", "0", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl2_rateset", "ofdm", CKN_STR8, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++#if defined(GTAX11000)
++	{ "wl2_reg_mode", "h", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++#else
+ 	{ "wl2_reg_mode", "off", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++#endif
+ 	{ "wl2_rifs_advert", "auto", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl2_rrm", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl2_rts", "2347", CKN_STR4, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+diff --git a/release/src/router/www/QoS_Stats.asp b/release/src/router/www/QoS_Stats.asp
+index 133ca9bc28b..0476c9a1465 100644
+--- a/release/src/router/www/QoS_Stats.asp
++++ b/release/src/router/www/QoS_Stats.asp
+@@ -62,7 +62,7 @@ var qos_default = 0;
+ 
+ if ("<% nvram_get("qos_enable"); %>" == 0) {	// QoS disabled
+ 	qos_type = -1;
+-}else if (bwdpi_support && (qos_type == 1)) {	// aQoS
++}else if (qos_type == 1) {	// aQoS
+ 	qos_default = 4;
+ } else if (qos_type == 0) {			// tQoS
+ 	qos_default = parseInt("<% nvram_get("qos_default"); %>");
+@@ -167,13 +167,7 @@ function initial(){
+ 		document.getElementById('dl_tr').style.display = "none";
+ 		document.getElementById('ul_tr').style.display = "none";
+ 		document.getElementById('qos_table').style.display = "none";
+-
+-		// Do we get tracked connections?
+-		if (!check_bwdpi_engine_status()) {
+-			document.getElementById('no_stats_notice').style.display = "";
+-			document.getElementById('frequency_tr').style.display = "none";
+-			return;
+-		}
++		document.getElementById('no_stats_notice').style.display = "";
+         }
+ 
+ 	refreshRate = document.getElementById('refreshrate').value;
+@@ -206,7 +200,7 @@ function get_qos_class(category, appid){
+ 
+ // Can use tc data
+ 	if (qos_type == 1)
+-		return tcdata_filter_array[category] - 10;
++		return (tcdata_filter_array[category] == undefined) ? qos_default : tcdata_filter_array[category] - 10;
+ 
+ // No tc data, query cat_id_array;
+ 	for (i=0; i < bwdpi_app_rulelist_row.length-1; i++){
+@@ -352,11 +346,11 @@ function draw_conntrack_table(){
+ 		// Get priority label
+ 		if (bwdpi_conntrack[i][7] == 0 && bwdpi_conntrack[i][6] == 0) {
+ 			if (qos_type == 1)
+-				label = "Default (" + bwdpi_labels_ordered[qosclass] + ")";
++				label = "Default (" + (bwdpi_labels_ordered[qosclass] || "Local other") + ")";
+ 			else
+ 				label = "";
+ 		} else {
+-			label = bwdpi_labels_ordered[qosclass];
++			label = bwdpi_labels_ordered[qosclass] || bwdpi_conntrack[i][5];
+ 		}
+ 
+ 		// Output row
+@@ -477,7 +471,7 @@ function get_data() {
+ 		},
+ 		success: function(response){
+ 			if (qos_type == 0 || qos_type == 1 || qos_type == 3) redraw();
+-			if (check_bwdpi_engine_status()) draw_conntrack_table();
++			draw_conntrack_table();
+ 			if (refreshRate > 0)
+ 				timedEvent = setTimeout("get_data();", refreshRate * 1000);
+ 		}
+@@ -500,7 +494,7 @@ function draw_chart(data_array, ctx, pie) {
+ 
+ 		if (qos_type == 1) {
+ 			category = class_array.indexOf(tcclass);
+-			label = bwdpi_category_title[category];
++			label = (category < 0) ? ("Class " + tcclass) : bwdpi_category_title[category];
+ 			bwdpi_labels_ordered.push(label);
+ 		} else {
+ 			tcclass = tcclass / 10;
+@@ -615,7 +609,7 @@ function draw_chart(data_array, ctx, pie) {
+ 			</table>
+ 			<br>
+ 
+-			<div id="no_stats_notice" class="hint-color" style="display:none;font-size:125%;">Note: Statistics require Traditional QoS mode or the TrendMicro bwdpi engine to be enabled.</div>
++			<div id="no_stats_notice" class="hint-color" style="display:none;font-size:125%;">Note: QoS class charts require Traditional, Adaptive, or GeForce NOW QoS. Tracked connections use local conntrack data when available.</div>
+ 			<table id="qos_table" style="padding-bottom:20px;">
+ 				<tr id="dl_tr">
+ 					<td class="hint-color" style="padding-right:50px;font-size:125%;"><div>Download</div><canvas id="pie_chart_dl" width="200" height="200"></canvas></td>
