@@ -9,3 +9,8 @@ short-lived artifact.
 The top-level build stays at `-j1` because the router Makefile has unordered
 clean/build prerequisites. Kernel, module, and supported package builds still
 use their existing internal `PARALLEL_BUILD` setting.
+
+CI prepares independent Autotools packages with up to four workers and keeps a
+2 GiB `ccache` for the HND cross-compilers. The cache is keyed by toolchain,
+upstream source, and overlay revisions; the multi-gigabyte build tree itself is
+never cached.

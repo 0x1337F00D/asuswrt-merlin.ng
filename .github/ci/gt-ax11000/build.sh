@@ -20,6 +20,10 @@ Environment overrides:
   ASUSWRT_FORCE_PROFILE=0|1                    default: 1 in fast mode, otherwise 0
   ASUSWRT_HOSTTOOLS=/tmp/path                 default: /tmp/asuswrt-hosttools
   ASUSWRT_MAKE_JOBS=N                         default: 1
+  ASUSWRT_PREPARE_JOBS=N                      parallel Autotools preparation, default: 4
+  ASUSWRT_CCACHE=0|1                          cache HND cross-compiler output, default: 0
+  ASUSWRT_CCACHE_DIR=/path                    default: /tmp/asuswrt-ccache
+  ASUSWRT_CCACHE_MAXSIZE=size                 default: 2G
   ASUSWRT_DIRECT_TOOLCHAIN=0|1                use /opt symlink instead of unshare (CI)
   ASUSWRT_WORKTREE_BASE=/path/to/worktrees    default: this directory
   ASUSWRT_OUTPUT_DIR=/path/to/output          default: ./output/<device>
@@ -57,6 +61,13 @@ PATCH_FILES=(
 	"$SCRIPT_ROOT/patches/${MAKE_TARGET}-wsl.patch"
 )
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
+PREPARE_JOBS="${ASUSWRT_PREPARE_JOBS:-4}"
+CCACHE_ENABLED="${ASUSWRT_CCACHE:-0}"
+CCACHE_DIR="${ASUSWRT_CCACHE_DIR:-/tmp/asuswrt-ccache}"
+CCACHE_MAXSIZE="${ASUSWRT_CCACHE_MAXSIZE:-2G}"
+TOOLCHAIN_VIEW="${ASUSWRT_TOOLCHAIN_VIEW:-/tmp/asuswrt-toolchain-view/$TOOLCHAIN_GROUP}"
+TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_SRC"
+CCACHE_PATH_VALUE=""
 DIRECT_TOOLCHAIN="${ASUSWRT_DIRECT_TOOLCHAIN:-0}"
 BUILD_MODE="${ASUSWRT_BUILD_MODE:-clean}"
 BUILD_MODE="${BUILD_MODE,,}"
@@ -73,6 +84,76 @@ require_cmd() {
 		echo "Missing required command: $1" >&2
 		exit 1
 	fi
+}
+
+prepare_ccache_toolchain_view() {
+	local bin_dir
+	local ccache_bin
+	local compiler
+	local smoke_compiler=""
+	local smoke_ld_library_path
+	local smoke_object
+	local smoke_source
+	local wrapped=0
+	local -a compiler_paths=()
+	local -a library_paths=()
+
+	require_cmd ccache
+	ccache_bin="$(command -v ccache)"
+
+	if [ -e "$TOOLCHAIN_VIEW" ] || [ -L "$TOOLCHAIN_VIEW" ]; then
+		echo "ASUSWRT_TOOLCHAIN_VIEW already exists: $TOOLCHAIN_VIEW" >&2
+		exit 1
+	fi
+	mkdir -p "$TOOLCHAIN_VIEW"
+	cp -al "$TOOLCHAIN_SRC/." "$TOOLCHAIN_VIEW/"
+
+	while IFS= read -r -d '' compiler; do
+		rm -f -- "$compiler"
+		ln -s "$ccache_bin" "$compiler"
+		if [ -z "$smoke_compiler" ]; then
+			smoke_compiler="$compiler"
+		fi
+		wrapped=$((wrapped + 1))
+	done < <(
+		find "$TOOLCHAIN_VIEW" \( -type f -o -type l \) \
+			\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
+			-print0
+	)
+
+	while IFS= read -r bin_dir; do
+		compiler_paths+=("$bin_dir")
+	done < <(
+		find "$TOOLCHAIN_SRC" \( -type f -o -type l \) \
+			\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
+			-printf '%h\n' | sort -u
+	)
+	while IFS= read -r bin_dir; do
+		library_paths+=("$bin_dir")
+	done < <(find "$TOOLCHAIN_SRC" -type d -path '*/usr/lib' -print | sort -u)
+
+	if [ "$wrapped" -eq 0 ] || [ "${#compiler_paths[@]}" -eq 0 ]; then
+		echo "No HND cross-compilers found for ccache" >&2
+		exit 1
+	fi
+
+	CCACHE_PATH_VALUE="$(IFS=:; echo "${compiler_paths[*]}")"
+	smoke_ld_library_path="$(IFS=:; echo "${library_paths[*]}")"
+	TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_VIEW"
+	mkdir -p "$CCACHE_DIR"
+	CCACHE_DIR="$CCACHE_DIR" ccache --set-config="max_size=$CCACHE_MAXSIZE"
+	CCACHE_DIR="$CCACHE_DIR" ccache --zero-stats
+	smoke_source="$(mktemp --tmpdir asuswrt-ccache-smoke.XXXXXX.c)"
+	smoke_object="${smoke_source%.c}.o"
+	printf 'int main(void) { return 0; }\n' > "$smoke_source"
+	CCACHE_DIR="$CCACHE_DIR" CCACHE_PATH="$CCACHE_PATH_VALUE" \
+		LD_LIBRARY_PATH="$smoke_ld_library_path:${LD_LIBRARY_PATH:-}" \
+		"$smoke_compiler" -c -o "$smoke_object" "$smoke_source"
+	CCACHE_DIR="$CCACHE_DIR" CCACHE_PATH="$CCACHE_PATH_VALUE" \
+		LD_LIBRARY_PATH="$smoke_ld_library_path:${LD_LIBRARY_PATH:-}" \
+		"$smoke_compiler" -c -o "$smoke_object" "$smoke_source"
+	rm -f -- "$smoke_source" "$smoke_object"
+	echo "Prepared $wrapped ccache compiler frontends in $TOOLCHAIN_VIEW"
 }
 
 compute_source_state_id() {
@@ -217,6 +298,9 @@ prepare_gt_ax11000_tree() {
 	local libnl="$SDK_DIR/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/libnl"
 	local zlib="$ROOT/release/src/router/zlib"
 	local pkg
+	local pid
+	local prepare_failed=0
+	local -a prepare_pids=()
 	local autoreconf_pkgs=(
 		haveged
 		inadyn
@@ -278,14 +362,37 @@ prepare_gt_ax11000_tree() {
 		)
 	fi
 
+	echo "Preparing independent Autotools packages with up to $PREPARE_JOBS workers"
 	for pkg in "${autoreconf_pkgs[@]}"; do
 		if [ -f "$ROOT/release/src/router/$pkg/configure.ac" ] || [ -f "$ROOT/release/src/router/$pkg/configure.in" ]; then
 			(
 				cd "$ROOT/release/src/router/$pkg"
+				echo "Preparing Autotools package: $pkg"
 				env "${autoreconf_env[@]}" autoreconf -fi >/dev/null
-			)
+			) &
+			prepare_pids+=("$!")
+
+			if [ "${#prepare_pids[@]}" -ge "$PREPARE_JOBS" ]; then
+				for pid in "${prepare_pids[@]}"; do
+					if ! wait "$pid"; then
+						prepare_failed=1
+					fi
+				done
+				prepare_pids=()
+				if [ "$prepare_failed" -ne 0 ]; then
+					return 1
+				fi
+			fi
 		fi
 	done
+	for pid in "${prepare_pids[@]}"; do
+		if ! wait "$pid"; then
+			prepare_failed=1
+		fi
+	done
+	if [ "$prepare_failed" -ne 0 ]; then
+		return 1
+	fi
 
 	if [ -d "$zlib" ] && grep -q "Please use ./configure first" "$zlib/Makefile" 2>/dev/null; then
 		rm -f "$zlib/stamp-h1"
@@ -324,6 +431,20 @@ if ! [[ "$MAKE_JOBS" =~ ^[0-9]+$ ]] || [ "$MAKE_JOBS" -lt 1 ]; then
 	echo "ASUSWRT_MAKE_JOBS must be a positive integer" >&2
 	exit 2
 fi
+
+if ! [[ "$PREPARE_JOBS" =~ ^[0-9]+$ ]] || [ "$PREPARE_JOBS" -lt 1 ]; then
+	echo "ASUSWRT_PREPARE_JOBS must be a positive integer" >&2
+	exit 2
+fi
+
+case "$CCACHE_ENABLED" in
+	0|1)
+		;;
+	*)
+		echo "ASUSWRT_CCACHE must be 0 or 1" >&2
+		exit 2
+		;;
+esac
 
 if [ -z "$FORCE_PROFILE" ]; then
 	if [ "$BUILD_MODE" = "fast" ]; then
@@ -405,6 +526,11 @@ if [ "$BUILD_MODE" = "fast" ] && [ "$FORCE_PROFILE" = "1" ]; then
 	refresh_profile_cookie
 fi
 
+if [ "$CCACHE_ENABLED" = "1" ]; then
+	echo "Preparing persistent HND compiler cache in $CCACHE_DIR"
+	prepare_ccache_toolchain_view
+fi
+
 DIRECT_TOOLCHAIN_LINK_CREATED=0
 cleanup_direct_toolchain() {
 	if [ "$DIRECT_TOOLCHAIN_LINK_CREATED" -eq 1 ]; then
@@ -417,20 +543,20 @@ build_shell=(unshare --user --map-root-user --mount --propagation private bash)
 if [ "$DIRECT_TOOLCHAIN" = "1" ]; then
 	sudo mkdir -p /opt
 	if [ -e /opt/toolchains ] || [ -L /opt/toolchains ]; then
-		if [ "$(readlink -f /opt/toolchains)" != "$(readlink -f "$TOOLCHAIN_SRC")" ]; then
+		if [ "$(readlink -f /opt/toolchains)" != "$(readlink -f "$TOOLCHAIN_MOUNT_SRC")" ]; then
 			echo "/opt/toolchains already exists and points elsewhere" >&2
 			exit 1
 		fi
 	else
-		sudo ln -s "$TOOLCHAIN_SRC" /opt/toolchains
+		sudo ln -s "$TOOLCHAIN_MOUNT_SRC" /opt/toolchains
 		DIRECT_TOOLCHAIN_LINK_CREATED=1
 	fi
 	build_shell=(bash)
 fi
 
-export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
-export MAKE_JOBS BUILD_MODE FORCE_PROFILE
-export DIRECT_TOOLCHAIN
+export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC TOOLCHAIN_MOUNT_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
+export MAKE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
+export DIRECT_TOOLCHAIN CCACHE_ENABLED CCACHE_DIR CCACHE_MAXSIZE CCACHE_PATH_VALUE
 
 echo "Building $BUILD_NAME via $SDK_PATH with $MAKE_JOBS jobs ($BUILD_MODE mode)"
 set +e
@@ -441,7 +567,7 @@ mkdir -p "$FAKEBIN"
 if [ "$DIRECT_TOOLCHAIN" = "0" ]; then
 	mount -t tmpfs tmpfs /opt
 	mkdir -p /opt/toolchains
-	mount --bind "$TOOLCHAIN_SRC" /opt/toolchains
+	mount --bind "$TOOLCHAIN_MOUNT_SRC" /opt/toolchains
 fi
 
 cat > "$FAKEBIN/whoami" <<WHOAMI
@@ -490,6 +616,13 @@ export gettext_datadir="$HOSTTOOLS/usr/share/gettext"
 export M4=/usr/bin/m4
 export M4PATH="$HOSTTOOLS/usr/share/flex/m4"
 export PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+if [ "$CCACHE_ENABLED" = "1" ]; then
+	export CCACHE_PATH="$CCACHE_PATH_VALUE"
+	export CCACHE_BASEDIR="$ROOT"
+	export CCACHE_COMPILERCHECK=content
+	export CCACHE_NOHASHDIR=true
+	export CCACHE_UMASK=002
+fi
 export LD_LIBRARY_PATH="/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/lib:/opt/toolchains/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/lib:${LD_LIBRARY_PATH:-}"
 export PATH="$FAKEBIN:$HOSTTOOLS/usr/bin:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2011.09/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2013.11/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
