@@ -2,6 +2,14 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 index 2dfd330d570..57f78023ec9 100644
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
+@@ -7596,6 +7596,6 @@ libcap-ng/configure:
+ 		LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections $(EXTRALDFLAGS)" \
+ 		$(CONFIGURE) --prefix=/usr --bindir=/usr/sbin --libdir=/usr/lib \
+-			--disable-static
++			--disable-static --without-python3
+ 	touch $@
+ 
+ libcap-ng: libcap-ng/configure
 @@ -7608,11 +7608,13 @@ libcap-ng-clean:
  
  libcap-ng-install: libcap-ng
