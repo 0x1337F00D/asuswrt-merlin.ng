@@ -65,7 +65,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             autoconf autoconf-archive automake autopoint bison build-essential \
-            flex gawk gettext gperf liblzma-dev libncurses-dev \
+            flex gawk gettext gperf libltdl-dev liblzma-dev libncurses-dev \
             libtext-unidecode-perl libtool-bin pkg-config texinfo unzip zlib1g-dev
 
       - name: Apply local CI overlay
