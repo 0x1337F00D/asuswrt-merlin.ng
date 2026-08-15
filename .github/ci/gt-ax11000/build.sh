@@ -21,6 +21,8 @@ Environment overrides:
   ASUSWRT_HOSTTOOLS=/tmp/path                 default: /tmp/asuswrt-hosttools
   ASUSWRT_MAKE_JOBS=N                         default: 1
   ASUSWRT_PREPARE_JOBS=N                      parallel Autotools preparation, default: 4
+  ASUSWRT_ROUTER_PHASED_BUILD=0|1              opt in to ordered router phases, default: 0
+  ASUSWRT_ROUTER_PACKAGE_JOBS=N                phased package graph workers, default: 2
   ASUSWRT_CCACHE=0|1                          cache HND cross-compiler output, default: 0
   ASUSWRT_CCACHE_DIR=/path                    default: /tmp/asuswrt-ccache
   ASUSWRT_CCACHE_MAXSIZE=size                 default: 2G
@@ -62,6 +64,8 @@ PATCH_FILES=(
 )
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
 PREPARE_JOBS="${ASUSWRT_PREPARE_JOBS:-4}"
+ROUTER_PHASED_BUILD="${ASUSWRT_ROUTER_PHASED_BUILD:-0}"
+ROUTER_PACKAGE_JOBS="${ASUSWRT_ROUTER_PACKAGE_JOBS:-2}"
 CCACHE_ENABLED="${ASUSWRT_CCACHE:-0}"
 CCACHE_DIR="${ASUSWRT_CCACHE_DIR:-/tmp/asuswrt-ccache}"
 CCACHE_MAXSIZE="${ASUSWRT_CCACHE_MAXSIZE:-2G}"
@@ -78,6 +82,10 @@ OUTPUT_DIR="${ASUSWRT_OUTPUT_DIR:-$SCRIPT_ROOT/output/$MAKE_TARGET}"
 SDK_DIR="$ROOT/$SDK_PATH"
 LOG_FILE="$SDK_DIR/output-${MAKE_TARGET}-wsl.log"
 OUTER_USER="$(id -un)"
+
+if [ "$ROUTER_PHASED_BUILD" = "1" ]; then
+	PATCH_FILES+=("$SCRIPT_ROOT/patches/${MAKE_TARGET}-router-phased.patch")
+fi
 
 require_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -437,6 +445,25 @@ if ! [[ "$PREPARE_JOBS" =~ ^[0-9]+$ ]] || [ "$PREPARE_JOBS" -lt 1 ]; then
 	exit 2
 fi
 
+case "$ROUTER_PHASED_BUILD" in
+	0|1)
+		;;
+	*)
+		echo "ASUSWRT_ROUTER_PHASED_BUILD must be 0 or 1" >&2
+		exit 2
+		;;
+esac
+
+if ! [[ "$ROUTER_PACKAGE_JOBS" =~ ^[0-9]+$ ]] || [ "$ROUTER_PACKAGE_JOBS" -lt 1 ]; then
+	echo "ASUSWRT_ROUTER_PACKAGE_JOBS must be a positive integer" >&2
+	exit 2
+fi
+
+if [ "$ROUTER_PHASED_BUILD" = "1" ] && [ "$MAKE_JOBS" -ne 1 ]; then
+	echo "Phased router builds require ASUSWRT_MAKE_JOBS=1 at the top level" >&2
+	exit 2
+fi
+
 case "$CCACHE_ENABLED" in
 	0|1)
 		;;
@@ -555,7 +582,7 @@ if [ "$DIRECT_TOOLCHAIN" = "1" ]; then
 fi
 
 export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC TOOLCHAIN_MOUNT_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
-export MAKE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
+export MAKE_JOBS PREPARE_JOBS ROUTER_PHASED_BUILD ROUTER_PACKAGE_JOBS BUILD_MODE FORCE_PROFILE
 export DIRECT_TOOLCHAIN CCACHE_ENABLED CCACHE_DIR CCACHE_MAXSIZE CCACHE_PATH_VALUE
 
 echo "Building $BUILD_NAME via $SDK_PATH with $MAKE_JOBS jobs ($BUILD_MODE mode)"
@@ -630,6 +657,9 @@ cd "$ROOT/$SDK_PATH"
 make_args=()
 if [ "${FORCE_PROFILE:-0}" = "1" ]; then
 	make_args+=(FORCE=1)
+fi
+if [ "${ROUTER_PHASED_BUILD:-0}" = "1" ]; then
+	make_args+=(ROUTER_PACKAGE_JOBS="$ROUTER_PACKAGE_JOBS")
 fi
 set +e
 make -j"$MAKE_JOBS" SHELL=/bin/bash "HOSTCFLAGS+=-fcommon" "${make_args[@]}" "$MAKE_TARGET" 2>&1 | tee "$LOG_FILE"

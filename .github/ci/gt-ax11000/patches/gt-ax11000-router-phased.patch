@@ -1,0 +1,55 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -2099,7 +2099,14 @@
+ #
+ 
+ ifeq ($(HND_ROUTER),y)
+-all: clean-build kernel_header version fsbuild $(obj-y)
++ROUTER_PACKAGE_JOBS ?= 1
++all:
++	@echo "Router phase 1/3: clean-build"
++	+$(MAKE) clean-build
++	@echo "Router phase 2/3: kernel_header version fsbuild"
++	+$(MAKE) kernel_header version fsbuild
++	@echo "Router phase 3/3: package graph (-j$(ROUTER_PACKAGE_JOBS), shared jobserver)"
++	+$(MAKE) -j$(ROUTER_PACKAGE_JOBS) PARALLEL_BUILD= $(obj-y)
+ else ifeq ($(RTCONFIG_ARM),y)
+ all: clean-build kernel_header libc version obj_prelibs kernel $(obj-postlibs)
+ else
+@@ -8078,7 +8085,7 @@
+ 
+ strongswan: openssl strongswan/Makefile
+ 	@$(SEP)
+-	$(MAKE) -j 8 -C strongswan
++	+$(MAKE) $(PARALLEL_BUILD) -C strongswan
+ ifneq (,$(filter $(ASUSWRT_BRCM_SDK_VERSION),WIFI7_SDK_20250506 WIFI8_SDK_20251126))
+ 	@-patchelf --force-rpath --set-rpath /usr/lib/ipsec strongswan/src/libipsec/.libs/libipsec.so
+ 	@-sed -i '/relink_command/d' strongswan/src/libipsec/libipsec.la
+@@ -8204,7 +8211,7 @@
+ 
+ libssh2: libgcrypt-1.5.1 zlib libssh2/Makefile
+ 	@$(SEP)
+-	$(MAKE) -j 8 -C libssh2 && $(MAKE) $@-stage
++	+$(MAKE) $(PARALLEL_BUILD) -C libssh2 && $(MAKE) $@-stage
+ 
+ libssh2-install:
+ 	@$(SEP)
+@@ -8592,7 +8599,7 @@
+ 
+ avahi: expat-2.0.1 libdaemon avahi/Makefile
+ 	@$(SEP)
+-	@$(MAKE) -j 8 -C $@
++	+@$(MAKE) $(PARALLEL_BUILD) -C $@
+ 
+ avahi/Makefile: avahi/configure
+ 	cd avahi && $(CONFIGURE) \
+@@ -8809,7 +8816,7 @@
+ 	-@$(MAKE) -C coovachilli clean
+ 
+ coovachilliv16: coovachilliv16/Makefile
+-	@$(MAKE) -j 8 -C coova-chilli-1.6
++	+@$(MAKE) $(PARALLEL_BUILD) -C coova-chilli-1.6
+ 
+ coovachilliv16/Makefile:
+ 	$(MAKE) coovachilliv16-configure

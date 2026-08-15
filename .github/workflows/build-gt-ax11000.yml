@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - codex/gt-ax11000-router-j2
     paths:
       - .github/ci/gt-ax11000/**
       - .github/workflows/build-gt-ax11000.yml
@@ -91,12 +92,18 @@ jobs:
             gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-
 
       - name: Apply local CI overlay
+        env:
+          ASUSWRT_ROUTER_PHASED_BUILD: "1"
         run: |
           set -euxo pipefail
-          for patch in \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/local-features.patch" \
+          patches=(
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/local-features.patch"
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-wsl.patch"
-          do
+          )
+          if [ "$ASUSWRT_ROUTER_PHASED_BUILD" = "1" ]; then
+            patches+=("$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-router-phased.patch")
+          fi
+          for patch in "${patches[@]}"; do
             git -C source apply --check "$patch"
             git -C source apply "$patch"
           done
@@ -121,6 +128,8 @@ jobs:
           ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
           ASUSWRT_MAKE_JOBS: "1"
           ASUSWRT_PREPARE_JOBS: "4"
+          ASUSWRT_ROUTER_PHASED_BUILD: "1"
+          ASUSWRT_ROUTER_PACKAGE_JOBS: "2"
           ASUSWRT_OUTPUT_DIR: ${{ github.workspace }}/output
           ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
@@ -150,8 +159,10 @@ jobs:
             echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)"
             echo "ci_sha=${GITHUB_SHA}"
             echo "runner_image=${ImageOS:-unknown}"
-            echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
-            echo "prepare_jobs=4"
+          echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
+          echo "prepare_jobs=4"
+          echo "router_phased_build=1"
+          echo "router_package_jobs=2"
           } > output/BUILD-METADATA.txt
           (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)
           find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n

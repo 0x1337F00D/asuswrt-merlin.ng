@@ -14,3 +14,10 @@ CI prepares independent Autotools packages with up to four workers and keeps a
 2 GiB `ccache` for the HND cross-compilers. The cache is keyed by toolchain,
 upstream source, and overlay revisions; the multi-gigabyte build tree itself is
 never cached.
+
+The experimental phased router build is opt-in through
+`ASUSWRT_ROUTER_PHASED_BUILD=1`. It runs `clean-build`, then
+`kernel_header version fsbuild`, and finally the package graph with the worker
+limit from `ASUSWRT_ROUTER_PACKAGE_JOBS`. The package phase clears
+`PARALLEL_BUILD`, so recursive package builds share its GNU make jobserver.
+Keep the top-level `ASUSWRT_MAKE_JOBS` at `1`; start package testing at `2`.
