@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - codex/gt-ax11000-fast-ci
     paths:
       - .github/ci/gt-ax11000/**
       - .github/workflows/build-gt-ax11000.yml
@@ -59,15 +60,36 @@ jobs:
             brcm-arm-sdk/hndtools-armeabi-2013.11
           git -C toolchains rev-parse HEAD
 
+      - name: Record input revisions
+        id: revisions
+        run: |
+          echo "upstream_sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          overlay_sha="$({
+            sha256sum overlay/.github/ci/gt-ax11000/build.sh
+            sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
+          } | sha256sum | cut -d' ' -f1)"
+          echo "overlay_sha=$overlay_sha" >> "$GITHUB_OUTPUT"
+
       - name: Install host dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            autoconf autoconf-archive automake autopoint bc bison build-essential \
+            autoconf autoconf-archive automake autopoint bc bison build-essential ccache \
             fakeroot flex gawk gettext gperf kmod libelf-dev libltdl-dev \
             liblzo2-dev liblzma-dev libncurses-dev libssl-dev libzstd-dev \
             libtext-unidecode-perl libtool-bin pkg-config rsync texinfo unzip \
             uuid-dev xxd zlib1g-dev
+
+      - name: Restore compiler cache
+        id: ccache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/asuswrt-ccache
+          key: gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.revisions.outputs.overlay_sha }}
+          restore-keys: |
+            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
+            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-
 
       - name: Apply local CI overlay
         run: |
@@ -92,13 +114,18 @@ jobs:
           ASUSWRT_APT_CACHE: ${{ runner.temp }}/asuswrt-apt
           ASUSWRT_BUILD_MODE: clean
           ASUSWRT_BUILD_WORKTREE: "1"
+          ASUSWRT_CCACHE: "1"
+          ASUSWRT_CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
+          ASUSWRT_CCACHE_MAXSIZE: 2G
           ASUSWRT_DIRECT_TOOLCHAIN: "1"
           ASUSWRT_FAKEBIN: ${{ runner.temp }}/asuswrt-fakebin
           ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
           ASUSWRT_MAKE_JOBS: "1"
+          ASUSWRT_PREPARE_JOBS: "4"
           ASUSWRT_OUTPUT_DIR: ${{ github.workspace }}/output
           ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
+          ASUSWRT_TOOLCHAIN_VIEW: ${{ runner.temp }}/asuswrt-toolchain-view/brcm-arm-hnd
         run: |
           set -euo pipefail
           bash overlay/.github/ci/gt-ax11000/build.sh gt-ax11000 &
@@ -110,6 +137,12 @@ jobs:
           done
           wait "$build_pid"
 
+      - name: Show compiler cache statistics
+        if: always()
+        env:
+          CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
+        run: ccache --show-stats --verbose || true
+
       - name: Record build metadata
         if: success()
         run: |
@@ -118,6 +151,8 @@ jobs:
             echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)"
             echo "ci_sha=${GITHUB_SHA}"
             echo "runner_image=${ImageOS:-unknown}"
+            echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
+            echo "prepare_jobs=4"
           } > output/BUILD-METADATA.txt
           (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)
           find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n
