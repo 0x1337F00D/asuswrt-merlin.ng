@@ -65,8 +65,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             autoconf autoconf-archive automake autopoint bison build-essential \
-            flex gawk gettext gperf libncurses-dev libtext-unidecode-perl \
-            libtool-bin pkg-config texinfo unzip zlib1g-dev
+            flex gawk gettext gperf liblzma-dev libncurses-dev \
+            libtext-unidecode-perl libtool-bin pkg-config texinfo unzip zlib1g-dev
 
       - name: Apply local CI overlay
         run: |
@@ -125,6 +125,9 @@ jobs:
         if: failure()
         run: |
           mkdir -p output
+          printf 'GitHub Actions run: %s\nCommit: %s\n' \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "$GITHUB_SHA" > output/CI-FAILURE.txt
           cp -f source/release/src-rt-5.02axhnd/output-gt-ax11000-wsl.log output/ 2>/dev/null || true
 
       - name: Upload firmware and log
@@ -136,4 +139,3 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 6
-
