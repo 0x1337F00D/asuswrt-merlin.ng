@@ -64,9 +64,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            autoconf autoconf-archive automake autopoint bison build-essential \
-            flex gawk gettext gperf libltdl-dev liblzma-dev libncurses-dev \
-            libtext-unidecode-perl libtool-bin pkg-config texinfo unzip zlib1g-dev
+            autoconf autoconf-archive automake autopoint bc bison build-essential \
+            fakeroot flex gawk gettext gperf kmod libelf-dev libltdl-dev \
+            liblzo2-dev liblzma-dev libncurses-dev libssl-dev libzstd-dev \
+            libtext-unidecode-perl libtool-bin pkg-config rsync texinfo unzip \
+            uuid-dev xxd zlib1g-dev
 
       - name: Apply local CI overlay
         run: |
