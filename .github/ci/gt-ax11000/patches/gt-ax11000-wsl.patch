@@ -1,0 +1,687 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+index 2dfd330d570..57f78023ec9 100644
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -7596,6 +7596,6 @@ libcap-ng/configure:
+ 		LDFLAGS="-ffunction-sections -fdata-sections -Wl,--gc-sections $(EXTRALDFLAGS)" \
+ 		$(CONFIGURE) --prefix=/usr --bindir=/usr/sbin --libdir=/usr/lib \
+-			--disable-static
++			--disable-static --without-python3
+ 	touch $@
+ 
+ libcap-ng: libcap-ng/configure
+@@ -7608,11 +7608,13 @@ libcap-ng-clean:
+ 
+ libcap-ng-install: libcap-ng
+ 	install -D libcap-ng/src/.libs/libcap-ng.so.0.0.0 $(INSTALLDIR)/libcap-ng/usr/lib/libcap-ng.so.0.0.0
+-	install -D libcap-ng/src/.libs/libdrop_ambient.so.0.0.0 $(INSTALLDIR)/libcap-ng/usr/lib/libdrop_ambient.so.0.0.0
+ 	$(STRIP) $(INSTALLDIR)/libcap-ng/usr/lib/libcap-ng.so.0.0.0
+-	$(STRIP) $(INSTALLDIR)/libcap-ng/usr/lib/libdrop_ambient.so.0.0.0
+ 	cd $(INSTALLDIR)/libcap-ng/usr/lib && ln -sf libcap-ng.so.0.0.0 libcap-ng.so.0 && ln -sf libcap-ng.so.0.0.0 libcap-ng.so
+-	cd $(INSTALLDIR)/libcap-ng/usr/lib && ln -sf libdrop_ambient.so.0.0.0 libdrop_ambient.so.0 && ln -sf libdrop_ambient.so.0.0.0 libdrop_ambient.so
++	if [ -f libcap-ng/src/.libs/libdrop_ambient.so.0.0.0 ]; then \
++		install -D libcap-ng/src/.libs/libdrop_ambient.so.0.0.0 $(INSTALLDIR)/libcap-ng/usr/lib/libdrop_ambient.so.0.0.0; \
++		$(STRIP) $(INSTALLDIR)/libcap-ng/usr/lib/libdrop_ambient.so.0.0.0; \
++		cd $(INSTALLDIR)/libcap-ng/usr/lib && ln -sf libdrop_ambient.so.0.0.0 libdrop_ambient.so.0 && ln -sf libdrop_ambient.so.0.0.0 libdrop_ambient.so; \
++	fi
+ 
+ openpam: openpam/Makefile
+ 	$(MAKE) -C $@ $(PARALLEL_BUILD) && $(MAKE) $@-stage
+@@ -8409,7 +8411,7 @@ rtl_bin-install:
+ #libgpg-error-1.10
+ libgpg-error-1.10/stamp-h1:
+ 	cd $(TOP)/libgpg-error-1.10 && \
+-	$(CONFIGURE) --prefix=/usr
++	$(CONFIGURE) --prefix=/usr --disable-nls
+ 	touch $@
+ 
+ libgpg-error-1.10: libgpg-error-1.10/stamp-h1
+@@ -11759,4 +11761,3 @@ $(obj-y) $(obj-n) $(obj-clean) $(obj-install): dummy
+ .PHONY: conf mconf oldconf kconf kmconf config menuconfig oldconfig
+ .PHONY: dummy libnet libpcap
+ 
+-
+diff --git a/release/src/router/amas-utils/amas-utils.h b/release/src/router/amas-utils/amas-utils.h
+index 2373bebb638..d4d4513897c 100644
+--- a/release/src/router/amas-utils/amas-utils.h
++++ b/release/src/router/amas-utils/amas-utils.h
+@@ -16,11 +16,6 @@
+ ////////////////////////////////////////////////////////////////////////////////
+ typedef enum
+ {
+-	AMAS_RESULT_GEN_RANDOM_BACKHAUL_SECURITY_FAILED		= -30,
+-	AMAS_RESULT_VERIFY_HASH_GROUP_ID_FAILED		= -29,
+-	AMAS_RESULT_VERIFY_HASH_ID_NO_INDEX		= -28,
+-	AMAS_RESULT_GEN_HASH_GROUP_ID_FAILED		= -27,
+-	AMAS_RESULT_GEN_HASH_ID_NO_INDEX		= -26,
+ 	AMAS_RESULT_SET_MISC_INFO_FAILED		= -25,
+ 	AMAS_RESULT_GET_MISC_INFO_FAILED          = -24,
+ #ifdef RTCONFIG_VIF_ONBOARDING
+@@ -64,7 +59,7 @@ typedef enum
+ #define MISC_INFO_FILE_PATH		"/tmp/misc.json"
+ 
+ /* for RC_SUPPORT */
+-#define WPA3                    (1 << 0)
++#define AMAS_UTILS_WPA3                    (1 << 0)	/* cfg_capability.h has a WPA3 definition with different value. */
+ ////////////////////////////////////////////////////////////////////////////////
+ //
+ //	Define for misc info
+@@ -204,16 +199,9 @@ AMAS_FUNC AMAS_RESULT AMAS_API amas_prelink_band_sync_bypass(int unit, int *resu
+ #ifdef RTCONFIG_VIF_ONBOARDING
+ AMAS_FUNC AMAS_RESULT AMAS_API amas_gen_onboarding_vif_security(char *ssid, int ssid_len, char *psk, int psk_len);
+ #endif	/* RTCONFIG_VIF_ONBOARDING */
+-AMAS_FUNC AMAS_RESULT AMAS_API amas_gen_random_backhaul_security(char *input, char *ssid, int ssid_len, char *psk, int psk_len);
+ AMAS_FUNC AMAS_RESULT AMAS_API amas_set_eth_role(char *input_eth_role);
+ AMAS_FUNC AMAS_RESULT AMAS_API amas_get_dest_eth_role(char *ifname, int *eth_role);
+ AMAS_FUNC AMAS_RESULT AMAS_API amas_set_misc_info(int index, char *value);
+ AMAS_FUNC AMAS_RESULT AMAS_API amas_get_misc_info(unsigned char *misc_info, int *misc_info_len);
+-AMAS_FUNC AMAS_RESULT AMAS_API amas_set_lldpd_bind_ifnames_retry(char *ifnames, int fail_retry);
+-AMAS_FUNC AMAS_RESULT AMAS_API amas_set_lldpd_bind_ifnames(char *ifnames);
+ extern char *get_rcSupport_count(char *count, int countBufSize);
+-AMAS_FUNC AMAS_RESULT AMAS_API amas_gen_hash_group_id(unsigned char *key);
+-AMAS_FUNC AMAS_RESULT AMAS_API amas_gen_hash_id(int index, unsigned char *key);
+-AMAS_FUNC AMAS_RESULT AMAS_API  amas_verify_hash_id(int index, unsigned char *key);
+-
+ #endif /* !__AMASUTILSH__ */
+diff --git a/release/src/router/aws-iot/src/Makefile b/release/src/router/aws-iot/src/Makefile
+index 23fd1ef34c0..c4b38eef24a 100644
+--- a/release/src/router/aws-iot/src/Makefile
++++ b/release/src/router/aws-iot/src/Makefile
+@@ -82,6 +82,9 @@ APP_INCLUDE_DIRS += -I $(APP_DIR)
+ APP_NAME = awsiot
+ APP_SRC_FILES = time_util.c log.c api.c awsiot_ipc.c awsiot_mnt.c pwenc.c
+ APP_SRC_FILES += $(APP_NAME).c 
++ifeq ($(BUILD_NAME),GT-AX11000)
++APP_SRC_FILES += awsiot_compat_stubs.c
++endif
+ 
+ #CC = gcc
+ 
+diff --git a/release/src/router/aws-iot/src/awsiot_compat_stubs.c b/release/src/router/aws-iot/src/awsiot_compat_stubs.c
+new file mode 100644
+index 00000000000..aa28840e568
+--- /dev/null
++++ b/release/src/router/aws-iot/src/awsiot_compat_stubs.c
+@@ -0,0 +1,7 @@
++#include <shared.h>
++
++int get_ASUS_privacy_policy_state(const int id)
++{
++	(void)id;
++	return nvram_get_int("ASUS_EULA");
++}
+diff --git a/release/src/router/calc_nvram/Makefile b/release/src/router/calc_nvram/Makefile
+index 55e40ca0d37..f635b14afe5 100644
+--- a/release/src/router/calc_nvram/Makefile
++++ b/release/src/router/calc_nvram/Makefile
+@@ -1,6 +1,7 @@
+ include ../common.mak
+ 
+ CACL_FLAGS += -Wall -O
++PYTHON ?= python3
+ 
+ ifeq ($(RTCONFIG_JFFS_NVRAM),y)
+ CACL_FLAGS += -DRTCONFIG_JFFS_NVRAM
+@@ -14,7 +15,7 @@ calc_nvram: calc_nvram.o
+ 	$(TOP)/calc_nvram/calc_nvram
+ 
+ run_python:
+-	@-type -P python >/dev/null 2>&1 && python $(TOP)/calc_nvram/calc_nvram.py $(TOP)
++	@$(PYTHON) $(TOP)/calc_nvram/calc_nvram.py $(TOP)
+ 
+ install:
+ 
+@@ -23,4 +24,4 @@ clean:
+ 
+ %.o: %.c
+ 	@echo " [calc_nvram] CC $@"
+-	gcc $(CACL_FLAGS) -o $@ -c $<
+\ No newline at end of file
++	gcc $(CACL_FLAGS) -o $@ -c $<
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index 171a7f2242f..48a87632efb 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -149,6 +149,9 @@ OBJS += web.o common.o nvram_f.o
+ OBJS += aspbw.o initial_web_hook.o
+ OBJS += apps.o
+ OBJS += sysinfo.o data_arrays.o web-broadcom-am.o
++ifeq ($(BUILD_NAME),GT-AX11000)
++OBJS += httpd_compat_stubs.o
++endif
+ 
+ ifeq ($(CONFIG_REALTEK),y)
+ OBJS += web-realtek.o
+@@ -164,7 +167,11 @@ else
+ ifeq ($(or $(RTCONFIG_HND_ROUTER_AX_675X),$(RTCONFIG_HND_ROUTER_AX_6756),$(RTCONFIG_HND_ROUTER_BE_4916),$(RTCONFIG_HND_ROUTER_AX_6710),$(RTCONFIG_BCM_502L07P2)),y)
+ OBJS += $(if $(wildcard sysdeps/web-broadcom_private.c),web-broadcom_private.o,prebuild/web-broadcom_private.o)
+ endif
++ifeq ($(BUILD_NAME),GT-AX11000)
++OBJS += prebuild/GT-AXE11000/web-broadcom.o
++else
+ OBJS += $(if $(wildcard sysdeps/web-broadcom.c),web-broadcom.o,prebuild/web-broadcom.o)
++endif
+ ifeq ($(RTCONFIG_QTN),y)
+ OBJS += find_host_addr.o
+ endif
+diff --git a/release/src/router/httpd/httpd_compat_stubs.c b/release/src/router/httpd/httpd_compat_stubs.c
+new file mode 100644
+index 00000000000..bc4e953779e
+--- /dev/null
++++ b/release/src/router/httpd/httpd_compat_stubs.c
+@@ -0,0 +1,105 @@
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdint.h>
++
++#include <typedefs.h>
++#include <json.h>
++#include "httpd.h"
++
++extern int ej_wps_info(int eid, webs_t wp, int argc, char_t **argv);
++extern int ej_wl_chanspecs_6g(int eid, webs_t wp, int argc, char_t **argv);
++
++int nvram_modify_log(char *name, char *new, char *old, struct json_object *nvram_modify_obj)
++{
++	return 0;
++}
++
++void handle_nvram_modify_log(struct json_object *nvram_modify_obj)
++{
++}
++
++int set_ASUS_NEW_EULA(char *ASUS_NEW_EULA, char *from_service)
++{
++	return 0;
++}
++
++void bwdpi_cgi_mon_to_json(char *type, char *start, char *end, FILE *stream)
++{
++	websWrite(stream, "[]");
++}
++
++void bwdpi_cgi_mon_del_db(char *type, FILE *stream)
++{
++	websWrite(stream, "{\"statusCode\":\"0\"}");
++}
++
++int ej_wps_info_5g(int eid, webs_t wp, int argc, char_t **argv)
++{
++	return ej_wps_info(eid, wp, argc, argv);
++}
++
++int ej_wps_info_5g_2(int eid, webs_t wp, int argc, char_t **argv)
++{
++	return ej_wps_info(eid, wp, argc, argv);
++}
++
++int ej_wl_chanspecs_6g_2(int eid, webs_t wp, int argc, char_t **argv)
++{
++	return ej_wl_chanspecs_6g(eid, wp, argc, argv);
++}
++
++void do_set_ASUS_privacy_policy_cgi(char *url, FILE *stream)
++{
++	websWrite(stream, "{\"statusCode\":\"0\"}");
++}
++
++void do_get_ASUS_privacy_policy_cgi(char *url, FILE *stream)
++{
++	websWrite(stream, "{}");
++}
++
++void do_oauth_callback_cgi(char *url, FILE *stream)
++{
++	websWrite(stream, "{}");
++}
++
++void do_set_security_update_cgi(char *url, FILE *stream)
++{
++	websWrite(stream, "{\"statusCode\":\"0\"}");
++}
++
++void do_get_security_update_cgi(char *url, FILE *stream)
++{
++	websWrite(stream, "{}");
++}
++
++int webswrite(webs_t wp, const char *fmt, ...)
++{
++	int ret;
++	va_list ap;
++
++	va_start(ap, fmt);
++	ret = vfprintf(wp, fmt, ap);
++	va_end(ap);
++	fflush(wp);
++
++	return ret;
++}
++
++uint8 *bcm_find_tlv(uint8 *tlvs, uint buflen, uint key)
++{
++	while (buflen >= 2) {
++		uint len = tlvs[1];
++
++		if (buflen < len + 2)
++			break;
++
++		if (tlvs[0] == key)
++			return tlvs;
++
++		tlvs += len + 2;
++		buflen -= len + 2;
++	}
++
++	return NULL;
++}
+diff --git a/release/src/router/netstat-nat/GNUmakefile b/release/src/router/netstat-nat/GNUmakefile
+index 4bd3f12b98c..ae976b6f0a3 100644
+--- a/release/src/router/netstat-nat/GNUmakefile
++++ b/release/src/router/netstat-nat/GNUmakefile
+@@ -9,7 +9,7 @@ PREFIX ?= /usr/local
+ 
+ 
+ CPPFLAGS += -D_GNU_SOURCE
+-CFLAGS   += -O3 -g -Wall -Wextra -std=c17 -Wno-string-plus-int
++CFLAGS   += -O3 -g -Wall -Wextra -std=gnu11 -Wno-string-plus-int
+ 
+ 
+ .PHONY: all check clean install
+diff --git a/release/src/router/networkmap/api/Makefile b/release/src/router/networkmap/api/Makefile
+index b285e10cf86..3133130e08b 100644
+--- a/release/src/router/networkmap/api/Makefile
++++ b/release/src/router/networkmap/api/Makefile
+@@ -13,7 +13,11 @@ ifneq ($(wildcard *.c),)
+ 	$(CC) -fPIC -c nmp_api.c $(CFLAGS_SO) -o $(OBJS_SO)
+ 	$(CC) -shared $(OBJS_SO) -o $(NMP_API_SO) $(LDFLAGS_SO)
+ else
+-	-cp -f ../../nmp-api/networkmap/prebuild/$(BUILD_NAME)/$(NMP_API_SO) .
++ifneq ($(wildcard ../../nmp-api/networkmap/prebuild/$(BUILD_NAME)/$(NMP_API_SO)),)
++		-cp -f ../../nmp-api/networkmap/prebuild/$(BUILD_NAME)/$(NMP_API_SO) .
++else ifneq ($(wildcard ../../nmp-api/networkmap/prebuild/RT-BE86U/$(NMP_API_SO)),)
++		-cp -f ../../nmp-api/networkmap/prebuild/RT-BE86U/$(NMP_API_SO) .
++endif
+ endif
+ 
+ install:
+@@ -26,4 +30,3 @@ endif
+ 
+ clean:
+ 	rm -f $(OBJS_SO) $(NMP_API_SO)
+-
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 15fdacefda7..d9fdb314d29 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -374,6 +374,7 @@ CFLAGS += -I$(TOP)/cfg_mnt
+ CFLAGS += -I$(TOP)/networkmap/api
+ LDFLAGS += -L$(TOP)/cfg_mnt -lcfgmnt
+ LDFLAGS += -L$(TOP)/networkmap/api/ -lnmpapi
++NMP_API_LIB := $(TOP)/networkmap/api/libnmpapi.so
+ endif
+ 
+ ifeq ($(RTCONFIG_SW_HW_AUTH), y)
+@@ -426,6 +427,9 @@ endif
+ 
+ OBJS := rc.o init.o interface.o lan.o wireless.o $(if $(RTCONFIG_SOFTWIRE46), s46comm.o) wan.o pppd.o auth.o services.o
+ OBJS += firewall.o ppp.o services.o common.o conn_diag_log.o
++ifeq ($(BUILD_NAME),GT-AX11000)
++OBJS += rc_compat_stubs.o
++endif
+ OBJS += watchdog.o check_watchdog.o fwupg_flashing.o ntp.o udhcpc.o ate.o
+ ifeq ($(RTCONFIG_MULTIWAN_IF),y)
+ OBJS += qos_multi_wan_if.o
+@@ -1235,8 +1239,10 @@ endif
+ endif
+ ifeq ($(RTCONFIG_AURALED),y)
+ LDFLAGS += -lm
++ifneq ($(BUILD_NAME),GT-AX11000)
+ OBJS += ledg.o
+ endif
++endif
+ ifeq ($(DSL_AX82U),y)
+ OBJS += ledg.o
+ endif
+@@ -1339,11 +1345,16 @@ endif
+ endif
+ 
+ ifeq ($(RTCONFIG_BRCM_HOSTAPD),y)
+-$(WPS_PBCD): $(OBJS_WPS_PBCD)
++$(WPS_PBCD): $(OBJS_WPS_PBCD) $(NMP_API_LIB)
+ 	@$(CC) -o $@ $(OBJS_WPS_PBCD) $(LDFLAGS)
+ endif
+ 
+-rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,)
++ifneq ($(NMP_API_LIB),)
++$(NMP_API_LIB):
++	$(MAKE) -C $(TOP)/networkmap/api libnmpapi
++endif
++
++rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,) $(if $(NMP_API_LIB),| $(NMP_API_LIB),)
+ 	@echo " [rc] CC $@"
+ 	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS)
+ 
+@@ -2605,6 +2616,9 @@ ifeq ($(RTCONFIG_TPVPN),y)
+ ifneq ($(wildcard ./prebuild/tpvpn.o),)
+ tpvpn.o:
+ 	@-cp -f ./prebuild/tpvpn.o .
++else ifneq ($(wildcard ./prebuild/RT-BE86U/tpvpn.o),)
++tpvpn.o:
++	@-cp -f ./prebuild/RT-BE86U/tpvpn.o .
+ endif
+ endif
+ 
+diff --git a/release/src/router/rc/pressure.c b/release/src/router/rc/pressure.c
+index 0497b51de4c..fb0446b08d7 100644
+--- a/release/src/router/rc/pressure.c
++++ b/release/src/router/rc/pressure.c
+@@ -15,7 +15,6 @@
+  */
+ 
+ #include <stdio.h>
+-#include <stdbool.h>
+ #include <errno.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+@@ -370,7 +369,7 @@ pressure_main(int argc, char **argv)
+ 	struct pollfd fds[2];
+ 	char buf[BUF_MAX];
+ 	ssize_t num;
+-	bool delta_ang_en = false;
++	bool delta_ang_en = FALSE;
+ 	int frequency = -1; // 40Hz
+ 	int timeout = 8; // seconds
+ 	int mode = -1; // default mode
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index cd7836578be..69a66359be7 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -112,7 +112,7 @@ double get_wifi_maxpower(int target_unit);
+ extern int codb_test();
+ #endif
+ 
+-int getPid_fromFile(char *file_name)
++static int getPid_fromFile(char *file_name)
+ {
+ 	FILE *fp;
+ 	char *pidfile = file_name;
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index e345fd0008c..4b8e6eaa708 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -3004,7 +3004,6 @@ extern void stop_dsl_autodet(void);
+ extern void stop_dsl_diag(void);
+ extern int start_dsl_diag(void);
+ #endif
+-extern int getPid_fromFile(char *file_name);
+ #ifdef RTCONFIG_FRS_LIVE_UPDATE
+ extern int firmware_check_update_main(int argc, char *argv[]);
+ #endif
+diff --git a/release/src/router/rc/rc_compat_stubs.c b/release/src/router/rc/rc_compat_stubs.c
+new file mode 100644
+index 00000000000..8792e85e9c1
+--- /dev/null
++++ b/release/src/router/rc/rc_compat_stubs.c
+@@ -0,0 +1,133 @@
++#include "rc.h"
++
++#include <stdarg.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++typedef struct json_object json_object;
++
++int chk_acscli2_cmds(char *cmd)
++{
++	return 0;
++}
++
++void avbl_reset_exclvalid(char *ifname)
++{
++}
++
++int send_reinit_bssinfo_to_conn_diag(void)
++{
++	return 0;
++}
++
++json_object *get_sta_list_by_support_band(const char *node_mac, const char *support_band)
++{
++	return NULL;
++}
++
++int is_sta_active(const char *node_mac, const char *sta_mac)
++{
++	return 0;
++}
++
++char *get_s46_prefix_host(const char *prefix, char *host, size_t hostlen)
++{
++	if (host && hostlen > 0)
++		host[0] = '\0';
++
++	return host;
++}
++
++int is_mxl_dual_serdes_war(void)
++{
++	return 0;
++}
++
++int amas_set_lldpd_bind_ifnames_retry(char *ifnames, int fail_retry)
++{
++	return 0;
++}
++
++void update_nbr_list(void)
++{
++}
++
++void memleakdbg(void)
++{
++}
++
++int validate_apply_input_value(char *name, char *value)
++{
++	return 1;
++}
++
++void wl_set_nbr_info(void)
++{
++}
++
++int wl_cap_mbss(int unit)
++{
++	return 16;
++}
++
++int noasusddns(void)
++{
++	return 0;
++}
++
++int detect_vul_scan(void)
++{
++	return 0;
++}
++
++void check_wlx_nband_type(void)
++{
++}
++
++int firmware_webs_update_main(int argc, char *argv[])
++{
++	return 0;
++}
++
++int ledg_main(int argc, char *argv[])
++{
++	(void)argc;
++	(void)argv;
++
++	return 0;
++}
++
++int safe_do_system(const char *fmt, ...)
++{
++	char cmd[4096];
++	va_list ap;
++	int ret;
++
++	if (!fmt || !*fmt)
++		return 0;
++
++	va_start(ap, fmt);
++	ret = vsnprintf(cmd, sizeof(cmd), fmt, ap);
++	va_end(ap);
++
++	if (ret < 0 || (size_t)ret >= sizeof(cmd))
++		return -1;
++
++	return system(cmd);
++}
++
++void init_asus_pp_eula(void)
++{
++}
++
++int backup_eth_ob_log(void)
++{
++	return 0;
++}
++
++void update_ntp_ts(time_t bf_time, int ntp_diff_ts)
++{
++	(void)bf_time;
++	(void)ntp_diff_ts;
++}
+diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
+index 69e04294709..5ec7d6674c0 100644
+--- a/release/src/router/rc/sysdeps/init-broadcom.c
++++ b/release/src/router/rc/sysdeps/init-broadcom.c
+@@ -10541,7 +10541,11 @@ void generate_wl_para(char *ifname, int unit, int subunit)
+ #endif
+ 	char *p;
+ 
++#ifdef RTCONFIG_WIFI7
+ 	_dprintf("%s, [%s: unit:%d, subunit:%d], cap_11be=%d\n", __func__, ifname, unit, subunit, cap_11be);
++#else
++	_dprintf("%s, [%s: unit:%d, subunit:%d]\n", __func__, ifname, unit, subunit);
++#endif
+ 
+ 	if (subunit == -1)
+ 	{
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 54587599262..d7d8afa22b8 100644
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -212,6 +212,9 @@ endif
+ 
+ OBJS = shutils.o defaults.o model.o rtstate.o boardapi.o
+ OBJS += network_utility.o
++ifeq ($(BUILD_NAME),GT-AX11000)
++OBJS += shared_compat_stubs.o
++endif
+ OBJS += misc.o version.o files.o strings.o process.o
+ OBJS += bin_sem_asus.o semaphore.o pids.o $(if $(wildcard notify_rc.c),notify_rc.o,prebuild/notify_rc.o)
+ OBJS += discover.o
+@@ -590,8 +593,12 @@ OBJS += nvsw.o
+ endif
+ 
+ ifeq ($(or $(RTCONFIG_GEARUPPLUGIN), $(RTCONFIG_UUPLUGIN)), y)
++ifeq ($(BUILD_NAME),GT-AX11000)
++OBJS += $(if $(wildcard uu_utils.c),uu_utils.o,$(if $(wildcard prebuild/GT-AX11000/uu_utils.o),prebuild/GT-AX11000/uu_utils.o,prebuild/RT-BE86U/uu_utils.o))
++else
+ OBJS += $(if $(wildcard uu_utils.c),uu_utils.o,prebuild/uu_utils.o)
+ endif
++endif
+ 
+ ifeq ($(RTCONFIG_MXL_826XX),y)
+ CFLAGS += -I$(TOP)/libhostapi/switch_hostapi/src \
+diff --git a/release/src/router/shared/shared_compat_stubs.c b/release/src/router/shared/shared_compat_stubs.c
+new file mode 100644
+index 00000000000..c7df3de7910
+--- /dev/null
++++ b/release/src/router/shared/shared_compat_stubs.c
+@@ -0,0 +1,29 @@
++#include <stddef.h>
++
++char *get_fh_if_prefix(char *ret_prefix, size_t ret_bsize)
++{
++	if (ret_prefix && ret_bsize > 0)
++		ret_prefix[0] = '\0';
++
++	return NULL;
++}
++
++char *get_fh_if_prefix_by_unit(int unit, char *ret_prefix, size_t ret_bsize)
++{
++	(void)unit;
++
++	if (ret_prefix && ret_bsize > 0)
++		ret_prefix[0] = '\0';
++
++	return NULL;
++}
++
++char *get_fh_if_prefix_by_apm(int apm_idx, char *ret_prefix, size_t ret_bsize)
++{
++	(void)apm_idx;
++
++	if (ret_prefix && ret_bsize > 0)
++		ret_prefix[0] = '\0';
++
++	return NULL;
++}
+diff --git a/release/src/router/shared/sysdeps/broadcom/broadcom.c b/release/src/router/shared/sysdeps/broadcom/broadcom.c
+index bcd400f166f..4686051c8fc 100644
+--- a/release/src/router/shared/sysdeps/broadcom/broadcom.c
++++ b/release/src/router/shared/sysdeps/broadcom/broadcom.c
+@@ -1939,8 +1939,8 @@ get_uplinkports_linkrate(char *ifname)
+ 		regv = hnd_ethswctl(REGACCESS, 0x0100, 2, 0, 0);
+ 		regv2 = hnd_ethswctl(REGACCESS, 0x0104, 4, 0, 0);
+ 		break;
+-        case MODEL_GT10:
+-                if (!nvram_get_int("wans_extwan")) {
++	        case MODEL_GT10:
++	                if (!nvram_get_int("wans_extwan")) {
+                 /* 0 1 2 3 W0 L1 L2 L3 */
+                 ports[0]=0; ports[1]=1; ports[2]=2; ports[3]=3;
+                 sprintf(pif[0], "%s", "eth0");
+@@ -1954,9 +1954,10 @@ get_uplinkports_linkrate(char *ifname)
+                 sprintf(pif[1], "%s", "eth0");
+                 sprintf(pif[2], "%s", "eth2");
+                 sprintf(pif[3], "%s", "eth3");
+-                }
+-                break;
++	                }
++	                break;
+ 	default:
++		break;
+ 	}
+ 
+ 	memset(out_buf, 0, 64);
+diff --git a/release/src/router/uqmi/Makefile b/release/src/router/uqmi/Makefile
+index 1db2f04cc57..c572b89619b 100644
+--- a/release/src/router/uqmi/Makefile
++++ b/release/src/router/uqmi/Makefile
+@@ -3,7 +3,7 @@ SBINDIR  = $(PREFIX)/sbin
+ DESTDIR  = 
+ CFLAGS   = -Os -ggdb -Wall -Werror --std=gnu99 -Wmissing-declarations $(EXTRACFLAGS) # -Wno-enum-conversion 
+ CFLAGS  += -ffunction-sections -fdata-sections
+-CFLAGS  += -D$(ASUSWRT_BRCM_SDK_VERSION)
++CFLAGS  += $(if $(ASUSWRT_BRCM_SDK_VERSION),-D$(ASUSWRT_BRCM_SDK_VERSION),)
+ LDFLAGS  = $(EXTRALDFLAGS)
+ LDFLAGS += -Wl,--gc-sections
+ 
+@@ -15,7 +15,7 @@ ifneq ($(DEBUG),)
+ CFLAGS += -DDEBUG -g3
+ endif
+ 
+-CFLAGS += -I$(LIBUBOX)
++CFLAGS += -I$(LIBUBOX) -I$(dir $(LIBUBOX))
+ LIBS += -L$(LIBUBOX) -lubox -lblobmsg_json
+ ifneq ($(JSON),)
+ CFLAGS += -I$(JSON)
