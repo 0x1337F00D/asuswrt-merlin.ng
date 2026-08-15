@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - codex/gt-ax11000-ci
     paths:
       - .github/ci/gt-ax11000/**
       - .github/workflows/build-gt-ax11000.yml
@@ -120,7 +119,7 @@ jobs:
             echo "ci_sha=${GITHUB_SHA}"
             echo "runner_image=${ImageOS:-unknown}"
           } > output/BUILD-METADATA.txt
-          sha256sum output/GT-AX11000*.w | tee output/SHA256SUMS
+          (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)
           find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n
 
       - name: Collect failure log
