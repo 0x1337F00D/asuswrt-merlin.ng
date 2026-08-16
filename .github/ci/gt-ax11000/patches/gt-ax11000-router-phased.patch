@@ -17,6 +17,22 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  else ifeq ($(RTCONFIG_ARM),y)
  all: clean-build kernel_header libc version obj_prelibs kernel $(obj-postlibs)
  else
+@@ -3524,2 +3531,2 @@
+-conntrack/Makefile:
++conntrack/Makefile: libnfnetlink-$(NETLINK_LIB_VER) libmnl-1.0.4 libnetfilter_conntrack-1.0.7 libnetfilter_cttimeout-1.0.0
+ 	(cd conntrack && autoreconf -i -f)
+@@ -3606,2 +3613,2 @@
+-libnetfilter_conntrack-1.0.7/Makefile:
++libnetfilter_conntrack-1.0.7/Makefile: libnfnetlink-$(NETLINK_LIB_VER) libmnl-1.0.4
+ 	(cd libnetfilter_conntrack-1.0.7 && autoreconf -i -f)
+@@ -3634,2 +3641,2 @@
+-libnetfilter_cttimeout-1.0.0/Makefile:
++libnetfilter_cttimeout-1.0.0/Makefile: libmnl-1.0.4
+ 	(cd libnetfilter_cttimeout-1.0.0 && autoreconf -i -f)
+@@ -3660,2 +3667,2 @@
+-ipset-7.6/Makefile: ipset-7.6/configure
++ipset-7.6/Makefile: ipset-7.6/configure libmnl-1.0.4
+ 	cd ipset-7.6 && \
 @@ -8078,7 +8085,7 @@
  
  strongswan: openssl strongswan/Makefile
