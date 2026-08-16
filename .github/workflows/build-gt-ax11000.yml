@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - codex/gt-ax11000-router-j2
     paths:
       - .github/ci/gt-ax11000/**
       - .github/workflows/build-gt-ax11000.yml
@@ -93,7 +92,7 @@ jobs:
 
       - name: Apply local CI overlay
         env:
-          ASUSWRT_ROUTER_PHASED_BUILD: "1"
+          ASUSWRT_ROUTER_PHASED_BUILD: ${{ github.ref_name == 'codex/gt-ax11000-router-j2' && '1' || '0' }}
         run: |
           set -euxo pipefail
           patches=(
@@ -128,7 +127,7 @@ jobs:
           ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
           ASUSWRT_MAKE_JOBS: "1"
           ASUSWRT_PREPARE_JOBS: "4"
-          ASUSWRT_ROUTER_PHASED_BUILD: "1"
+          ASUSWRT_ROUTER_PHASED_BUILD: ${{ github.ref_name == 'codex/gt-ax11000-router-j2' && '1' || '0' }}
           ASUSWRT_ROUTER_PACKAGE_JOBS: "2"
           ASUSWRT_OUTPUT_DIR: ${{ github.workspace }}/output
           ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
@@ -161,7 +160,7 @@ jobs:
             echo "runner_image=${ImageOS:-unknown}"
             echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
             echo "prepare_jobs=4"
-            echo "router_phased_build=1"
+            echo "router_phased_build=${{ github.ref_name == 'codex/gt-ax11000-router-j2' && '1' || '0' }}"
             echo "router_package_jobs=2"
           } > output/BUILD-METADATA.txt
           (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)

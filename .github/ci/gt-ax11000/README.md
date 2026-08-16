@@ -21,3 +21,9 @@ The experimental phased router build is opt-in through
 limit from `ASUSWRT_ROUTER_PACKAGE_JOBS`. The package phase clears
 `PARALLEL_BUILD`, so recursive package builds share its GNU make jobserver.
 Keep the top-level `ASUSWRT_MAKE_JOBS` at `1`; start package testing at `2`.
+
+This mode is not enabled on `main`. Run it manually with `workflow_dispatch`
+from the `codex/gt-ax11000-router-j2` branch. Three hosted test builds exposed
+undeclared ordering dependencies in curl/OpenSSL, Netfilter libraries, and
+libdisk/shared/nvram. Treat the branch as a dependency-audit experiment, not as
+a release build, until repeated clean builds and firmware comparisons pass.
