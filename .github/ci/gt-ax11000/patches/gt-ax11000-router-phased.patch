@@ -26,6 +26,15 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  ifneq (,$(filter $(ASUSWRT_BRCM_SDK_VERSION),WIFI7_SDK_20250506 WIFI8_SDK_20251126))
  	@-patchelf --force-rpath --set-rpath /usr/lib/ipsec strongswan/src/libipsec/.libs/libipsec.so
  	@-sed -i '/relink_command/d' strongswan/src/libipsec/libipsec.la
+@@ -8114,5 +8121,5 @@
+ sw-hw-auth:
+-	cd sw-hw-auth && \
+-	CC=$(CC) AR=$(AR) RANLIB=$(RANLIB) LD=$(LD) CFLAGS="-Os -Wall $(EXTRACFLAGS)" \
+-	make all
++	+$(MAKE) -C sw-hw-auth \
++		CC="$(CC)" AR="$(AR)" RANLIB="$(RANLIB)" LD="$(LD)" \
++		CFLAGS="-Os -Wall $(EXTRACFLAGS)" all
+ 
 @@ -8204,7 +8211,7 @@
  
  libssh2: libgcrypt-1.5.1 zlib libssh2/Makefile
@@ -35,6 +44,10 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  
  libssh2-install:
  	@$(SEP)
+@@ -8224,2 +8231,2 @@
+-curl/Makefile: curl/configure
++curl/Makefile: curl/configure $(if $(RTCONFIG_OPENSSL11)$(RTCONFIG_OPENSSL10),openssl,) $(if $(RTCONFIG_TR069),libssh2,) $(if $(RTCONFIG_MBEDTLS),mbedtls,) $(if $(RTCONFIG_WOLFSSL),wolfssl,)
+ 	@cd curl && $(CONFIGURE) CC=$(CC) \
 @@ -8592,7 +8599,7 @@
  
  avahi: expat-2.0.1 libdaemon avahi/Makefile

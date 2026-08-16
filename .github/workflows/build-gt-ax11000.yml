@@ -159,10 +159,10 @@ jobs:
             echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)"
             echo "ci_sha=${GITHUB_SHA}"
             echo "runner_image=${ImageOS:-unknown}"
-          echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
-          echo "prepare_jobs=4"
-          echo "router_phased_build=1"
-          echo "router_package_jobs=2"
+            echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
+            echo "prepare_jobs=4"
+            echo "router_phased_build=1"
+            echo "router_package_jobs=2"
           } > output/BUILD-METADATA.txt
           (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)
           find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n
@@ -175,6 +175,10 @@ jobs:
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             "$GITHUB_SHA" > output/CI-FAILURE.txt
           cp -f source/release/src-rt-5.02axhnd/output-gt-ax11000-wsl.log output/ 2>/dev/null || true
+          mapfile -d '' config_logs < <(find source/release/src/router -type f -name config.log -print0)
+          if [ "${#config_logs[@]}" -gt 0 ]; then
+            tar -czf output/router-config-logs.tar.gz "${config_logs[@]}"
+          fi
 
       - name: Upload firmware and log
         if: always()
