@@ -1,6 +1,6 @@
 --- a/release/src/router/httpd/web.c
 +++ b/release/src/router/httpd/web.c
-@@ -28005,6 +28005,323 @@
+@@ -28005,6 +28005,325 @@
  	}
  }
  
@@ -108,14 +108,16 @@
 +testlab_set_runtime_chanspec(int unit, const char *chanspec)
 +{
 +	char ifname[16] = {0};
++	char chanspec_arg[17] = {0};
 +	int ret;
 +
 +	if (!testlab_radio_ifname(unit, ifname, sizeof(ifname)) ||
 +	    !testlab_valid_chanspec(chanspec))
 +		return 0;
 +
++	strlcpy(chanspec_arg, chanspec, sizeof(chanspec_arg));
 +	eval("wl", "-i", ifname, "down");
-+	ret = eval("wl", "-i", ifname, "chanspec", chanspec);
++	ret = eval("wl", "-i", ifname, "chanspec", chanspec_arg);
 +	eval("wl", "-i", ifname, "up");
 +
 +	return ret == 0;
@@ -324,7 +326,7 @@
  static void
  do_set_wl_band_cgi(char *url, FILE *stream) {
  
-@@ -28985,6 +29302,7 @@
+@@ -28985,6 +29304,7 @@
  	{ "set_ark_migration_done.cgi*", "text/html", no_cache, do_html_post_and_get, do_set_ark_migration_done_cgi, do_auth },
  #endif
  	{ "set_wl_band.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_set_wl_band_cgi, do_auth },
