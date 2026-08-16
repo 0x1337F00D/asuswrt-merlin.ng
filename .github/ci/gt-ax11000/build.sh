@@ -59,6 +59,7 @@ FAKEBIN="${ASUSWRT_FAKEBIN:-/tmp/asuswrt-fakebin}"
 PATCH_FILES=(
 	"$SCRIPT_ROOT/patches/local-features.patch"
 	"$SCRIPT_ROOT/patches/${MAKE_TARGET}-wsl.patch"
+	"$SCRIPT_ROOT/patches/advanced-testlab-ui.patch"
 )
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
 PREPARE_JOBS="${ASUSWRT_PREPARE_JOBS:-4}"

@@ -95,7 +95,8 @@ jobs:
           set -euxo pipefail
           for patch in \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/local-features.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-wsl.patch"
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-wsl.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/advanced-testlab-ui.patch"
           do
             git -C source apply --check "$patch"
             git -C source apply "$patch"
