@@ -5,6 +5,7 @@ SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_REPO="${ASUSWRT_SOURCE_REPO:-$SCRIPT_ROOT/../asuswrt-merlin.ng}"
 ROOT="${ASUSWRT_SOURCE_ROOT:-$SOURCE_REPO}"
 DEVICE="${1:-}"
+RUST_OVERLAY="$SCRIPT_ROOT/rust"
 
 usage() {
 	cat <<EOF
@@ -19,12 +20,14 @@ Environment overrides:
   ASUSWRT_BUILD_MODE=clean|fast               default: clean
   ASUSWRT_FORCE_PROFILE=0|1                    default: 1 in fast mode, otherwise 0
   ASUSWRT_HOSTTOOLS=/tmp/path                 default: /tmp/asuswrt-hosttools
-  ASUSWRT_MAKE_JOBS=N                         default: 1
+  ASUSWRT_MAKE_JOBS=1                         safety-enforced top-level orchestration
+  ROUTER_PACKAGE_JOBS=1                       safe package graph; >1 is experimental
   ASUSWRT_PREPARE_JOBS=N                      parallel Autotools preparation, default: 4
   ASUSWRT_CCACHE=0|1                          cache HND cross-compiler output, default: 0
   ASUSWRT_CCACHE_DIR=/path                    default: /tmp/asuswrt-ccache
   ASUSWRT_CCACHE_MAXSIZE=size                 default: 2G
   ASUSWRT_DIRECT_TOOLCHAIN=0|1                use /opt symlink instead of unshare (CI)
+  ASUSWRT_REQUIRE_TMPFS=0|1                   reject non-tmpfs build paths, default: 0
   ASUSWRT_WORKTREE_BASE=/path/to/worktrees    default: this directory
   ASUSWRT_OUTPUT_DIR=/path/to/output          default: ./output/<device>
 EOF
@@ -59,8 +62,13 @@ FAKEBIN="${ASUSWRT_FAKEBIN:-/tmp/asuswrt-fakebin}"
 PATCH_FILES=(
 	"$SCRIPT_ROOT/patches/local-features.patch"
 	"$SCRIPT_ROOT/patches/${MAKE_TARGET}-wsl.patch"
+	"$SCRIPT_ROOT/patches/fast-parallel-build.patch"
+	"$SCRIPT_ROOT/patches/rust-components.patch"
+	"$SCRIPT_ROOT/patches/security-hardening.patch"
+	"$SCRIPT_ROOT/patches/wps-shell-hardening.patch"
 )
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
+ROUTER_PACKAGE_JOBS="${ROUTER_PACKAGE_JOBS:-1}"
 PREPARE_JOBS="${ASUSWRT_PREPARE_JOBS:-4}"
 CCACHE_ENABLED="${ASUSWRT_CCACHE:-0}"
 CCACHE_DIR="${ASUSWRT_CCACHE_DIR:-/tmp/asuswrt-ccache}"
@@ -69,6 +77,7 @@ TOOLCHAIN_VIEW="${ASUSWRT_TOOLCHAIN_VIEW:-/tmp/asuswrt-toolchain-view/$TOOLCHAIN
 TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_SRC"
 CCACHE_PATH_VALUE=""
 DIRECT_TOOLCHAIN="${ASUSWRT_DIRECT_TOOLCHAIN:-0}"
+REQUIRE_TMPFS="${ASUSWRT_REQUIRE_TMPFS:-0}"
 BUILD_MODE="${ASUSWRT_BUILD_MODE:-clean}"
 BUILD_MODE="${BUILD_MODE,,}"
 FORCE_PROFILE="${ASUSWRT_FORCE_PROFILE:-}"
@@ -83,6 +92,52 @@ require_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
 		echo "Missing required command: $1" >&2
 		exit 1
+	fi
+}
+
+path_fstype() {
+	local candidate="$1"
+
+	while [ ! -e "$candidate" ]; do
+		if [ "$candidate" = "/" ]; then
+			break
+		fi
+		candidate="$(dirname "$candidate")"
+	done
+	findmnt -n -o FSTYPE -T "$candidate"
+}
+
+require_tmpfs_path() {
+	local label="$1"
+	local path="$2"
+	local fstype
+
+	fstype="$(path_fstype "$path")"
+	if [ "$fstype" != "tmpfs" ]; then
+		echo "RAM-only build requires $label on tmpfs: $path (found $fstype)" >&2
+		exit 1
+	fi
+	printf 'RAM-only check: %-20s tmpfs (%s)\n' "$label" "$path"
+}
+
+verify_ram_only_paths() {
+	require_cmd findmnt
+	require_tmpfs_path "source repository" "$SOURCE_REPO"
+	require_tmpfs_path "source root" "$ROOT"
+	require_tmpfs_path "build worktree" "$WORKTREE_DIR"
+	require_tmpfs_path "firmware output" "$OUTPUT_DIR"
+	require_tmpfs_path "temporary files" "${TMPDIR:-/tmp}"
+	require_tmpfs_path "build home" "$HOME"
+	require_tmpfs_path "Cargo home" "${CARGO_HOME:-$HOME/.cargo}"
+	require_tmpfs_path "host tools" "$HOSTTOOLS"
+	require_tmpfs_path "APT cache" "$APT_CACHE"
+	require_tmpfs_path "generated helper bin" "$FAKEBIN"
+	if [ -n "${RUST_TARGET_DIR:-}" ]; then
+		require_tmpfs_path "Rust target" "$RUST_TARGET_DIR"
+	fi
+	if [ "$CCACHE_ENABLED" = "1" ]; then
+		require_tmpfs_path "ccache" "$CCACHE_DIR"
+		require_tmpfs_path "ccache toolchain view" "$TOOLCHAIN_VIEW"
 	fi
 }
 
@@ -159,8 +214,21 @@ prepare_ccache_toolchain_view() {
 compute_source_state_id() {
 	{
 		git -C "$SOURCE_REPO" rev-parse HEAD
-		sha256sum "${PATCH_FILES[@]}"
+		sha256sum "$SCRIPT_ROOT/build.sh" "${PATCH_FILES[@]}"
+		find "$RUST_OVERLAY" -type f -not -path '*/target/*' -print0 \
+			| sort -z | xargs -0 sha256sum
 	} | sha256sum | awk '{print $1}'
+}
+
+install_rust_components() {
+	local destination="$ROOT/release/src/router/rust-components"
+
+	if [ ! -f "$RUST_OVERLAY/Cargo.lock" ]; then
+		echo "Rust overlay not found: $RUST_OVERLAY" >&2
+		exit 1
+	fi
+	mkdir -p "$destination"
+	rsync --archive --delete --exclude target/ "$RUST_OVERLAY/" "$destination/"
 }
 
 prepare_source_worktree() {
@@ -218,7 +286,7 @@ prepare_source_worktree() {
 
 	for patch_file in "${PATCH_FILES[@]}"; do
 		echo "Applying local overlay: $(basename "$patch_file")"
-		git -C "$WORKTREE_DIR" apply --3way "$patch_file"
+		git -C "$WORKTREE_DIR" apply --recount --3way "$patch_file"
 	done
 }
 
@@ -399,7 +467,7 @@ prepare_gt_ax11000_tree() {
 	fi
 }
 
-for cmd in apt-get dpkg-deb make sha256sum; do
+for cmd in apt-get cargo dpkg-deb make rsync rustc sha256sum; do
 	require_cmd "$cmd"
 done
 
@@ -429,6 +497,16 @@ esac
 
 if ! [[ "$MAKE_JOBS" =~ ^[0-9]+$ ]] || [ "$MAKE_JOBS" -lt 1 ]; then
 	echo "ASUSWRT_MAKE_JOBS must be a positive integer" >&2
+	exit 2
+fi
+
+if [ "$MAKE_JOBS" -ne 1 ]; then
+	echo "ASUSWRT_MAKE_JOBS must remain 1: the vendor top-level graph has destructive unordered prerequisites" >&2
+	exit 2
+fi
+
+if ! [[ "$ROUTER_PACKAGE_JOBS" =~ ^[0-9]+$ ]] || [ "$ROUTER_PACKAGE_JOBS" -ne 1 ]; then
+	echo "ROUTER_PACKAGE_JOBS must remain 1 until repeated clean builds prove the vendor package graph race-free" >&2
 	exit 2
 fi
 
@@ -463,6 +541,19 @@ case "$FORCE_PROFILE" in
 		;;
 esac
 
+case "$REQUIRE_TMPFS" in
+	0|1)
+		;;
+	*)
+		echo "ASUSWRT_REQUIRE_TMPFS must be 0 or 1" >&2
+		exit 2
+		;;
+esac
+
+if [ "$REQUIRE_TMPFS" = "1" ]; then
+	verify_ram_only_paths
+fi
+
 if [ -z "${ASUSWRT_BUILD_WORKTREE:-}" ]; then
 	if [ "$BUILD_MODE" = "fast" ]; then
 		echo "Preparing fast reusable source worktree in $WORKTREE_DIR"
@@ -491,6 +582,9 @@ if [ ! -d "$TOOLCHAIN_SRC" ]; then
 	echo "Set AM_TOOLCHAINS if your Asuswrt-Merlin toolchains live elsewhere." >&2
 	exit 1
 fi
+
+echo "Installing Rust component overlay"
+install_rust_components
 
 if [ "$BUILD_MODE" = "fast" ]; then
 	echo "Skipping full source timestamp normalization in fast mode"
@@ -555,10 +649,17 @@ if [ "$DIRECT_TOOLCHAIN" = "1" ]; then
 fi
 
 export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC TOOLCHAIN_MOUNT_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
-export MAKE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
+export MAKE_JOBS ROUTER_PACKAGE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
 export DIRECT_TOOLCHAIN CCACHE_ENABLED CCACHE_DIR CCACHE_MAXSIZE CCACHE_PATH_VALUE
 
 echo "Building $BUILD_NAME via $SDK_PATH with $MAKE_JOBS jobs ($BUILD_MODE mode)"
+mkdir -p "$OUTPUT_DIR"
+find "$OUTPUT_DIR" -maxdepth 1 -type f \
+	\( -name "$IMAGE_GLOB" -o -name "output-${MAKE_TARGET}-wsl.log" \) -delete
+find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
+	-name "$IMAGE_GLOB" -delete 2>/dev/null || true
+build_started_marker="$(mktemp --tmpdir asuswrt-build-start.XXXXXX)"
+touch "$build_started_marker"
 set +e
 "${build_shell[@]}" <<'EOF'
 set -euo pipefail
@@ -624,28 +725,54 @@ if [ "$CCACHE_ENABLED" = "1" ]; then
 	export CCACHE_UMASK=002
 fi
 export LD_LIBRARY_PATH="/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/lib:/opt/toolchains/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/lib:${LD_LIBRARY_PATH:-}"
-export PATH="$FAKEBIN:$HOSTTOOLS/usr/bin:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2011.09/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2013.11/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="$HOME/.cargo/bin:$FAKEBIN:$HOSTTOOLS/usr/bin:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2011.09/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2013.11/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 cd "$ROOT/$SDK_PATH"
 make_args=()
 if [ "${FORCE_PROFILE:-0}" = "1" ]; then
 	make_args+=(FORCE=1)
 fi
-set +e
-make -j"$MAKE_JOBS" SHELL=/bin/bash "HOSTCFLAGS+=-fcommon" "${make_args[@]}" "$MAKE_TARGET" 2>&1 | tee "$LOG_FILE"
-make_rc=${PIPESTATUS[0]}
-if [ "$make_rc" -ne 0 ]; then
-	if /usr/bin/grep -F "Please run the same make command again" "$LOG_FILE" >/dev/null; then
-		echo "OpenSSL regenerated its makefiles; retrying the same build command once." | tee -a "$LOG_FILE"
+make_rc=1
+for attempt in 1 2; do
+	set +e
+	if [ "$attempt" -eq 1 ]; then
+		make -j"$MAKE_JOBS" SHELL=/bin/bash "HOSTCFLAGS+=-fcommon" "${make_args[@]}" "$MAKE_TARGET" 2>&1 | tee "$LOG_FILE"
+	else
 		make -j"$MAKE_JOBS" SHELL=/bin/bash "HOSTCFLAGS+=-fcommon" "${make_args[@]}" "$MAKE_TARGET" 2>&1 | tee -a "$LOG_FILE"
-		make_rc=${PIPESTATUS[0]}
 	fi
-fi
-set -e
+	make_rc=${PIPESTATUS[0]}
+	set -e
+	if [ "$make_rc" -eq 0 ]; then
+		break
+	fi
+	if [ "$attempt" -eq 1 ] && /usr/bin/grep -Fq "Please run the same make command again" "$LOG_FILE"; then
+		echo "OpenSSL regenerated its makefiles; retrying the same build command once." | tee -a "$LOG_FILE"
+		continue
+	fi
+	break
+done
 exit "$make_rc"
 EOF
 build_rc=$?
 set -e
+
+mapfile -d '' built_images < <(
+	find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
+		-name "$IMAGE_GLOB" -newer "$build_started_marker" -print0 2>/dev/null
+)
+
+if [ "$build_rc" -eq 0 ] && [ "${#built_images[@]}" -ne 1 ]; then
+	echo "Build produced ${#built_images[@]} fresh firmware images; expected exactly one" >&2
+	build_rc=1
+fi
+
+rt_tables_link="$SDK_DIR/targets/$PROFILE/fs/tmp/etc/iproute2/rt_tables"
+if [ "$build_rc" -eq 0 ] && { [ ! -L "$rt_tables_link" ] || [ "$(readlink "$rt_tables_link")" != "/var/iproute2/rt_tables" ]; }; then
+	echo "Required rootfs link is missing or incorrect: $rt_tables_link" >&2
+	build_rc=1
+fi
+
+rm -f -- "$build_started_marker"
 
 echo
 echo "Build outputs:"
@@ -657,12 +784,12 @@ find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f -name "$IM
 
 echo
 if [ "$build_rc" -eq 0 ]; then
-	mkdir -p "$OUTPUT_DIR"
-	find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f -name "$IMAGE_GLOB" -exec cp -f {} "$OUTPUT_DIR/" \; 2>/dev/null
+	cp -f -- "${built_images[0]}" "$OUTPUT_DIR/"
 	cp -f "$LOG_FILE" "$OUTPUT_DIR/" 2>/dev/null || true
 	echo "Copied outputs to: $OUTPUT_DIR"
 else
-	echo "Build failed; leaving copied outputs unchanged in: $OUTPUT_DIR"
+	cp -f "$LOG_FILE" "$OUTPUT_DIR/" 2>/dev/null || true
+	echo "Build failed; no firmware image was published to: $OUTPUT_DIR"
 fi
 
 echo

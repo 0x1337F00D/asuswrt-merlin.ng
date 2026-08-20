@@ -1,0 +1,16 @@
+[package]
+name = "infosvr"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-only"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "infosvr"
+path = "src/main.rs"
+
+[dependencies]

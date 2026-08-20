@@ -26,14 +26,16 @@ jobs:
 
     steps:
       - name: Checkout CI overlay
-        env:
-          OVERLAY_REF: ${{ github.ref_name }}
         run: |
           set -euxo pipefail
-          git clone --depth=1 --filter=blob:none --sparse \
-            --branch "$OVERLAY_REF" \
-            "https://github.com/${GITHUB_REPOSITORY}.git" overlay
+          git init overlay
+          git -C overlay remote add origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C overlay sparse-checkout init --cone
           git -C overlay sparse-checkout set .github/ci/gt-ax11000
+          git -C overlay fetch --depth=1 origin "$GITHUB_SHA"
+          git -C overlay checkout --detach FETCH_HEAD
+          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Checkout current upstream sources
         run: |
@@ -67,6 +69,8 @@ jobs:
           overlay_sha="$({
             sha256sum overlay/.github/ci/gt-ax11000/build.sh
             sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
+            find overlay/.github/ci/gt-ax11000/rust -type f -not -path '*/target/*' \
+              -print0 | sort -z | xargs -0 sha256sum
           } | sha256sum | cut -d' ' -f1)"
           echo "overlay_sha=$overlay_sha" >> "$GITHUB_OUTPUT"
 
@@ -79,6 +83,34 @@ jobs:
             liblzo2-dev liblzma-dev libncurses-dev libssl-dev libzstd-dev \
             libtext-unidecode-perl libtool-bin pkg-config rsync texinfo unzip \
             uuid-dev xxd zlib1g-dev
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.85.1 --profile minimal \
+            --component clippy,rustfmt --target arm-unknown-linux-gnueabi
+          rustc +1.85.1 --version --verbose
+
+      - name: Restore Rust build cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/asuswrt-rust-target
+          key: gt-ax11000-rust-v2-${{ runner.os }}-rust-1.85.1-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.revisions.outputs.overlay_sha }}
+
+      - name: Test Rust components
+        run: |
+          set -euo pipefail
+          cargo +1.85.1 fmt \
+            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
+            --all -- --check
+          cargo +1.85.1 test \
+            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
+            --workspace --locked
+          cargo +1.85.1 clippy \
+            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
+            --workspace --all-targets --locked -- -D warnings
+          RUSTFLAGS="-Dwarnings" cargo +1.85.1 check \
+            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
+            --workspace --locked --target arm-unknown-linux-gnueabi
 
       - name: Restore compiler cache
         id: ccache
@@ -95,10 +127,14 @@ jobs:
           set -euxo pipefail
           for patch in \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/local-features.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-wsl.patch"
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-wsl.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/fast-parallel-build.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/rust-components.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/security-hardening.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wps-shell-hardening.patch"
           do
-            git -C source apply --check "$patch"
-            git -C source apply "$patch"
+            git -C source apply --recount --check "$patch"
+            git -C source apply --recount "$patch"
           done
           git -C source status --short
 
@@ -125,6 +161,8 @@ jobs:
           ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
           ASUSWRT_TOOLCHAIN_VIEW: ${{ runner.temp }}/asuswrt-toolchain-view/brcm-arm-hnd
+          ROUTER_PACKAGE_JOBS: "1"
+          RUST_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
         run: |
           set -euo pipefail
           bash overlay/.github/ci/gt-ax11000/build.sh gt-ax11000 &
@@ -152,6 +190,7 @@ jobs:
             echo "runner_image=${ImageOS:-unknown}"
             echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
             echo "prepare_jobs=4"
+            echo "rust_toolchain=1.85.1"
           } > output/BUILD-METADATA.txt
           (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)
           find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n

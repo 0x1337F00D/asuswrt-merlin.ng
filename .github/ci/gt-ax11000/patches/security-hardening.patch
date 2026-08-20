@@ -1,0 +1,1503 @@
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile
+index d4e0baa0a12..2ea9102a73e 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile
+@@ -22,10 +22,12 @@ endif
+ endif
+ 
+ CFLAGS += $(EXTRA_CFLAGS)
++CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -Wformat -Wformat-security
+ CFLAGS += -I$(abspath ../src)
+ CFLAGS += -I$(abspath ../src/utils)
+ LDFLAGS += -L$(TOP)/openssl -lcrypto -lm -lssl -lpthread -L$(TOP)/libnl/lib/.libs
+ LDFLAGS += -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared -L$(TOP_PLATFORM)/wlcsm -lwlcsm
++LDFLAGS += -pie -Wl,-z,relro,-z,now
+ 
+ export BINDIR ?= /usr/local/bin/
+ 
+diff --git a/release/src-rt-5.02axhnd/targets/buildFS b/release/src-rt-5.02axhnd/targets/buildFS
+index 86b5999f3f9..8209924a69d 100755
+--- a/release/src-rt-5.02axhnd/targets/buildFS
++++ b/release/src-rt-5.02axhnd/targets/buildFS
+@@ -253,6 +253,7 @@ ln -s /var/dms.conf $ROOTFS/etc/dms.conf
+ ln -s /var/ipsec/ipsec.conf $ROOTFS/etc/ipsec.conf
+ ln -s /var/ipsec/racoon.conf $ROOTFS/etc/racoon.conf
+ ln -s /var/ipsec/psk.txt $ROOTFS/etc/psk.txt
++mkdir -p $ROOTFS/etc/iproute2
+ ln -s /var/iproute2/rt_tables $ROOTFS/etc/iproute2/rt_tables
+ #ln -s /var/tmp $ROOTFS/tmp
+ ln -s /var/samba $ROOTFS/etc/samba
+@@ -472,4 +473,3 @@ fi
+ # If a consumer release has created a filesystem tarball, fill in
+ # any missing proprietary binaries using that tarball
+ ( cd $TARGETS_DIR/$ROOTFS ; tar xzkf ../filesystem.tgz 2>/dev/null ; true )
+-
+diff --git a/release/src/router/aws-iot/src/awsiot_compat_stubs.c b/release/src/router/aws-iot/src/awsiot_compat_stubs.c
+index aa28840e568..e816ff0b1a6 100644
+--- a/release/src/router/aws-iot/src/awsiot_compat_stubs.c
++++ b/release/src/router/aws-iot/src/awsiot_compat_stubs.c
+@@ -1,7 +1,5 @@
+-#include <shared.h>
+-
+ int get_ASUS_privacy_policy_state(const int id)
+ {
+ 	(void)id;
+-	return nvram_get_int("ASUS_EULA");
++	return 0;
+ }
+diff --git a/release/src/router/httpd/httpd_compat_stubs.c b/release/src/router/httpd/httpd_compat_stubs.c
+index bc4e953779e..1bb1dcb959b 100644
+--- a/release/src/router/httpd/httpd_compat_stubs.c
++++ b/release/src/router/httpd/httpd_compat_stubs.c
+@@ -1,6 +1,7 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdint.h>
++#include <syslog.h>
+ 
+ #include <typedefs.h>
+ #include <json.h>
+@@ -11,6 +12,11 @@ extern int ej_wl_chanspecs_6g(int eid, webs_t wp, int argc, char_t **argv);
+ 
+ int nvram_modify_log(char *name, char *new, char *old, struct json_object *nvram_modify_obj)
+ {
++	(void)new;
++	(void)old;
++	(void)nvram_modify_obj;
++	if (name && *name)
++		syslog(LOG_NOTICE, "authenticated configuration change: %.128s", name);
+ 	return 0;
+ }
+ 
+@@ -20,7 +26,9 @@ void handle_nvram_modify_log(struct json_object *nvram_modify_obj)
+ 
+ int set_ASUS_NEW_EULA(char *ASUS_NEW_EULA, char *from_service)
+ {
+-	return 0;
++	(void)ASUS_NEW_EULA;
++	(void)from_service;
++	return -1;
+ }
+ 
+ void bwdpi_cgi_mon_to_json(char *type, char *start, char *end, FILE *stream)
+@@ -30,7 +38,8 @@ void bwdpi_cgi_mon_to_json(char *type, char *start, char *end, FILE *stream)
+ 
+ void bwdpi_cgi_mon_del_db(char *type, FILE *stream)
+ {
+-	websWrite(stream, "{\"statusCode\":\"0\"}");
++	(void)type;
++	websWrite(stream, "{\"statusCode\":\"-1\",\"supported\":false}");
+ }
+ 
+ int ej_wps_info_5g(int eid, webs_t wp, int argc, char_t **argv)
+@@ -50,27 +59,32 @@ int ej_wl_chanspecs_6g_2(int eid, webs_t wp, int argc, char_t **argv)
+ 
+ void do_set_ASUS_privacy_policy_cgi(char *url, FILE *stream)
+ {
+-	websWrite(stream, "{\"statusCode\":\"0\"}");
++	(void)url;
++	websWrite(stream, "{\"statusCode\":\"-1\",\"supported\":false}");
+ }
+ 
+ void do_get_ASUS_privacy_policy_cgi(char *url, FILE *stream)
+ {
+-	websWrite(stream, "{}");
++	(void)url;
++	websWrite(stream, "{\"supported\":false}");
+ }
+ 
+ void do_oauth_callback_cgi(char *url, FILE *stream)
+ {
+-	websWrite(stream, "{}");
++	(void)url;
++	websWrite(stream, "{\"statusCode\":\"-1\",\"supported\":false}");
+ }
+ 
+ void do_set_security_update_cgi(char *url, FILE *stream)
+ {
+-	websWrite(stream, "{\"statusCode\":\"0\"}");
++	(void)url;
++	websWrite(stream, "{\"statusCode\":\"-1\",\"supported\":false}");
+ }
+ 
+ void do_get_security_update_cgi(char *url, FILE *stream)
+ {
+-	websWrite(stream, "{}");
++	(void)url;
++	websWrite(stream, "{\"supported\":false}");
+ }
+ 
+ int webswrite(webs_t wp, const char *fmt, ...)
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index 521d80637f1..e0a7e808a37 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4263,6 +4263,24 @@ static int qos_bw_rulelist_all_disabled(void);
+ static void clear_residual_bw_qos_state(void);
+ #endif
+ 
++static int is_readonly_wireless_identity_key(const char *name)
++{
++	const char *suffix;
++
++	if (!name)
++		return 0;
++	if (!strcmp(name, "wl_ifnames") || !strcmp(name, "wl_ifname") ||
++	    !strcmp(name, "wl_hwaddr") || !strcmp(name, "wl_phytype") ||
++	    !strcmp(name, "wl_phytypes") || !strcmp(name, "wl_radioids"))
++		return 1;
++	if (name[0] != 'w' || name[1] != 'l' || !isdigit((unsigned char)name[2]))
++		return 0;
++	suffix = strchr(name + 2, '_');
++	return suffix && (!strcmp(suffix, "_ifname") || !strcmp(suffix, "_hwaddr") ||
++		!strcmp(suffix, "_phytype") || !strcmp(suffix, "_phytypes") ||
++		!strcmp(suffix, "_radioids"));
++}
++
+ int validate_apply(webs_t wp, json_object *root)
+ {
+ 	struct nvram_tuple *t;
+@@ -4311,6 +4329,10 @@ int validate_apply(webs_t wp, json_object *root)
+ 		snprintf(name, sizeof(name), t->name);
+ 
+ 		value = get_cgi_json(name, root);
++		if (value && is_readonly_wireless_identity_key(name)) {
++			dbg("reject read-only wireless identity key %s\n", name);
++			continue;
++		}
+ 
+ #ifdef RTCONFIG_DEMOUI
+ 		if(value != NULL && !strcmp(name, "preferred_lang")){
+@@ -4414,6 +4436,8 @@ int validate_apply(webs_t wp, json_object *root)
+ 			}
+ #endif
+ 			else if(!strncmp(name, "wl_", 3) && unit != -1) {
++				/* Hardware identity is discovered by the platform and is never
++				 * writable through authenticated apply requests. */
+ 				// convert wl_ to wl[unit], only when wl_unit is parsed
+ 				if(subunit==-1||subunit==0)
+ 					snprintf(prefix, sizeof(prefix), "wl%d_", unit);
+@@ -13540,25 +13564,28 @@ apply_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 	}
+ 	else if (!strcmp(action_mode, "wps_apply"))
+ 	{
++		char *wps_band_value;
++		char *wps_enable_value;
++		char *wps_pin_value;
+ #ifdef RTCONFIG_LANTIQ
+ 		wave_app_flag = wave_handle_app_flag(action_mode, wave_app_flag);
+ #endif
+-		action_para = get_cgi_json("wps_band",root);
+-		if(action_para && (safe_atoi(action_para) < 10))
+-			nvram_set("wps_band_x", action_para);
+-		else goto wps_finish;
+-
+-		action_para = get_cgi_json("wps_enable",root);
+-		if(action_para && (safe_atoi(action_para) <= 1)) {
+-			nvram_set("wps_enable", action_para);
+-			nvram_set("wps_enable_x", action_para);
+-		}
+-		else goto wps_finish;
+-
+-		action_para = get_cgi_json("wps_sta_pin",root);
+-		if(action_para && (strlen(action_para) == 8) && isValid_digit_string(action_para))
+-			nvram_set("wps_sta_pin", action_para);
+-		else goto wps_finish;
++		wps_band_value = get_cgi_json("wps_band",root);
++		wps_enable_value = get_cgi_json("wps_enable",root);
++		wps_pin_value = get_cgi_json("wps_sta_pin",root);
++		if (!wps_band_value || strlen(wps_band_value) != 1 ||
++		    wps_band_value[0] < '0' || wps_band_value[0] > '2' ||
++		    !wps_enable_value || strlen(wps_enable_value) != 1 ||
++		    (wps_enable_value[0] != '0' && wps_enable_value[0] != '1') ||
++		    !wps_pin_value || strlen(wps_pin_value) != 8 ||
++		    !isValid_digit_string(wps_pin_value))
++			goto wps_finish;
++
++		/* Apply only after the complete tuple passed validation. */
++		nvram_set("wps_band_x", wps_band_value);
++		nvram_set("wps_enable", wps_enable_value);
++		nvram_set("wps_enable_x", wps_enable_value);
++		nvram_set("wps_sta_pin", wps_pin_value);
+ #if defined(RTCONFIG_WPSMULTIBAND)
+ 		if ((action_para = get_cgi_json("wps_multiband",root)))
+ 			nvram_set("wps_multiband", action_para);
+@@ -17739,12 +17766,24 @@ enum {
+ 	IKEV2CERT_TIMEOUT
+ };
+ 
++static int ca_upload_filename_is_safe(const char *name)
++{
++	size_t len;
++
++	if (!name || !*name || name[0] == '-')
++		return 0;
++	len = strlen(name);
++	return len <= 63 && strcmp(name, ".") && strcmp(name, "..") &&
++		strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") == len;
++}
++
+ static void
+ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ {
+ 	//Check folder exist or not
+ 	if(!check_if_dir_exist(JFFS_CA_FILES))
+-		mkdir(JFFS_CA_FILES, 0755);	
++		mkdir(JFFS_CA_FILES, 0700);
++	chmod(JFFS_CA_FILES, 0700);
+ 
+ 	char upload_fifo[32];
+ 	int ret = EINVAL, ch;
+@@ -17773,7 +17812,7 @@ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ 					char *token = strtok(org_file_name, "\"");
+ 					if(token != NULL){
+ 						token = strtok(NULL, "\"");
+-						if(token != NULL)
++						if(token != NULL && ca_upload_filename_is_safe(token))
+ 							nvram_set("ca_manage_file_name_ca", token);
+ 					}
+ 				}
+@@ -17785,8 +17824,8 @@ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ 					char *token = strtok(org_file_name, "\"");
+ 					if(token != NULL){
+ 						token = strtok(NULL, "\"");
+-						if(token != NULL)
+-							nvram_set("ca_manage_file_name_ca", token);
++						if(token != NULL && ca_upload_filename_is_safe(token))
++							nvram_set("ca_manage_file_name_private_key", token);
+ 					}
+ 				}
+ 				break;
+@@ -17797,8 +17836,8 @@ do_caupload_post(char *url, FILE *stream, int len, char *boundary)
+ 					char *token = strtok(org_file_name, "\"");
+ 					if(token != NULL){
+ 						token = strtok(NULL, "\"");
+-						if(token != NULL)
+-							nvram_set("ca_manage_file_name_ca", token);
++						if(token != NULL && ca_upload_filename_is_safe(token))
++							nvram_set("ca_manage_file_name_p12", token);
+ 					}
+ 				}
+ 				break;
+diff --git a/release/src/router/libovpn/openvpn_options.c b/release/src/router/libovpn/openvpn_options.c
+index f603a742747..46e7f61ec40 100644
+--- a/release/src/router/libovpn/openvpn_options.c
++++ b/release/src/router/libovpn/openvpn_options.c
+@@ -396,6 +396,27 @@ add_custom(int unit, char *p[])
+ 	free(param);
+ }
+ 
++static int
++safe_imported_custom_option(const char *option)
++{
++	static const char *allowed[] = {
++		"auth-nocache", "cipher", "data-ciphers", "data-ciphers-fallback",
++		"dhcp-option", "explicit-exit-notify", "float", "fragment", "inactive",
++		"keepalive", "mssfix", "mute-replay-warnings", "ping", "ping-restart",
++		"pull-filter", "rcvbuf", "remote-cert-tls", "resolv-retry", "route",
++		"route-ipv6", "sndbuf", "tls-version-min", "tun-mtu"
++	};
++	size_t i;
++
++	if (!option)
++		return 0;
++	for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i) {
++		if (streq(option, allowed[i]))
++			return 1;
++	}
++	return 0;
++}
++
+ static int
+ add_option (char *p[], int line, int unit)
+ {
+@@ -651,9 +672,13 @@ add_option (char *p[], int line, int unit)
+ 		) {
+ 			;//ignore
+ 		}
+-		else {
++		else if (safe_imported_custom_option(p[0])) {
+ 			add_custom(unit, p);
+ 		}
++		else {
++			_dprintf("OpenVPN import ignored unsafe or unsupported directive on line %d: %s\n",
++				line, p[0] ? p[0] : "(null)");
++		}
+ 	}
+ 	return 0;
+ }
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index c2b14f526c9..fb42c0d1510 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -78,6 +78,8 @@
+ #define STOP_TIME  0
+ #define START_TIME 1
+ 
++static int firewall_apply_failed;
++
+ #ifdef RTCONFIG_IPV6
+ char wan6face[IFNAMSIZ + 1];
+ // RFC-4890, sec. 4.3.1
+@@ -8896,6 +8898,7 @@ int start_firewall(int wanunit, int lanunit)
+ 	}
+ 
+ 	lock = file_lock("firewall");
++	firewall_apply_failed = 0;
+ 
+ 	snprintf(prefix, sizeof(prefix), "wan%d_", wanunit);
+ 
+@@ -9097,6 +9100,10 @@ int start_firewall(int wanunit, int lanunit)
+ 	}
+ #endif
+ 
++	if (firewall_apply_failed) {
++		logmessage("firewall", "ruleset apply failed; IP forwarding remains disabled");
++		goto leave;
++	}
+ 	enable_ip_forward();
+ 
+ #ifdef RTCONFIG_MULTIWAN_IF
+@@ -9333,9 +9340,10 @@ add_mtwan:
+ leave:
+ 	file_unlock(lock);
+ 
+-	run_custom_script("firewall-start", 0, wan_if, NULL);
++	if (!firewall_apply_failed)
++		run_custom_script("firewall-start", 0, wan_if, NULL);
+ 
+-	return 0;
++	return firewall_apply_failed ? -1 : 0;
+ }
+ 
+ void enable_ip_forward(void)
+@@ -9372,10 +9380,16 @@ void enable_ip_forward(void)
+ void rule_apply_checking(char *caller, int line, char *rule_path, int ret) {
+ 	if (ret) {
+ 		char dst_file[64];
++		firewall_apply_failed = 1;
++		f_write_string("/proc/sys/net/ipv4/ip_forward", "0", 0, 0);
++#ifdef RTCONFIG_IPV6
++		f_write_string("/proc/sys/net/ipv6/conf/all/forwarding", "0", 0, 0);
++#endif
+ 		logmessage(caller, "apply rules error(%d)", line);
+ 		if (!check_if_dir_exist(ERR_RULES_PATH))
+-			mkdir(ERR_RULES_PATH, 0777);
++			mkdir(ERR_RULES_PATH, 0700);
+ 		snprintf(dst_file, sizeof(dst_file), "%s/%s_%u", ERR_RULES_PATH, basename(rule_path), (unsigned int)time(NULL));
+ 		eval("cp", rule_path, dst_file);
++		chmod(dst_file, 0600);
+ 	}
+ }
+diff --git a/release/src/router/rc/rc.c b/release/src/router/rc/rc.c
+index 69a66359be7..b554725724c 100644
+--- a/release/src/router/rc/rc.c
++++ b/release/src/router/rc/rc.c
+@@ -5789,12 +5789,6 @@ _dprintf("LED_NOMOBILE=%d, LED_2G_YELLOW=%d, LED_3G_BLUE=%d, LED_4G_WHITE=%d.\n"
+ }
+ 
+ void exe_eu_wa_rr(void){
+-	char cmd_cc_tmp[64];
+-	char cmd_cc_ori[64];
+-	char cmd_up[64];
+-	char cmd2[64];
+-	char cmd3[64];
+-	char cmd_down[64];
+ 	char ccode[64];
+ 
+ 	char prefix[16];
+@@ -5847,37 +5841,22 @@ void exe_eu_wa_rr(void){
+ 	}
+ 
+ 
+-	snprintf(cmd_down,sizeof(cmd_up),"wl -i %s down",ifname);
+-	snprintf(cmd2,sizeof(cmd2),"wl -i %s spect 0",ifname);
+-	snprintf(cmd3,sizeof(cmd3),"wl -i %s radar 0",ifname);
+-	snprintf(cmd_up,sizeof(cmd_down),"wl -i %s up",ifname);
+-	snprintf(cmd_cc_tmp,sizeof(cmd_cc_tmp),"wl -i %s country %s",ifname,tmp_country_cdoe);
+-	snprintf(cmd_cc_ori,sizeof(cmd_cc_ori),"wl -i %s country %s",ifname,nvram_safe_get(ccode));
+-
+-	safe_do_system(cmd_down);
+-	//_dprintf("%s\n",cmd_down);
++	eval("wl", "-i", ifname, "down");
+ 	sleep(1);
+-	safe_do_system(cmd_cc_tmp);
+-	//_dprintf("%s\n",cmd_cc_tmp);
++	eval("wl", "-i", ifname, "country", tmp_country_cdoe);
+ 	sleep(1);
+-	safe_do_system(cmd_up);
+-	//_dprintf("%s\n",cmd_up);
++	eval("wl", "-i", ifname, "up");
+ 	sleep(1);
+ 
+-	//_dprintf("%s\n",cmd_down);
+-	safe_do_system(cmd_down);
++	eval("wl", "-i", ifname, "down");
+ 	sleep(1);
+-	//_dprintf("%s\n",cmd2);
+-	safe_do_system(cmd2);
++	eval("wl", "-i", ifname, "spect", "0");
+ 	sleep(1);
+-	//_dprintf("%s\n",cmd3);
+-	safe_do_system(cmd3);
++	eval("wl", "-i", ifname, "radar", "0");
+ 	sleep(1);
+-	//_dprintf("%s\n",cmd_cc_ori);
+-	safe_do_system(cmd_cc_ori);
++	eval("wl", "-i", ifname, "country", nvram_safe_get(ccode));
+ 	sleep(1);	
+-	//_dprintf("%s\n",cmd_up);
+-	safe_do_system(cmd_up);
++	eval("wl", "-i", ifname, "up");
+ 	sleep(1);
+ 	//_dprintf("%s\n",);
+ 	notify_rc("restart_acsd");
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+index 4b8e6eaa708..cd4607583e0 100644
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -47,6 +47,10 @@
+ #endif
+ #include <sys/resource.h>
+ #include <errno.h>
++
++extern int rust_validate_ipsec_identity(const char *value);
++extern int rust_validate_ipsec_filename(const char *value);
++extern int rust_update_wireguard_endpoint(const char *path, const char *address);
+ #if defined(RTCONFIG_RALINK)
+ #include <ralink.h>
+ #endif
+diff --git a/release/src/router/rc/rc_compat_stubs.c b/release/src/router/rc/rc_compat_stubs.c
+index f46a49a75ca..12f07b7636b 100644
+--- a/release/src/router/rc/rc_compat_stubs.c
++++ b/release/src/router/rc/rc_compat_stubs.c
+@@ -1,5 +1,6 @@
+ #include "rc.h"
+ 
++#include <errno.h>
+ #include <stdarg.h>
+ #include <stddef.h>
+ #include <stdio.h>
+@@ -7,6 +8,8 @@
+ 
+ typedef struct json_object json_object;
+ 
++extern int rust_validate_apply_input_value(const char *candidate, const char *key);
++
+ int chk_acscli2_cmds(char *cmd)
+ {
+ 	return 0;
+@@ -59,7 +62,7 @@ void memleakdbg(void)
+ 
+ int validate_apply_input_value(char *name, char *value)
+ {
+-	return 1;
++	return rust_validate_apply_input_value(name, value);
+ }
+ 
+ void wl_set_nbr_info(void)
+@@ -78,7 +81,8 @@ int noasusddns(void)
+ 
+ int detect_vul_scan(void)
+ {
+-	return 0;
++	errno = ENOTSUP;
++	return -1;
+ }
+ 
+ void check_wlx_nband_type(void)
+@@ -87,7 +91,10 @@ void check_wlx_nband_type(void)
+ 
+ int firmware_webs_update_main(int argc, char *argv[])
+ {
+-	return 0;
++	(void)argc;
++	(void)argv;
++	errno = ENOTSUP;
++	return -1;
+ }
+ 
+ int ledg_main(int argc, char *argv[])
+@@ -100,21 +107,9 @@ int ledg_main(int argc, char *argv[])
+ 
+ int safe_do_system(const char *fmt, ...)
+ {
+-	char cmd[4096];
+-	va_list ap;
+-	int ret;
+-
+-	if (!fmt || !*fmt)
+-		return 0;
+-
+-	va_start(ap, fmt);
+-	ret = vsnprintf(cmd, sizeof(cmd), fmt, ap);
+-	va_end(ap);
+-
+-	if (ret < 0 || (size_t)ret >= sizeof(cmd))
+-		return -1;
+-
+-	return system(cmd);
++	(void)fmt;
++	errno = ENOTSUP;
++	return -1;
+ }
+ 
+ void init_asus_pp_eula(void)
+diff --git a/release/src/router/rc/rc_ipsec.c b/release/src/router/rc/rc_ipsec.c
+index 257ffd7d739..2da195fc85a 100644
+--- a/release/src/router/rc/rc_ipsec.c
++++ b/release/src/router/rc/rc_ipsec.c
+@@ -912,7 +912,7 @@ int rc_ipsec_ca_gen()
+     if(NULL != fp){
+         fclose(fp);
+     }
+-	chmod(FILE_PATH_CA_GEN_SH, 0777);
++	chmod(FILE_PATH_CA_GEN_SH, 0700);
+     return file_idx;
+ }
+ 
+@@ -952,71 +952,71 @@ void rc_ipsec_ca_import(uint32_t ca_type, FILE *fp)
+ void rc_ipsec_cert_import(char *asus_cert, char *ipsec_cli_cert,
+                           char *ipsec_cli_key, char *pks12)
+ {
+-    char *p_file = NULL;
+-    char cmd[SZ_BUF], tmp[SZ_MIN];
+-    if(NULL != asus_cert){
+-        memset(cmd, 0, sizeof(char) * SZ_BUF);
+-        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/cacerts/", asus_cert);
+-        system(cmd);
+-    }
+-    if(NULL != ipsec_cli_cert){
+-        memset(cmd, 0, sizeof(char) * SZ_BUF);
+-        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/certs/", ipsec_cli_cert);
+-        system(cmd);
+-    }
+-    if(NULL != ipsec_cli_key){
+-        memset(cmd, 0, sizeof(char) * SZ_BUF);
+-        sprintf(&cmd[0], "cp -r %s /tmp/etc/ipsec.d/private/", ipsec_cli_key);
+-        system(cmd);
+-    }
+-    if(NULL != pks12){
+-        if(NULL != nvram_safe_get("ca_manage_profile")){
+-            DBG(("pks12:%s", pks12));
+-            p_file = &tmp[0];
+-            memset(p_file, '\0', sizeof(char) * SZ_MIN);
+-            strncpy(p_file, pks12, strlen(pks12) - 4); /*4 : strlen(p12)*/
+-            sprintf(cmd, "echo %s > "FILE_PATH_CA_ETC"%s.pwd", 
+-                    nvram_safe_get("ca_manage_profile"), p_file);
+-            system(cmd);
+-            memset(cmd, 0, sizeof(char) * SZ_BUF);
+-            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -clcerts -out "
+-                             "/tmp/etc/ipsec.d/certs/%s.pem -password pass:%s", 
+-                             FILE_PATH_CA_ETC, pks12, p_file, 
+-                             nvram_safe_get("ca_manage_profile"));
+-            DBG((cmd));
+-            system(cmd);
+-            memset(cmd, 0, sizeof(char) * SZ_BUF);
+-            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -cacerts -out "
+-                             "/tmp/etc/ipsec.d/cacerts/%s.pem"
+-                             " -password pass:%s",
+-                             FILE_PATH_CA_ETC, pks12, p_file,
+-                             nvram_safe_get("ca_manage_profile"));
+-            DBG((cmd));
+-            system(cmd);
+-            memset(cmd, 0, sizeof(char) * SZ_BUF);
+-            sprintf(&cmd[0], "openssl pkcs12 -in %s%s -out "
+-                    "/tmp/etc/ipsec.d/certs/%s.pem -nodes -password pass:%s",
+-                     FILE_PATH_CA_ETC, pks12, p_file,
+-                     nvram_safe_get("ca_manage_profile"));
+-            DBG((cmd));
+-            system(cmd);
+-        }
++    char source[SZ_BUF];
++    char output[SZ_BUF];
++    char password_file[SZ_BUF];
++    char passin[SZ_BUF];
++    char stem[SZ_MIN];
++    const char *password;
++    char *extension;
++    int fd;
++
++    if (asus_cert && rust_validate_ipsec_filename(asus_cert)) {
++        snprintf(source, sizeof(source), "%s%s", FILE_PATH_CA_ETC, asus_cert);
++        eval("cp", "-f", source, "/tmp/etc/ipsec.d/cacerts/");
+     }
+-    return;
++    if (ipsec_cli_cert && rust_validate_ipsec_filename(ipsec_cli_cert)) {
++        snprintf(source, sizeof(source), "%s%s", FILE_PATH_CA_ETC, ipsec_cli_cert);
++        eval("cp", "-f", source, "/tmp/etc/ipsec.d/certs/");
++    }
++    if (ipsec_cli_key && rust_validate_ipsec_filename(ipsec_cli_key)) {
++        snprintf(source, sizeof(source), "%s%s", FILE_PATH_CA_ETC, ipsec_cli_key);
++        eval("cp", "-f", source, "/tmp/etc/ipsec.d/private/");
++    }
++    if (!pks12 || !rust_validate_ipsec_filename(pks12))
++        return;
++
++    strlcpy(stem, pks12, sizeof(stem));
++    extension = strrchr(stem, '.');
++    if (!extension || strcasecmp(extension, ".p12"))
++        return;
++    *extension = '\0';
++    if (!*stem)
++        return;
++
++    password = nvram_safe_get("ca_manage_profile");
++    snprintf(source, sizeof(source), "%s%s", FILE_PATH_CA_ETC, pks12);
++    snprintf(password_file, sizeof(password_file), "%s%s.pwd", FILE_PATH_CA_ETC, stem);
++    fd = open(password_file, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);
++    if (fd < 0)
++        return;
++    if (write(fd, password, strlen(password)) != (ssize_t)strlen(password) ||
++        write(fd, "\n", 1) != 1) {
++        close(fd);
++        unlink(password_file);
++        return;
++    }
++    close(fd);
++    snprintf(passin, sizeof(passin), "file:%s", password_file);
++
++    snprintf(output, sizeof(output), "/tmp/etc/ipsec.d/certs/%s.pem", stem);
++    eval("openssl", "pkcs12", "-in", source, "-clcerts", "-out", output,
++         "-passin", passin);
++    chmod(output, 0600);
++    snprintf(output, sizeof(output), "/tmp/etc/ipsec.d/cacerts/%s.pem", stem);
++    eval("openssl", "pkcs12", "-in", source, "-cacerts", "-out", output,
++         "-passin", passin);
++    chmod(output, 0600);
++    snprintf(output, sizeof(output), "/tmp/etc/ipsec.d/private/%s.pem", stem);
++    eval("openssl", "pkcs12", "-in", source, "-nodes", "-out", output,
++         "-passin", passin);
++    chmod(output, 0600);
+ }
+ 
+ void rc_ipsec_ca_export(char *verify_pwd)
+ {
+-    char cmd[SZ_BUF];
+-    if(NULL != verify_pwd){
+-        sprintf(&cmd[0], "openssl pkcs12 -export -inkey ipsec_cliKey.pem "
+-                " -in ipsec_cliCert.pem -name \"IPSEC client\" "
+-                " -certfile asusCert.pem -caname \"ASUS Root CA\""
+-                " -out ipsec_cliCert.p12");
+-        system(cmd);
+-        system(verify_pwd);
+-    }
+-    return;
++    (void)verify_pwd;
++    logmessage("ipsec", "legacy CA export command path is disabled");
+ }
+ 
+ void rc_ipsec_gen_cert(int skip_checking)
+@@ -1026,6 +1026,8 @@ void rc_ipsec_gen_cert(int skip_checking)
+     char device_cn[64] = {0};
+     char ddns_name[128] = {0}, remote_id[128] = {0}, prefix[16] = {0};
+     int ca_lifetime = 2200;
++    int configured_lifetime;
++    mode_t previous_umask;
+ 
+     if((skip_checking == 0) && check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_CERT_PEM)&&check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_SVR_PRIVATE_KEY)&&check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_SVR_CERT_PEM)){
+         DBG(("CA files are ready there.\n"));
+@@ -1049,10 +1051,13 @@ void rc_ipsec_gen_cert(int skip_checking)
+             snprintf(device_cn, sizeof(device_cn), "%s", nvram_safe_get("productid"));
+         }
+     }
++	trimNL(device_cn);
++	if (!rust_validate_ipsec_identity(device_cn))
++		strlcpy(device_cn, "ASUS-Router", sizeof(device_cn));
+ 
+-    if(nvram_get_int("ipsec_ca_lifetime") > 0){
+-        ca_lifetime = nvram_get_int("ipsec_ca_lifetime");
+-    }
++    configured_lifetime = nvram_get_int("ipsec_ca_lifetime");
++    if(configured_lifetime > 0 && configured_lifetime <= 3650)
++        ca_lifetime = configured_lifetime;
+ 
+     if(nvram_match("ddns_enable_x", "1"))
+     {
+@@ -1067,9 +1072,17 @@ void rc_ipsec_gen_cert(int skip_checking)
+             DBG(("[Error]wan ip is not set yet, no any CAs will be created.\n"));
+             return;
+         }
+-    }else
++    }else {
++	if (!rust_validate_ipsec_identity(ddns_name)) {
++		logmessage("ipsec", "rejected invalid DDNS identity for CA generation");
++		return;
++	}
+         strlcpy(remote_id, ddns_name, sizeof(remote_id));
++    }
+ 
++    mkdir(FILE_PATH_CA_ETC, 0700);
++    chmod(FILE_PATH_CA_ETC, 0700);
++    previous_umask = umask(077);
+     fp = fopen(FILE_PATH_CA_ETC"generate.sh", "w");
+     if(NULL != fp){
+         fprintf(fp, "#!/bin/sh\n\n");
+@@ -1086,8 +1099,12 @@ void rc_ipsec_gen_cert(int skip_checking)
+                     );
+         fclose(fp);
+     }
+-    chmod(FILE_PATH_CA_ETC"generate.sh", 0777);
+-    system(FILE_PATH_CA_ETC"generate.sh");
++    umask(previous_umask);
++    if (!fp)
++	return;
++    chmod(FILE_PATH_CA_ETC"generate.sh", 0700);
++    eval(FILE_PATH_CA_ETC"generate.sh");
++    unlink(FILE_PATH_CA_ETC"generate.sh");
+     /* 0:nvram 1:openvpn 2:ipsec 3:usericon */
+     sync_profile_update_time(2);
+ 	if(check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_CERT_PEM)&&check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_SVR_PRIVATE_KEY)&&check_if_file_exist(FILE_PATH_CA_ETC FILE_NAME_SVR_CERT_PEM)){
+@@ -1103,19 +1120,10 @@ void rc_ipsec_gen_cert(int skip_checking)
+ 
+ void rc_ipsec_ca_init( )
+ {
+-    FILE *fp = NULL;
+-
+-    fp = fopen(FILE_PATH_CA_ETC"ca_init.sh", "w");
+-    if(NULL != fp){
+-        fprintf(fp, "#!/bin/sh\n\n");
+-        fprintf(fp, "cp -r %sasusCert.pem /tmp/etc/ipsec.d/cacerts/\n"
+-                    "cp -r %ssvrCert.pem /tmp/etc/ipsec.d/certs/\n"
+-                    "cp -r %ssvrKey.pem /tmp/etc/ipsec.d/private/\n",
+-                    FILE_PATH_CA_ETC, FILE_PATH_CA_ETC, FILE_PATH_CA_ETC);
+-        fclose(fp);
+-    }
+-    chmod(FILE_PATH_CA_ETC"ca_init.sh", 0777);
+-    system(FILE_PATH_CA_ETC"ca_init.sh");
++    eval("cp", "-f", FILE_PATH_CA_ETC"asusCert.pem", "/tmp/etc/ipsec.d/cacerts/");
++    eval("cp", "-f", FILE_PATH_CA_ETC"svrCert.pem", "/tmp/etc/ipsec.d/certs/");
++    eval("cp", "-f", FILE_PATH_CA_ETC"svrKey.pem", "/tmp/etc/ipsec.d/private/");
++    chmod("/tmp/etc/ipsec.d/private/svrKey.pem", 0600);
+ }
+ 
+ void rc_ipsec_conf_default_init()
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+index 5a7c173b4b4..7fd6ba203f9 100644
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -21657,7 +21657,6 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+ 		char upload_value[SZ_MAX];
+ 		char filename[SZ_64BUF];
+ 		char file_path[SZ_128BUF];
+-                int idx = 0;
+ 		memset(mode, '\0', sizeof(char) * SZ_4BUF);
+ 		memset(profile, '\0', sizeof(char) * SZ_TMP);
+ 		memset(upload_type, '\0', sizeof(char) * SZ_BUF);
+@@ -21668,8 +21667,7 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+ 		sprintf(mode, "%s", nvram_safe_get("ca_manage_mode"));
+ 		switch (safe_atoi(mode)) {
+                     case CA_MANUAL_GEN :
+-                        idx = rc_ipsec_ca_gen();
+-                        rc_ipsec_pki_gen_exec(idx);
++                        logmessage("ipsec", "manual CA generation is unavailable in the hardened build");
+                     break;
+                     case CA_IMPORT :
+                         DBG(("Import CA\n"));
+@@ -21680,6 +21678,10 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+                             case CERT_PRIVATEKEY :
+                                 sprintf(filename, "%s",
+                                       nvram_safe_get("ca_manage_file_name_ca"));
++				if (!rust_validate_ipsec_filename(filename)) {
++					logmessage("ipsec", "rejected invalid CA upload filename");
++					break;
++				}
+                                 sprintf(file_path, "/jffs/ca_files/%s",
+                                         filename);
+ 			        sprintf(upload_value, "%s",
+@@ -21688,6 +21690,7 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+                                 if((fp = fopen(file_path, "w")) != NULL) {
+                                     fprintf(fp, "%s", upload_value);
+                                     fclose(fp);
++					chmod(file_path, 0600);
+                                 }
+                                 rc_ipsec_cert_import(filename, filename,
+                                                      NULL, NULL);
+@@ -21700,6 +21703,10 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+                                         nvram_safe_get(
+                                             "ca_manage_file_name_private_key")
+                                        );
++				if (!rust_validate_ipsec_filename(filename)) {
++					logmessage("ipsec", "rejected invalid private-key upload filename");
++					break;
++				}
+                                 sprintf(file_path, "/jffs/ca_files/%s",
+                                         filename);
+                                 sprintf(upload_value, "%s",
+@@ -21707,6 +21714,7 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+                                 if((fp = fopen(file_path, "w")) != NULL) {
+                                     fprintf(fp, "%s", upload_value);
+                                     fclose(fp);
++					chmod(file_path, 0600);
+                                 }
+                                 rc_ipsec_cert_import(NULL, NULL,
+                                                      filename, NULL);
+@@ -21714,6 +21722,10 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+                             case P12 :
+                                 sprintf(filename, "%s",
+                                      nvram_safe_get("ca_manage_file_name_p12"));
++				if (!rust_validate_ipsec_filename(filename)) {
++					logmessage("ipsec", "rejected invalid PKCS#12 upload filename");
++					break;
++				}
+                                 sprintf(file_path, "/jffs/ca_files/%s",
+                                         filename);
+                                 memcpy(upload_value,
+@@ -21727,6 +21739,7 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+                                     fwrite(upload_value, sizeof(char),
+                                            sizeof(char) * SZ_MAX, fp);
+                                     fclose(fp);
++					chmod(file_path, 0600);
+ 				}
+                                 rc_ipsec_cert_import(NULL, NULL,
+                                                      NULL, filename);
+@@ -21734,8 +21747,7 @@ _dprintf("test 2. turn off the USB power during %d seconds.\n", reset_seconds[re
+ 			}
+                     break;
+                     case CA_AUTO_GEN :
+-                        idx = rc_ipsec_ca_gen();
+-                        rc_ipsec_pki_gen_exec(idx);
++                        logmessage("ipsec", "automatic CA profile generation is unavailable in the hardened build");
+                     break;
+                 }
+ 
+@@ -26479,11 +26491,11 @@ start_dns_ping(void)
+ 	snprintf(dns_ping_list_tmp, sizeof(dns_ping_list_tmp), "%s", nvram_safe_get("dns_ping_list_tmp"));
+ 
+ 	if(dns_ping_list_tmp[0] != '\0'){
+-		safe_do_system("dns_ping \"%s\"", dns_ping_list_tmp);
++		eval("dns_ping", dns_ping_list_tmp);
+ 		nvram_unset("dns_ping_list_tmp");
+ 	}
+ 	else{
+-		safe_do_system("dns_ping");
++		eval("dns_ping");
+ 	}
+ }
+ 
+diff --git a/release/src/router/rc/sysdeps/init-broadcom.c b/release/src/router/rc/sysdeps/init-broadcom.c
+index 5ec7d6674c0..db14885dbfd 100644
+--- a/release/src/router/rc/sysdeps/init-broadcom.c
++++ b/release/src/router/rc/sysdeps/init-broadcom.c
+@@ -7059,29 +7059,29 @@ void config_switch(void)
+ 
+ #if defined(RTCONFIG_BCM_EXT_SWITCH_RTK)
+ 
+-	safe_do_system("rtkswitch 3904");
++	eval("rtkswitch", "3904");
+ 
+ 	if (nvram_get_int("user1_vlan") > 0 && *nvram_safe_get("user1_vlan_portmask")) {
+-		safe_do_system("rtkswitch 36 %d", nvram_get_int("user1_vlan"));
+-		safe_do_system("rtkswitch 3905 %s", nvram_safe_get("user1_vlan_portmask"));
++		eval("rtkswitch", "36", nvram_safe_get("user1_vlan"));
++		eval("rtkswitch", "3905", nvram_safe_get("user1_vlan_portmask"));
+ 	} 
+ 
+ 	if (nvram_get_int("user2_vlan") > 0 && *nvram_safe_get("user2_vlan_portmask")) {
+-		safe_do_system("rtkswitch 36 %d", nvram_get_int("user2_vlan"));
+-		safe_do_system("rtkswitch 3905 %s", nvram_safe_get("user2_vlan_portmask"));
++		eval("rtkswitch", "36", nvram_safe_get("user2_vlan"));
++		eval("rtkswitch", "3905", nvram_safe_get("user2_vlan_portmask"));
+ 	} 
+ 
+ 	if (nvram_get_int("user3_vlan") > 0 && *nvram_safe_get("user3_vlan_portmask")) {
+-		safe_do_system("rtkswitch 36 %d", nvram_get_int("user3_vlan"));
+-		safe_do_system("rtkswitch 3905 %s", nvram_safe_get("user3_vlan_portmask"));
++		eval("rtkswitch", "36", nvram_safe_get("user3_vlan"));
++		eval("rtkswitch", "3905", nvram_safe_get("user3_vlan_portmask"));
+ 	} 
+ 
+ 	if (nvram_get_int("user4_vlan") > 0 && *nvram_safe_get("user4_vlan_portmask")) {
+-		safe_do_system("rtkswitch 36 %d", nvram_get_int("user4_vlan"));
+-		safe_do_system("rtkswitch 3905 %s", nvram_safe_get("user4_vlan_portmask"));
++		eval("rtkswitch", "36", nvram_safe_get("user4_vlan"));
++		eval("rtkswitch", "3905", nvram_safe_get("user4_vlan_portmask"));
+ 	} 
+ 
+-	safe_do_system("rtkswitch 490");
++	eval("rtkswitch", "490");
+ #endif
+ }
+ #endif
+diff --git a/release/src/router/rc/sysdeps/wps-broadcom.c b/release/src/router/rc/sysdeps/wps-broadcom.c
+index 4a6312510c6..b9108b20f9c 100644
+--- a/release/src/router/rc/sysdeps/wps-broadcom.c
++++ b/release/src/router/rc/sysdeps/wps-broadcom.c
+@@ -24,6 +24,7 @@
+ #include <unistd.h>
+ #include <errno.h>
+ #include <sys/time.h>
++#include <sys/wait.h>
+ #include <time.h>
+ #include <bcmnvram.h>
+ #include <shutils.h>
+@@ -76,6 +77,7 @@
+ #define WPA_CLI_APP	"wpa_cli-2.7"
+ static int wps_config_command;
+ static void hapd_wps_cleanup();
++static int hapd_cmd_chk_status(const char *ifname, const char *pin, const char *mac);
+ static inline bool
+ hapd_disabled()
+ {
+@@ -478,7 +480,6 @@ start_wps_method(void)
+ 
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ 	if (!HAPD_DISABLED()) {
+-		char cmd[HAPD_CMD_BUF] = {0};
+ 		char sta_mac[32] = {0};
+ 
+ 		if (is_router_mode() && !nvram_get_int("w_Setting") && !strcmp(wps_sta_pin, "00000000")) {
+@@ -495,16 +496,13 @@ start_wps_method(void)
+ 				if (band == WLC_BAND_6G)
+ 					continue;
+ #endif
+-				snprintf(cmd, sizeof(cmd), "hostapd_cli -p"
+-					" %s -i %s wps_pbc", HAPD_DIR, word);
+-
+-				if (cmd[0] != '\0') {
+-					if (hapd_cmd_chk_status(cmd)) {
++				if (word[0] != '\0') {
++					if (hapd_cmd_chk_status(word, NULL, NULL)) {
+ 						wps_config_command = WPS_UI_CMD_START;
+ 						wl_wlif_update_wps_ui(WLIF_WPS_UI_FINDING_PBC_STA);
+ 					} else {
+-						dbg("Err : %s failed to execute %s \n",
+-							__FUNCTION__, cmd);
++						dbg("Err : %s failed to execute hostapd_cli for %s\n",
++							__FUNCTION__, word);
+ 						if(nvram_safe_get("wps_tmp_prefix"))
+ 							stop_wps_method_ob();
+ 					}
+@@ -513,24 +511,23 @@ start_wps_method(void)
+ 		} else {
+ 			if (strlen(wps_sta_pin) && strcmp(wps_sta_pin, "00000000") && (wl_wpsPincheck(wps_sta_pin) == 0)) {
+ 				char *ptr = sta_mac[0] != '\0' ? sta_mac : "";
+-				snprintf(cmd, sizeof(cmd),
+-					"hostapd_cli -p %s -i %s wps_pin any %s %s",
+-					HAPD_DIR, ifname, wps_sta_pin, ptr);
++				if (!hapd_cmd_chk_status(ifname, wps_sta_pin, ptr))
++					goto hapd_command_failed;
+ 			} else {
+-				snprintf(cmd, sizeof(cmd), "hostapd_cli -p"
+-					" %s -i %s wps_pbc", HAPD_DIR, ifname);
+-			}
+-			if (cmd[0] != '\0') {
+-				if (hapd_cmd_chk_status(cmd)) {
+-					wps_config_command = WPS_UI_CMD_START;
+-					wl_wlif_update_wps_ui(WLIF_WPS_UI_FINDING_PBC_STA);
+-				} else {
+-					dbg("Err : %s failed to execute %s \n",
+-						__FUNCTION__, cmd);
+-					if(nvram_safe_get("wps_tmp_prefix"))
+-						stop_wps_method_ob();
+-				}
++				if (!hapd_cmd_chk_status(ifname, NULL, NULL))
++					goto hapd_command_failed;
+ 			}
++			wps_config_command = WPS_UI_CMD_START;
++			wl_wlif_update_wps_ui(WLIF_WPS_UI_FINDING_PBC_STA);
++			goto hapd_command_done;
++
++hapd_command_failed:
++			dbg("Err : %s failed to execute hostapd_cli for %s\n",
++				__FUNCTION__, ifname);
++			if(nvram_safe_get("wps_tmp_prefix"))
++				stop_wps_method_ob();
++hapd_command_done:
++			;
+ 		}
+ 	} else
+ #endif	/* RTCONFIG_BRCM_HOSTAPD */
+@@ -1043,34 +1040,70 @@ int is_wps_success(void)
+ 
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ #define HAPD_CMD_WAIT 5
+-int hapd_cmd_chk_status(char* cmd) {
++static int hapd_cmd_chk_status(const char *ifname, const char *pin, const char *mac) {
+ 	FILE *fp = NULL;
+ 	char buf[128];
++	char *argv[12];
++	int pipefd[2];
++	int status = 0;
+ 	int success = 0;
+-	int wait = HAPD_CMD_WAIT;
++	int argc = 0;
++	pid_t pid;
+ 
+-	fp = popen(cmd, "r");
+-	if (fp) {
+-		while(wait) {
+-			if (wait != HAPD_CMD_WAIT)
+-				sleep(1);
++	(void)HAPD_CMD_WAIT;
++	if (!ifname || !*ifname || strlen(ifname) >= IFNAMSIZ ||
++		strspn(ifname, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-") != strlen(ifname))
++		return 0;
++	if (pin && (strlen(pin) != 8 || strspn(pin, "0123456789") != 8))
++		return 0;
++	if (mac && *mac && (strlen(mac) != 17 ||
++		strspn(mac, "0123456789abcdefABCDEF:") != 17))
++		return 0;
+ 
+-			if ((--wait) == 0) {
+-				_dprintf("hostapd command [%s] execute failed\n", cmd);
+-				break;
+-			}
+-			memset(buf, 0, sizeof(buf));
+-			while(fgets(buf, sizeof(buf), fp) != NULL) {
+-				if (strstr(buf, "OK") != NULL) {
+-					success = 1;
+-					break;
+-				}
+-			}
+-			if(success)
+-				break;
++	argv[argc++] = "hostapd_cli";
++	argv[argc++] = "-p";
++	argv[argc++] = HAPD_DIR;
++	argv[argc++] = "-i";
++	argv[argc++] = (char *)ifname;
++	if (pin) {
++		argv[argc++] = "wps_pin";
++		argv[argc++] = "any";
++		argv[argc++] = (char *)pin;
++		if (mac && *mac)
++			argv[argc++] = (char *)mac;
++	} else {
++		argv[argc++] = "wps_pbc";
++	}
++	argv[argc] = NULL;
++
++	if (pipe(pipefd) != 0)
++		return 0;
++	pid = fork();
++	if (pid == 0) {
++		close(pipefd[0]);
++		if (dup2(pipefd[1], STDOUT_FILENO) < 0)
++			_exit(127);
++		close(pipefd[1]);
++		execvp(argv[0], argv);
++		_exit(127);
++	}
++	close(pipefd[1]);
++	if (pid < 0) {
++		close(pipefd[0]);
++		return 0;
++	}
++	fp = fdopen(pipefd[0], "r");
++	if (fp) {
++		while (fgets(buf, sizeof(buf), fp) != NULL) {
++			if (strstr(buf, "OK") != NULL)
++				success = 1;
+ 		}
+-		pclose(fp);
++		fclose(fp);
++	} else {
++		close(pipefd[0]);
+ 	}
++	if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
++		return 0;
+ 	return success;
+ }
+ #endif
+diff --git a/release/src/router/rc/wireguard.c b/release/src/router/rc/wireguard.c
+index a6e9eed80f9..9b98dc8718c 100644
+--- a/release/src/router/rc/wireguard.c
++++ b/release/src/router/rc/wireguard.c
+@@ -1957,7 +1957,6 @@ void update_wgs_client_ep()
+ 	char path[128] = {0};
+ 	char p_path[128] = {0};
+ 	char address[64];
+-	char cmd[256] = {0};
+ 
+ 	for (s_unit = 1; s_unit <= WG_SERVER_MAX; s_unit++)
+ 	{
+@@ -1968,8 +1967,10 @@ void update_wgs_client_ep()
+ 			if(f_exists(path) && f_size(path) > 0)
+ 			{
+ 				_wg_server_get_endpoint(address, sizeof(address));
+-				snprintf(cmd, sizeof(cmd), "sed -i 's/Endpoint = [^ ]*:/Endpoint = %s:/' %s", address, path);
+-				system(cmd);
++				if (!rust_update_wireguard_endpoint(path, address)) {
++					logmessage("wireguard", "rejected unsafe or invalid endpoint update");
++					continue;
++				}
+ 				eval("qrencode", "-r", path, "-o", p_path);
+ 			}
+ 		}
+diff --git a/release/src/router/shared/defaults.c b/release/src/router/shared/defaults.c
+index 89ee6d39c2c..2970da5fb6a 100644
+--- a/release/src/router/shared/defaults.c
++++ b/release/src/router/shared/defaults.c
+@@ -14,10 +14,15 @@
+ #define XSTR(s) STR(s)
+ #define STR(s) #s
+ 
+-#if defined(RTCONFIG_OPENVPN) && defined(HND_ROUTER) && !defined(HND_ROUTER_AX_675X)
++#if defined(GTAX11000)
++#define DEFAULT_NCP_CIPHERS "CHACHA20-POLY1305:AES-256-GCM:AES-128-GCM"
++#define DEFAULT_VPN_ENFORCE "1"
++#elif defined(RTCONFIG_OPENVPN) && defined(HND_ROUTER) && !defined(HND_ROUTER_AX_675X)
+ #define DEFAULT_NCP_CIPHERS "AES-256-GCM:AES-128-GCM:AES-256-CBC:AES-128-CBC:CHACHA20-POLY1305"
++#define DEFAULT_VPN_ENFORCE "0"
+ #else
+ #define DEFAULT_NCP_CIPHERS "CHACHA20-POLY1305:AES-128-GCM:AES-256-GCM:AES-128-CBC:AES-256-CBC"
++#define DEFAULT_VPN_ENFORCE "0"
+ #endif
+ 
+ // stub for wlconf, etc.
+@@ -643,7 +648,13 @@ struct nvram_tuple router_defaults[] = {
+ #ifdef RTCONFIG_HND_ROUTER_AX
+ 	{ "wps_config_method", "0x784", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },   /* config wps methods as Label PIN, Virtual Push Button, Physical Push Button, Keypad*/
+ #endif
+-	{ "wl_wps_mode", "enabled", CKN_STR_DEFAULT, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* enabled wps */
++	{ "wl_wps_mode",
++#ifdef GTAX11000
++	  "disabled",
++#else
++	  "enabled",
++#endif
++	  CKN_STR_DEFAULT, CKN_TYPE_VIF, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wl_wps_config_state", "0", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* config state unconfiged */
+ #endif
+ //	{ "wps_device_pin", "12345670", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	// it is mapped to secret_code
+@@ -662,7 +673,13 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wps_sta_pin", "00000000", CKN_STR16, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ //	{ "wps_modelnum", RT_BUILD_NAME},
+ 	/* Allow or Deny Wireless External Registrar get or configure AP security settings */
+-	{ "wps_wer_mode", "allow", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wps_wer_mode",
++#ifdef GTAX11000
++	  "deny",
++#else
++	  "allow",
++#endif
++	  CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ 	{ "lan_wps_oob", "enabled", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* OOB state */
+ 	{ "lan_wps_reg", "enabled", CKN_STR_DEFAULT, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },	/* For DTM 1.4 test */
+@@ -1267,7 +1284,7 @@ struct nvram_tuple router_defaults[] = {
+ #endif
+ 
+ // WPS
+-#if defined(RPBE58)
++#if defined(RPBE58) || defined(GTAX11000)
+ 	// EN18031/CLS
+ 	{ "wps_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wps_enable_x", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -5306,37 +5323,37 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "vpn_client_ncp_ciphers",	DEFAULT_NCP_CIPHERS	, CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client_digest",		"default"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client_desc",		""		, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "vpn_client_enforce",		"0"		, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "vpn_client_enforce",		DEFAULT_VPN_ENFORCE, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client_custom3",		""		, CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client_fw",		"1"		, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client1_ncp_ciphers",	DEFAULT_NCP_CIPHERS	, CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client1_digest",		"default"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client1_desc", 		"Client 1"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "vpn_client1_enforce","0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "vpn_client1_enforce", DEFAULT_VPN_ENFORCE, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client1_custom3",	""		, CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client1_fw",		"1"		, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client2_ncp_ciphers",	DEFAULT_NCP_CIPHERS	, CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client2_digest",		"default"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client2_desc", 		"Client 2"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "vpn_client2_enforce","0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "vpn_client2_enforce", DEFAULT_VPN_ENFORCE, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client2_custom3",	""		, CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client2_fw",		"1"		, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client3_ncp_ciphers",	DEFAULT_NCP_CIPHERS	, CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client3_digest",		"default"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client3_desc", 		"Client 3"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "vpn_client3_enforce","0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "vpn_client3_enforce", DEFAULT_VPN_ENFORCE, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client3_custom3",	""		, CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client3_fw",		"1"		, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client4_ncp_ciphers",	DEFAULT_NCP_CIPHERS	, CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client4_digest",		"default"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client4_desc", 		"Client 4"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "vpn_client4_enforce","0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "vpn_client4_enforce", DEFAULT_VPN_ENFORCE, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client4_custom3",	""		, CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client4_fw",		"1"		, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client5_ncp_ciphers",	DEFAULT_NCP_CIPHERS	, CKN_STR128, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client5_digest",		"default"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client5_desc", 		"Client 5"	, CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "vpn_client5_enforce","0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "vpn_client5_enforce", DEFAULT_VPN_ENFORCE, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client5_custom3",	""		, CKN_STR4096, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "vpn_client5_fw",		"1"		, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ #endif
+@@ -5434,7 +5451,13 @@ struct nvram_tuple router_defaults[] = {
+ 	{ "wgs_psk", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wgs_priv", "", CKN_STR63, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wgs_pub", "", CKN_STR63, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "wgs_lanaccess", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wgs_lanaccess",
++#ifdef GTAX11000
++	  "0",
++#else
++	  "1",
++#endif
++	  CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 
+ 	{ "wgsc_unit", "1", CKN_STR2, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wgsc_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+@@ -5450,7 +5473,7 @@ struct nvram_tuple router_defaults[] = {
+ 
+ 	{ "wgc_unit", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wgc_desc", "", CKN_STR32, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+-	{ "wgc_enforce", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
++	{ "wgc_enforce", DEFAULT_VPN_ENFORCE, CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wgc_fw", "1", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wgc_enable", "0", CKN_STR1, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+ 	{ "wgc_addr", "", CKN_STR63, CKN_TYPE_DEFAULT, CKN_ACC_LEVEL_DEFAULT, CKN_ENC_DEFAULT, 0 },
+diff --git a/release/src/router/rc/sysdeps/wps-broadcom.c b/release/src/router/rc/sysdeps/wps-broadcom.c
+index b9108b20f9c..f752a1bb9cb 100644
+--- a/release/src/router/rc/sysdeps/wps-broadcom.c
++++ b/release/src/router/rc/sysdeps/wps-broadcom.c
+@@ -78,6 +78,8 @@
+ static int wps_config_command;
+ static void hapd_wps_cleanup();
+ static int hapd_cmd_chk_status(const char *ifname, const char *pin, const char *mac);
++static int hapd_cli_run(const char *ifname, const char *command,
++	const char *arg1, const char *arg2, const char *expected);
+ static inline bool
+ hapd_disabled()
+ {
+@@ -139,9 +141,7 @@ start_wps_method_ob(void)
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ 	int wps_band;
+ 	char prefix[] = "wlXXXXXX_";
+-	FILE *fp = NULL;
+ 	char tmp[100];
+-	char cmd[64], buf[256];
+ 	char hapd_ctrl[64];
+ 	int wait_hapd = HAPD_TIMEOUT;
+ 	int hapd_is_ready = 1;
+@@ -220,7 +220,6 @@ start_wps_method_ob(void)
+ 
+ 			wait_hapd = nvram_get_int("hapd_ob_timeout") ? nvram_get_int("hapd_ob_timeout") : HAPD_TIMEOUT;
+ 			snprintf(hapd_ctrl, sizeof(hapd_ctrl), "%s/%s", HAPD_DIR, nvram_safe_get(strcat_r(prefix, "_ifname", tmp)));
+-			snprintf(cmd, sizeof(cmd), "hostapd_cli -i %s ping", nvram_safe_get(strcat_r(prefix, "_ifname", tmp)));
+ 			while(wait_hapd) {
+ 				sleep(1);
+ 				if ((--wait_hapd) == 0) {
+@@ -233,18 +232,12 @@ start_wps_method_ob(void)
+ 					continue;
+ 				}
+ 
+-				fp = popen(cmd, "r");
+-				if(fp) {
+-					while (fgets(buf, sizeof(buf), fp) != NULL) {
+-						if(strstr(buf, "PONG") != NULL)
+-						{
+-							hapd_is_ready = 1;
+-							_dprintf("restart hostapd upon radio [%d][%s] - DONE\n", wps_band, prefix);
+-							sleep(1);
+-							break;
+-						}
+-					}
+-					pclose(fp);
++				hapd_is_ready = hapd_cli_run(
++					nvram_safe_get(strcat_r(prefix, "_ifname", tmp)),
++					"ping", NULL, NULL, "PONG");
++				if (hapd_is_ready) {
++					_dprintf("restart hostapd upon radio [%d][%s] - DONE\n", wps_band, prefix);
++					sleep(1);
+ 				}
+ 				if(hapd_is_ready)
+ 					break;
+@@ -269,10 +262,9 @@ int
+ stop_wps_method_ob(void)
+ {
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+-	FILE *fp = NULL;
+ 	char prefix[] = "wlXXXXXX_";
+ 	char word[256], *next;
+-	char tmp[100], cmd[64], buf[256];
++	char tmp[100];
+ 	char hapd_ctrl[64];
+ 	int unit;
+ 	int wait_hapd = HAPD_TIMEOUT;
+@@ -316,7 +308,6 @@ stop_wps_method_ob(void)
+ 
+ 				wait_hapd = nvram_get_int("hapd_ob_timeout") ? nvram_get_int("hapd_ob_timeout") : HAPD_TIMEOUT;
+ 				snprintf(hapd_ctrl, sizeof(hapd_ctrl), "%s/%s", HAPD_DIR, nvram_safe_get(strcat_r(prefix, "_ifname", tmp)));
+-				snprintf(cmd, sizeof(cmd), "hostapd_cli -i %s ping", nvram_safe_get(strcat_r(prefix, "_ifname", tmp)));
+ 				while(wait_hapd) {
+ 					sleep(1);
+ 					if ((--wait_hapd) == 0) {
+@@ -329,18 +320,12 @@ stop_wps_method_ob(void)
+ 						continue;
+ 					}
+ 
+-					fp = popen(cmd, "r");
+-					if(fp) {
+-						while (fgets(buf, sizeof(buf), fp) != NULL) {
+-							if(strstr(buf, "PONG") != NULL)
+-							{
+-								hapd_is_ready = 1;
+-								_dprintf("restart hostapd upon radio [%d][%s] - DONE\n", wps_band, prefix);
+-								sleep(1);
+-								break;
+-							}
+-						}
+-						pclose(fp);
++					hapd_is_ready = hapd_cli_run(
++						nvram_safe_get(strcat_r(prefix, "_ifname", tmp)),
++						"ping", NULL, NULL, "PONG");
++					if (hapd_is_ready) {
++						_dprintf("restart hostapd upon radio [%d][%s] - DONE\n", wps_band, prefix);
++						sleep(1);
+ 					}
+ 
+ 					if(!hapd_is_ready)
+@@ -1040,6 +1025,78 @@ int is_wps_success(void)
+ 
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ #define HAPD_CMD_WAIT 5
++static int hapd_cli_run(const char *ifname, const char *command,
++	const char *arg1, const char *arg2, const char *expected)
++{
++	FILE *fp;
++	char buf[128];
++	char *argv[10];
++	int argc = 0;
++	int pipefd[2];
++	int status = 0;
++	int success = expected == NULL;
++	pid_t pid;
++
++	if (!ifname || !*ifname || strlen(ifname) >= IFNAMSIZ ||
++		strspn(ifname, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-") != strlen(ifname))
++		return 0;
++	if (!command || (strcmp(command, "ping") && strcmp(command, "wps_cancel") &&
++		strcmp(command, "set") && strcmp(command, "reload") &&
++		strcmp(command, "update_beacon") && strcmp(command, "disable") &&
++		strcmp(command, "enable")))
++		return 0;
++	if ((!strcmp(command, "set") && (!arg1 || !arg2)) ||
++		(strcmp(command, "set") && (arg1 || arg2)))
++		return 0;
++	if (arg1 && strcmp(arg1, "wps_state"))
++		return 0;
++	if (arg2 && strcmp(arg2, "0") && strcmp(arg2, "2"))
++		return 0;
++
++	argv[argc++] = "/usr/sbin/hostapd_cli";
++	argv[argc++] = "-p";
++	argv[argc++] = HAPD_DIR;
++	argv[argc++] = "-i";
++	argv[argc++] = (char *)ifname;
++	argv[argc++] = (char *)command;
++	if (arg1)
++		argv[argc++] = (char *)arg1;
++	if (arg2)
++		argv[argc++] = (char *)arg2;
++	argv[argc] = NULL;
++
++	if (pipe(pipefd) != 0)
++		return 0;
++	pid = fork();
++	if (pid == 0) {
++		close(pipefd[0]);
++		if (dup2(pipefd[1], STDOUT_FILENO) < 0)
++			_exit(127);
++		close(pipefd[1]);
++		execv(argv[0], argv);
++		_exit(127);
++	}
++	close(pipefd[1]);
++	if (pid < 0) {
++		close(pipefd[0]);
++		return 0;
++	}
++	fp = fdopen(pipefd[0], "r");
++	if (fp) {
++		while (fgets(buf, sizeof(buf), fp) != NULL) {
++			if (expected && strstr(buf, expected))
++				success = 1;
++		}
++		fclose(fp);
++	} else {
++		close(pipefd[0]);
++		success = 0;
++	}
++	if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
++		return 0;
++	return success;
++}
++
+ static int hapd_cmd_chk_status(const char *ifname, const char *pin, const char *mac) {
+ 	FILE *fp = NULL;
+ 	char buf[128];
+@@ -1110,12 +1167,11 @@ static int hapd_cmd_chk_status(const char *ifname, const char *pin, const char *
+ void runtime_onoff_wps(int onoff)
+ {
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+-	FILE *fp = NULL;
+         int unit = 0, wait_hapd = HAPD_TIMEOUT;
+ 	int hapd_is_ready = 0;
+         char wif[8], *next, prefix[] = "wlXXXXXXXXXX_";
+-        char hapd_ctrl[64], cmd[64];
+-	char tmp[100], buf[256];
++        char hapd_ctrl[64];
++	char tmp[100];
+ 
+ 	foreach(wif, nvram_safe_get("wl_ifnames"), next) {
+ 		snprintf(prefix, sizeof(prefix), "wl%d_", unit);
+@@ -1126,7 +1182,6 @@ void runtime_onoff_wps(int onoff)
+ 		    && !nvram_pf_match(prefix, "auth_mode_x", "wpa3")
+ 		    && !nvram_pf_match(prefix, "auth_mode_x", "suite-b")) {
+ 			snprintf(hapd_ctrl, sizeof(hapd_ctrl), "%s/%s", HAPD_DIR, wif);
+-                        snprintf(cmd, sizeof(cmd), "hostapd_cli -i %s ping", wif);
+                         while(wait_hapd) {
+                                 if ((--wait_hapd) == 0) {
+                                         _dprintf("check hostapd status timeout [%s] - FAILED\n", wif);
+@@ -1138,31 +1193,23 @@ void runtime_onoff_wps(int onoff)
+ 					continue;
+ 				}
+ 
+-                                fp = popen(cmd, "r");
+-                                if(fp) {
+-                                        while (fgets(buf, sizeof(buf), fp) != NULL) {
+-                                                if(strstr(buf, "PONG") != NULL)
+-                                                {
+-                                                        hapd_is_ready = 1;
+-                                                        _dprintf("check hostapd status ok [%s] - DONE\n", wif);
+-                                                        sleep(1);
+-                                                        break;
+-                                                }
+-                                        }
+-                                        pclose(fp);
+-                                }
++				hapd_is_ready = hapd_cli_run(wif, "ping", NULL, NULL, "PONG");
++				if (hapd_is_ready) {
++					_dprintf("check hostapd status ok [%s] - DONE\n", wif);
++					sleep(1);
++				}
+ 
+-                                if(hapd_is_ready) {
++				if(hapd_is_ready) {
+ 					if(!onoff) {
+-						doSystem("hostapd_cli -i %s set wps_state 0", wif);
+-						doSystem("hostapd_cli -i %s reload", wif);
+-						doSystem("hostapd_cli -i %s update_beacon", wif);
++						hapd_cli_run(wif, "set", "wps_state", "0", NULL);
++						hapd_cli_run(wif, "reload", NULL, NULL, NULL);
++						hapd_cli_run(wif, "update_beacon", NULL, NULL, NULL);
+ 					}
+ 					else {
+-						doSystem("hostapd_cli -i %s set wps_state 2", wif);
+-						doSystem("hostapd_cli -i %s reload", wif);
+-						doSystem("hostapd_cli -i %s disable", wif);
+-						doSystem("hostapd_cli -i %s enable", wif);
++						hapd_cli_run(wif, "set", "wps_state", "2", NULL);
++						hapd_cli_run(wif, "reload", NULL, NULL, NULL);
++						hapd_cli_run(wif, "disable", NULL, NULL, NULL);
++						hapd_cli_run(wif, "enable", NULL, NULL, NULL);
+ 					}
+                                         break;
+ 				}

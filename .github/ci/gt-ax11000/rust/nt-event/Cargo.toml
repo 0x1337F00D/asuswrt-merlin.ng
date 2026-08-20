@@ -1,0 +1,16 @@
+[package]
+name = "nt-event"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-only"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "Notify_Event2NC"
+path = "src/main.rs"
+
+[dependencies]
