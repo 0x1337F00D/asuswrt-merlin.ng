@@ -75,6 +75,7 @@ extern "C" {
         lan_ifnames: *mut c_char,
     ) -> u32;
     fn wait_action_idle(seconds: c_int) -> c_int;
+    #[cfg(feature = "isp-meter")]
     fn notify_rc_and_wait(event_name: *const c_char) -> c_int;
 }
 
