@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - codex/rust-porting
     paths:
       - .github/ci/gt-ax11000/**
       - .github/workflows/build-gt-ax11000.yml
