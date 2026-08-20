@@ -82,13 +82,13 @@ jobs:
             autoconf autoconf-archive automake autopoint bc bison build-essential ccache \
             fakeroot flex gawk gettext gperf kmod libelf-dev libltdl-dev \
             liblzo2-dev liblzma-dev libncurses-dev libssl-dev libzstd-dev \
-            libtext-unidecode-perl libtool-bin pkg-config rsync texinfo unzip \
+            libtext-unidecode-perl libtool-bin pkg-config qemu-user rsync texinfo unzip \
             uuid-dev xxd zlib1g-dev
 
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.85.1 --profile minimal \
-            --component clippy,rustfmt --target arm-unknown-linux-gnueabi
+            --component clippy,rustfmt --target armv7-unknown-linux-gnueabi
           rustc +1.85.1 --version --verbose
 
       - name: Restore Rust build cache
@@ -109,9 +109,9 @@ jobs:
           cargo +1.85.1 clippy \
             --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
             --workspace --all-targets --locked -- -D warnings
-          RUSTFLAGS="-Dwarnings" cargo +1.85.1 check \
+          RUSTFLAGS="-Dwarnings -Ctarget-cpu=cortex-a9" cargo +1.85.1 check \
             --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
-            --workspace --locked --target arm-unknown-linux-gnueabi
+            --workspace --locked --target armv7-unknown-linux-gnueabi
 
       - name: Restore compiler cache
         id: ccache
@@ -174,6 +174,17 @@ jobs:
             sleep 60
           done
           wait "$build_pid"
+
+      - name: Verify Rust firmware ISA and runtime
+        run: |
+          set -euo pipefail
+          infosvr=$(find source/release/src-rt-5.02axhnd/targets \
+            -type f -path '*/fs/usr/sbin/infosvr' -print -quit)
+          test -n "$infosvr"
+          rootfs=${infosvr%/usr/sbin/infosvr}
+          toolchain_bin="$GITHUB_WORKSPACE/toolchains/brcm-arm-hnd/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/bin"
+          bash overlay/.github/ci/gt-ax11000/tests/verify-rust-firmware.sh \
+            "$rootfs" "$toolchain_bin" "$(command -v qemu-arm)"
 
       - name: Show compiler cache statistics
         if: always()

@@ -75,6 +75,20 @@ cargo clippy --workspace --all-targets -- -D warnings
 The CI additionally checks the ARM target and exhaustively verifies that all
 unimplemented 16-bit opcodes are rejected.
 
+All firmware Rust code uses the `armv7-unknown-linux-gnueabi` standard library
+and is compiled with `-Ctarget-cpu=cortex-a9`. The generic
+`arm-unknown-linux-gnueabi` standard library contains deprecated ARMv6 CP15
+barriers which the GT-AX11000's ARMv8 compatibility kernel deliberately does
+not emulate. A CPU flag alone cannot repair instructions in Rust's precompiled
+standard library. The ARMv7 soft-float target matches the Broadcom C toolchain
+and uses architectural `dmb` barriers instead.
+
+After the firmware build, `tests/verify-rust-firmware.sh` inspects the three
+standalone Rust programs and the `httpd`/`rc` consumers. It rejects obsolete
+CP15 barriers, hard-float or non-ARMv7 output, and then executes safe startup
+paths for `infosvr`, `Notify_Event2NC` and `rstats` under `qemu-arm` using the
+generated firmware root filesystem.
+
 The firmware Makefiles cross-compile with the existing Broadcom
 `arm-buildroot-linux-gnueabi` linker and install the results as
 `/usr/sbin/infosvr` and `/bin/rstats`.

@@ -785,6 +785,10 @@ impl IspMeter {
 }
 
 fn main() -> io::Result<()> {
+    if env::args().nth(1).as_deref() == Some("--self-test") {
+        println!("rstats-rs: runtime self-test passed");
+        return Ok(());
+    }
     println!("rstats\nCopyright (C) 2006-2009 Jonathan Zarate\n");
     #[cfg(target_arch = "arm")]
     {
