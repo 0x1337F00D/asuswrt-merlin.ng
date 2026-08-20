@@ -96,8 +96,12 @@ jobs:
         with:
           path: ${{ runner.temp }}/asuswrt-rust-target
           key: gt-ax11000-rust-v2-${{ runner.os }}-rust-1.85.1-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.revisions.outputs.overlay_sha }}
+          restore-keys: |
+            gt-ax11000-rust-v2-${{ runner.os }}-rust-1.85.1-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
 
       - name: Test Rust components
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
         run: |
           set -euo pipefail
           cargo +1.85.1 fmt \
@@ -162,6 +166,7 @@ jobs:
           ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
           ASUSWRT_TOOLCHAIN_VIEW: ${{ runner.temp }}/asuswrt-toolchain-view/brcm-arm-hnd
+          ASUSWRT_TOOLCHAINS_STATE: ${{ steps.revisions.outputs.toolchains_sha }}
           ROUTER_PACKAGE_JOBS: "1"
           RUST_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
         run: |

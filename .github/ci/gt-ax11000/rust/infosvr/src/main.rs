@@ -15,6 +15,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::process::Command;
+#[cfg(any(target_arch = "arm", test))]
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 #[cfg(target_arch = "arm")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -383,6 +385,27 @@ fn source_is_on_lan(source: IpAddr, lan_ip: Ipv4Addr, netmask: Ipv4Addr) -> bool
 
 #[cfg(target_arch = "arm")]
 fn platform_group_id(_config: &impl Config) -> Option<[u8; 20]> {
+    static GROUP_ID: OnceLock<[u8; 20]> = OnceLock::new();
+
+    cached_group_id(&GROUP_ID, generate_platform_group_id)
+}
+
+#[cfg(any(target_arch = "arm", test))]
+fn cached_group_id(
+    cache: &OnceLock<[u8; 20]>,
+    generate: impl FnOnce() -> Option<[u8; 20]>,
+) -> Option<[u8; 20]> {
+    if let Some(group_id) = cache.get() {
+        return Some(*group_id);
+    }
+
+    let generated = generate()?;
+    let _ = cache.set(generated);
+    cache.get().copied()
+}
+
+#[cfg(target_arch = "arm")]
+fn generate_platform_group_id() -> Option<[u8; 20]> {
     type GenVsieId = unsafe extern "C" fn(c_int, *mut usize) -> *mut c_char;
     const RTLD_NOW: c_int = 2;
 
@@ -586,6 +609,25 @@ mod tests {
             lan,
             mask
         ));
+    }
+
+    #[test]
+    fn group_id_cache_retries_failures_and_keeps_the_first_success() {
+        let cache = OnceLock::new();
+        assert_eq!(cached_group_id(&cache, || None), None);
+
+        let first = [0x11; 20];
+        assert_eq!(cached_group_id(&cache, || Some(first)), Some(first));
+
+        let mut generated_again = false;
+        assert_eq!(
+            cached_group_id(&cache, || {
+                generated_again = true;
+                Some([0x22; 20])
+            }),
+            Some(first)
+        );
+        assert!(!generated_again);
     }
 
     #[test]

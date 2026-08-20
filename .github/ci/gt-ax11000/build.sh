@@ -6,6 +6,11 @@ SOURCE_REPO="${ASUSWRT_SOURCE_REPO:-$SCRIPT_ROOT/../asuswrt-merlin.ng}"
 ROOT="${ASUSWRT_SOURCE_ROOT:-$SOURCE_REPO}"
 DEVICE="${1:-}"
 RUST_OVERLAY="$SCRIPT_ROOT/rust"
+RUST_REPACK_MAKEFILE="$SCRIPT_ROOT/rust-repack.mk"
+SOURCE_PREP_VERSION=1
+RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.85.1}"
+RUST_TARGET="${RUST_TARGET:-armv7-unknown-linux-gnueabi}"
+RUST_CPU_FLAGS="${RUST_CPU_FLAGS:--Ctarget-cpu=cortex-a9}"
 
 usage() {
 	cat <<EOF
@@ -17,8 +22,8 @@ Supported devices:
 Environment overrides:
   AM_TOOLCHAINS=/path/to/am-toolchains        default: \$HOME/am-toolchains
   ASUSWRT_SOURCE_REPO=/path/to/source         default: ../asuswrt-merlin.ng
-  ASUSWRT_BUILD_MODE=clean|fast               default: clean
-  ASUSWRT_FORCE_PROFILE=0|1                    default: 1 in fast mode, otherwise 0
+  ASUSWRT_BUILD_MODE=clean|fast|rust-fast     default: clean
+  ASUSWRT_FORCE_PROFILE=0|1                    default: 0; use 1 only after profile changes
   ASUSWRT_HOSTTOOLS=/tmp/path                 default: /tmp/asuswrt-hosttools
   ASUSWRT_MAKE_JOBS=1                         safety-enforced top-level orchestration
   ROUTER_PACKAGE_JOBS=1                       safe package graph; >1 is experimental
@@ -30,6 +35,9 @@ Environment overrides:
   ASUSWRT_REQUIRE_TMPFS=0|1                   reject non-tmpfs build paths, default: 0
   ASUSWRT_WORKTREE_BASE=/path/to/worktrees    default: this directory
   ASUSWRT_OUTPUT_DIR=/path/to/output          default: ./output/<device>
+
+rust-fast is an incremental Rust-only relink/repack path. It refuses to run
+without an exact prepared-source state and a prior successful full build.
 EOF
 }
 
@@ -86,7 +94,9 @@ WORKTREE_DIR="${ASUSWRT_WORKTREE_DIR:-$WORKTREE_BASE/$MAKE_TARGET}"
 OUTPUT_DIR="${ASUSWRT_OUTPUT_DIR:-$SCRIPT_ROOT/output/$MAKE_TARGET}"
 SDK_DIR="$ROOT/$SDK_PATH"
 LOG_FILE="$SDK_DIR/output-${MAKE_TARGET}-wsl.log"
+RUST_CONSUMER_MANIFEST="$ROOT/.asuswrt-rust-consumers-expected"
 OUTER_USER="$(id -un)"
+BUILD_STARTED_EPOCH="${ASUSWRT_BUILD_STARTED_EPOCH:-$(date +%s)}"
 
 require_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -127,7 +137,6 @@ verify_ram_only_paths() {
 	require_tmpfs_path "build worktree" "$WORKTREE_DIR"
 	require_tmpfs_path "firmware output" "$OUTPUT_DIR"
 	require_tmpfs_path "temporary files" "${TMPDIR:-/tmp}"
-	require_tmpfs_path "build home" "$HOME"
 	require_tmpfs_path "Cargo home" "${CARGO_HOME:-$HOME/.cargo}"
 	require_tmpfs_path "host tools" "$HOSTTOOLS"
 	require_tmpfs_path "APT cache" "$APT_CACHE"
@@ -157,8 +166,30 @@ prepare_ccache_toolchain_view() {
 	ccache_bin="$(command -v ccache)"
 
 	if [ -e "$TOOLCHAIN_VIEW" ] || [ -L "$TOOLCHAIN_VIEW" ]; then
-		echo "ASUSWRT_TOOLCHAIN_VIEW already exists: $TOOLCHAIN_VIEW" >&2
-		exit 1
+		smoke_compiler="$(find "$TOOLCHAIN_VIEW" -type l \
+			\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
+			-print -quit)"
+		if [ -z "$smoke_compiler" ] || [ "$(readlink -f "$smoke_compiler")" != "$(readlink -f "$ccache_bin")" ]; then
+			echo "Existing ccache toolchain view is incomplete or uses another ccache: $TOOLCHAIN_VIEW" >&2
+			exit 1
+		fi
+		while IFS= read -r bin_dir; do
+			compiler_paths+=("$bin_dir")
+		done < <(
+			find "$TOOLCHAIN_SRC" \( -type f -o -type l \) \
+				\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
+				-printf '%h\n' | sort -u
+		)
+		if [ "${#compiler_paths[@]}" -eq 0 ]; then
+			echo "No HND cross-compilers found for reused ccache view" >&2
+			exit 1
+		fi
+		CCACHE_PATH_VALUE="$(IFS=:; echo "${compiler_paths[*]}")"
+		TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_VIEW"
+		mkdir -p "$CCACHE_DIR"
+		CCACHE_DIR="$CCACHE_DIR" ccache --set-config="max_size=$CCACHE_MAXSIZE"
+		echo "Reusing ccache compiler frontends in $TOOLCHAIN_VIEW"
+		return
 	fi
 	mkdir -p "$TOOLCHAIN_VIEW"
 	cp -al "$TOOLCHAIN_SRC/." "$TOOLCHAIN_VIEW/"
@@ -214,10 +245,69 @@ prepare_ccache_toolchain_view() {
 compute_source_state_id() {
 	{
 		git -C "$SOURCE_REPO" rev-parse HEAD
-		sha256sum "$SCRIPT_ROOT/build.sh" "${PATCH_FILES[@]}"
-		find "$RUST_OVERLAY" -type f -not -path '*/target/*' -print0 \
-			| sort -z | xargs -0 sha256sum
+		printf '%s\n' "$SOURCE_PREP_VERSION"
+		# Hash the source-mutating preparation implementation itself. This keeps
+		# unrelated build-driver edits cheap while invalidating prepared trees
+		# automatically whenever their generated source state could change.
+		declare -f prepare_gt_ax11000_tree normalize_source_timestamps \
+			normalize_autotools_timestamps refresh_profile_cookie
+		for patch_file in "${PATCH_FILES[@]}"; do
+			sha256sum "$patch_file" | awk '{print $1}'
+		done
 	} | sha256sum | awk '{print $1}'
+}
+
+hash_file_or_missing() {
+	local path="$1"
+
+	if [ -f "$path" ]; then
+		sha256sum "$path" | awk '{print $1}'
+	else
+		printf 'missing'
+	fi
+}
+
+compute_toolchain_state_id() {
+	if [ -n "${ASUSWRT_TOOLCHAINS_STATE:-}" ]; then
+		printf '%s\n' "$ASUSWRT_TOOLCHAINS_STATE"
+		return
+	fi
+
+	# A local extracted toolchain has no Git object identity. Hash its stable
+	# tree metadata plus the actual compiler/linker executables; callers with a
+	# repository revision (CI) pass ASUSWRT_TOOLCHAINS_STATE explicitly.
+	{
+		find "$TOOLCHAINS/$TOOLCHAIN_GROUP" "$TOOLCHAINS/brcm-arm-sdk" \
+			\( -type f -o -type l \) -printf '%P\0%s\0%T@\0' 2>/dev/null \
+			| sort -z | sha256sum
+		find "$TOOLCHAINS/$TOOLCHAIN_GROUP" "$TOOLCHAINS/brcm-arm-sdk" \
+			-type f \( -name '*-gcc' -o -name '*-g++' -o -name '*-ld' \) \
+			-print0 2>/dev/null | sort -z | xargs -0r sha256sum
+	} | sha256sum | awk '{print $1}'
+}
+
+compute_full_build_contract_id() {
+	{
+		printf 'source=%s\n' "$ASUSWRT_SOURCE_STATE_ID"
+		printf 'profile=%s\n' "$PROFILE"
+		printf 'sdk_config=%s\n' "$(hash_file_or_missing "$SDK_DIR/.config")"
+		printf 'router_config=%s\n' "$(hash_file_or_missing "$ROOT/release/src/router/.config")"
+		printf 'kernel_config=%s\n' "$(hash_file_or_missing "$SDK_DIR/kernel/linux-4.1/.config")"
+		printf 'toolchains=%s\n' "$(compute_toolchain_state_id)"
+		printf 'rust_toolchain=%s\n' "$RUST_TOOLCHAIN"
+		rustc +"$RUST_TOOLCHAIN" --version --verbose
+		printf 'rust_target=%s\n' "$RUST_TARGET"
+		printf 'rust_cpu_flags=%s\n' "$RUST_CPU_FLAGS"
+	} | sha256sum | awk '{print $1}'
+}
+
+compute_rust_state_id() {
+	(
+		cd "$RUST_OVERLAY"
+		find . -type f -not -path '*/target/*' -print0 \
+			| sort -z | xargs -0 sha256sum
+	) \
+		| sha256sum | awk '{print $1}'
 }
 
 install_rust_components() {
@@ -229,6 +319,9 @@ install_rust_components() {
 	fi
 	mkdir -p "$destination"
 	rsync --archive --delete --exclude target/ "$RUST_OVERLAY/" "$destination/"
+	if [ -n "${ASUSWRT_RUST_STATE_ID:-}" ]; then
+		printf '%s\n' "$ASUSWRT_RUST_STATE_ID" > "$ROOT/.asuswrt-rust-state"
+	fi
 }
 
 prepare_source_worktree() {
@@ -244,6 +337,9 @@ prepare_source_worktree() {
 		echo "Source repository not found: $SOURCE_REPO" >&2
 		exit 1
 	fi
+	# The source repository is an object store: only its committed HEAD is used
+	# to create/update the detached build worktree. Its primary checkout may be
+	# intentionally empty to save RAM and is therefore not a build input.
 	for patch_file in "${PATCH_FILES[@]}"; do
 		if [ ! -f "$patch_file" ]; then
 			echo "Patch file not found: $patch_file" >&2
@@ -253,6 +349,7 @@ prepare_source_worktree() {
 
 	head="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
 	state_id="$(compute_source_state_id)"
+	ASUSWRT_RUST_STATE_ID="$(compute_rust_state_id)"
 	state_file="$WORKTREE_DIR/.asuswrt-build-state"
 	ASUSWRT_SOURCE_STATE_ID="$state_id"
 	ASUSWRT_FAST_REUSE_HIT=0
@@ -260,7 +357,7 @@ prepare_source_worktree() {
 
 	if git -C "$WORKTREE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 		old_head="$(git -C "$WORKTREE_DIR" rev-parse HEAD 2>/dev/null || true)"
-		if [ "$BUILD_MODE" = "fast" ] &&
+		if [ "$BUILD_MODE" != "clean" ] &&
 			[ "$old_head" = "$head" ] &&
 			[ -f "$state_file" ] &&
 			[ "$(cat "$state_file")" = "$state_id" ]; then
@@ -270,9 +367,9 @@ prepare_source_worktree() {
 		fi
 
 		git -C "$WORKTREE_DIR" reset --hard >/dev/null
-		if [ "$BUILD_MODE" != "fast" ] || [ "$old_head" != "$head" ]; then
-			git -C "$WORKTREE_DIR" clean -fdx >/dev/null
-		fi
+		# Any fast-state miss means that upstream, patches or preparation logic
+		# changed. Keep incremental objects only for an exact state hit.
+		git -C "$WORKTREE_DIR" clean -fdx >/dev/null
 		git -C "$WORKTREE_DIR" checkout --detach "$head" >/dev/null
 	else
 		rm -rf "$WORKTREE_DIR"
@@ -467,7 +564,7 @@ prepare_gt_ax11000_tree() {
 	fi
 }
 
-for cmd in apt-get cargo dpkg-deb make rsync rustc sha256sum; do
+for cmd in apt-get cargo dpkg-deb make md5sum rsync rustc sha256sum; do
 	require_cmd "$cmd"
 done
 
@@ -487,10 +584,10 @@ case "$DIRECT_TOOLCHAIN" in
 esac
 
 case "$BUILD_MODE" in
-	clean|fast)
+	clean|fast|rust-fast)
 		;;
 	*)
-		echo "ASUSWRT_BUILD_MODE must be clean or fast" >&2
+		echo "ASUSWRT_BUILD_MODE must be clean, fast or rust-fast" >&2
 		exit 2
 		;;
 esac
@@ -525,11 +622,7 @@ case "$CCACHE_ENABLED" in
 esac
 
 if [ -z "$FORCE_PROFILE" ]; then
-	if [ "$BUILD_MODE" = "fast" ]; then
-		FORCE_PROFILE=1
-	else
-		FORCE_PROFILE=0
-	fi
+	FORCE_PROFILE=0
 fi
 
 case "$FORCE_PROFILE" in
@@ -554,19 +647,32 @@ if [ "$REQUIRE_TMPFS" = "1" ]; then
 	verify_ram_only_paths
 fi
 
+if [ -z "${ASUSWRT_SOURCE_STATE_ID:-}" ]; then
+	ASUSWRT_SOURCE_STATE_ID="$(compute_source_state_id)"
+fi
+if [ -z "${ASUSWRT_RUST_STATE_ID:-}" ]; then
+	ASUSWRT_RUST_STATE_ID="$(compute_rust_state_id)"
+fi
+
 if [ -z "${ASUSWRT_BUILD_WORKTREE:-}" ]; then
-	if [ "$BUILD_MODE" = "fast" ]; then
-		echo "Preparing fast reusable source worktree in $WORKTREE_DIR"
+	if [ "$BUILD_MODE" != "clean" ]; then
+		echo "Preparing reusable $BUILD_MODE source worktree in $WORKTREE_DIR"
 	else
 		echo "Preparing clean source worktree in $WORKTREE_DIR"
 	fi
 	prepare_source_worktree
+	if [ "$BUILD_MODE" = "rust-fast" ] && [ "$ASUSWRT_FAST_REUSE_HIT" != "1" ]; then
+		echo "rust-fast requires an exact prepared-source state from a prior full build" >&2
+		exit 1
+	fi
 	exec env \
+		ASUSWRT_BUILD_STARTED_EPOCH="$BUILD_STARTED_EPOCH" \
 		ASUSWRT_BUILD_WORKTREE=1 \
 		ASUSWRT_BUILD_MODE="$BUILD_MODE" \
 		ASUSWRT_FORCE_PROFILE="$FORCE_PROFILE" \
 		ASUSWRT_FAST_REUSE_HIT="$ASUSWRT_FAST_REUSE_HIT" \
 		ASUSWRT_SOURCE_STATE_ID="$ASUSWRT_SOURCE_STATE_ID" \
+		ASUSWRT_RUST_STATE_ID="$ASUSWRT_RUST_STATE_ID" \
 		ASUSWRT_SOURCE_ROOT="$WORKTREE_DIR" \
 		ASUSWRT_OUTPUT_DIR="$OUTPUT_DIR" \
 		"$SCRIPT_ROOT/build.sh" "$DEVICE"
@@ -583,11 +689,16 @@ if [ ! -d "$TOOLCHAIN_SRC" ]; then
 	exit 1
 fi
 
+if [ "$BUILD_MODE" = "rust-fast" ] && [ ! -f "$RUST_REPACK_MAKEFILE" ]; then
+	echo "Rust repack makefile not found: $RUST_REPACK_MAKEFILE" >&2
+	exit 1
+fi
+
 echo "Installing Rust component overlay"
 install_rust_components
 
-if [ "$BUILD_MODE" = "fast" ]; then
-	echo "Skipping full source timestamp normalization in fast mode"
+if [ "$BUILD_MODE" != "clean" ]; then
+	echo "Skipping full source timestamp normalization in $BUILD_MODE mode"
 else
 	echo "Normalizing source timestamps in $ROOT"
 	normalize_source_timestamps
@@ -598,26 +709,43 @@ ensure_hosttools
 
 case "$MAKE_TARGET" in
 	gt-ax11000)
-		if [ "$BUILD_MODE" = "fast" ] && [ "${ASUSWRT_FAST_REUSE_HIT:-0}" = "1" ]; then
+		if [ "$BUILD_MODE" != "clean" ] && [ "${ASUSWRT_FAST_REUSE_HIT:-0}" = "1" ]; then
 			echo "Reusing previously generated $BUILD_NAME source adaptations"
 		else
 			echo "Preparing $BUILD_NAME source adaptations"
 			prepare_gt_ax11000_tree
-			if [ "$BUILD_MODE" = "fast" ] && [ -n "${ASUSWRT_SOURCE_STATE_ID:-}" ]; then
-				printf '%s\n' "$ASUSWRT_SOURCE_STATE_ID" > "$ROOT/.asuswrt-build-state"
-			fi
+		fi
+		if [ -n "${ASUSWRT_SOURCE_STATE_ID:-}" ]; then
+			printf '%s\n' "$ASUSWRT_SOURCE_STATE_ID" > "$ROOT/.asuswrt-build-state"
 		fi
 		;;
 esac
 
-if [ "$BUILD_MODE" = "fast" ]; then
+if [ "$BUILD_MODE" = "fast" ] && [ "${ASUSWRT_FAST_REUSE_HIT:-0}" != "1" ]; then
 	echo "Normalizing Autotools timestamps for fast rebuild"
 	normalize_autotools_timestamps
+elif [ "$BUILD_MODE" = "fast" ]; then
+	echo "Preserving generated timestamps for reused fast worktree"
 fi
 
 if [ "$BUILD_MODE" = "fast" ] && [ "$FORCE_PROFILE" = "1" ]; then
 	echo "Refreshing $BUILD_NAME profile cookie for fast rebuild"
 	refresh_profile_cookie
+fi
+
+full_build_state="$ROOT/.asuswrt-full-build-state"
+if [ "$BUILD_MODE" = "rust-fast" ]; then
+	full_build_contract="$(compute_full_build_contract_id)"
+	if [ "$FORCE_PROFILE" != "0" ]; then
+		echo "rust-fast cannot refresh or change the board profile" >&2
+		exit 1
+	fi
+	if [ "${ASUSWRT_FAST_REUSE_HIT:-0}" != "1" ] ||
+		[ ! -f "$full_build_state" ] ||
+		[ "$(cat "$full_build_state")" != "$full_build_contract" ]; then
+		echo "rust-fast requires a successful full build with the exact source, profile, toolchain and Rust target contract" >&2
+		exit 1
+	fi
 fi
 
 if [ "$CCACHE_ENABLED" = "1" ]; then
@@ -651,11 +779,15 @@ fi
 export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC TOOLCHAIN_MOUNT_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
 export MAKE_JOBS ROUTER_PACKAGE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
 export DIRECT_TOOLCHAIN CCACHE_ENABLED CCACHE_DIR CCACHE_MAXSIZE CCACHE_PATH_VALUE
+export RUST_REPACK_MAKEFILE RUST_CONSUMER_MANIFEST RUST_TOOLCHAIN RUST_TARGET RUST_CPU_FLAGS
 
 echo "Building $BUILD_NAME via $SDK_PATH with $MAKE_JOBS jobs ($BUILD_MODE mode)"
 mkdir -p "$OUTPUT_DIR"
+rm -f -- "$RUST_CONSUMER_MANIFEST"
 find "$OUTPUT_DIR" -maxdepth 1 -type f \
-	\( -name "$IMAGE_GLOB" -o -name "output-${MAKE_TARGET}-wsl.log" \) -delete
+	\( -name "$IMAGE_GLOB" -o -name "output-${MAKE_TARGET}-wsl.log" -o \
+	-name SHA256SUMS -o -name MD5SUMS -o -name RUST-CONSUMERS.sha256 -o \
+	-name BUILD-STATE.txt \) -delete
 find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
 	-name "$IMAGE_GLOB" -delete 2>/dev/null || true
 build_started_marker="$(mktemp --tmpdir asuswrt-build-start.XXXXXX)"
@@ -733,6 +865,21 @@ if [ "${FORCE_PROFILE:-0}" = "1" ]; then
 	make_args+=(FORCE=1)
 fi
 make_rc=1
+if [ "$BUILD_MODE" = "rust-fast" ]; then
+	: > "$LOG_FILE"
+	{
+		echo "Rust-only relink and firmware repack"
+		stage_started=$SECONDS
+		make -j1 -f Makefile -f "$RUST_REPACK_MAKEFILE" \
+			SHELL=/bin/bash "HOSTCFLAGS+=-fcommon" rust-components-relink
+		echo "RUST_RELINK_SECONDS=$((SECONDS - stage_started))"
+		stage_started=$SECONDS
+		make -j1 -f Makefile -f "$RUST_REPACK_MAKEFILE" \
+			SHELL=/bin/bash rust-firmware-repack
+		echo "FIRMWARE_REPACK_SECONDS=$((SECONDS - stage_started))"
+	} 2>&1 | tee "$LOG_FILE"
+	make_rc=${PIPESTATUS[0]}
+else
 for attempt in 1 2; do
 	set +e
 	if [ "$attempt" -eq 1 ]; then
@@ -751,6 +898,7 @@ for attempt in 1 2; do
 	fi
 	break
 done
+fi
 exit "$make_rc"
 EOF
 build_rc=$?
@@ -772,6 +920,33 @@ if [ "$build_rc" -eq 0 ] && { [ ! -L "$rt_tables_link" ] || [ "$(readlink "$rt_t
 	build_rc=1
 fi
 
+rootfs_dir="$SDK_DIR/targets/$PROFILE/fs"
+rust_consumers=(
+	usr/sbin/infosvr
+	bin/rstats
+	usr/sbin/Notify_Event2NC
+	usr/sbin/httpd
+	sbin/rc
+)
+if [ "$build_rc" -eq 0 ]; then
+	for consumer in "${rust_consumers[@]}"; do
+		if [ ! -f "$rootfs_dir/$consumer" ] || [ ! "$rootfs_dir/$consumer" -nt "$build_started_marker" ]; then
+			echo "Rust consumer was not freshly installed by this build: $rootfs_dir/$consumer" >&2
+			build_rc=1
+		fi
+	done
+fi
+
+if [ "$build_rc" -eq 0 ] && [ "$BUILD_MODE" = "rust-fast" ]; then
+	if [ ! -s "$RUST_CONSUMER_MANIFEST" ]; then
+		echo "Rust repack did not publish an expected consumer manifest" >&2
+		build_rc=1
+	elif ! (cd "$rootfs_dir" && sha256sum --check --strict "$RUST_CONSUMER_MANIFEST"); then
+		echo "Repacked rootfs does not contain the exact freshly linked Rust consumers" >&2
+		build_rc=1
+	fi
+fi
+
 rm -f -- "$build_started_marker"
 
 echo
@@ -786,6 +961,40 @@ echo
 if [ "$build_rc" -eq 0 ]; then
 	cp -f -- "${built_images[0]}" "$OUTPUT_DIR/"
 	cp -f "$LOG_FILE" "$OUTPUT_DIR/" 2>/dev/null || true
+	output_image="$OUTPUT_DIR/$(basename "${built_images[0]}")"
+	(
+		cd "$OUTPUT_DIR"
+		sha256sum "$(basename "$output_image")"
+	) > "$OUTPUT_DIR/SHA256SUMS"
+	(
+		cd "$OUTPUT_DIR"
+		md5sum "$(basename "$output_image")"
+	) > "$OUTPUT_DIR/MD5SUMS"
+	(
+		cd "$rootfs_dir"
+		sha256sum "${rust_consumers[@]}"
+	) > "$OUTPUT_DIR/RUST-CONSUMERS.sha256"
+	{
+		echo "upstream_sha=$(git -C "$SOURCE_REPO" rev-parse HEAD)"
+		echo "source_state=${ASUSWRT_SOURCE_STATE_ID:-unknown}"
+		echo "rust_state=${ASUSWRT_RUST_STATE_ID:-unknown}"
+		echo "full_build_contract=$(compute_full_build_contract_id)"
+		echo "toolchain_state=$(compute_toolchain_state_id)"
+		echo "profile=$PROFILE"
+		echo "sdk_config_sha256=$(hash_file_or_missing "$SDK_DIR/.config")"
+		echo "router_config_sha256=$(hash_file_or_missing "$ROOT/release/src/router/.config")"
+		echo "kernel_config_sha256=$(hash_file_or_missing "$SDK_DIR/kernel/linux-4.1/.config")"
+		echo "rust_toolchain=$RUST_TOOLCHAIN"
+		echo "rust_target=$RUST_TARGET"
+		echo "rust_cpu_flags=$RUST_CPU_FLAGS"
+		echo "build_mode=$BUILD_MODE"
+		echo "force_profile=$FORCE_PROFILE"
+		echo "firmware_sha256=$(sha256sum "$output_image" | awk '{print $1}')"
+		echo "duration_seconds=$(($(date +%s) - BUILD_STARTED_EPOCH))"
+	} > "$OUTPUT_DIR/BUILD-STATE.txt"
+	if [ "$BUILD_MODE" != "rust-fast" ]; then
+		compute_full_build_contract_id > "$full_build_state"
+	fi
 	echo "Copied outputs to: $OUTPUT_DIR"
 else
 	cp -f "$LOG_FILE" "$OUTPUT_DIR/" 2>/dev/null || true
