@@ -7,6 +7,7 @@ ROOT="${ASUSWRT_SOURCE_ROOT:-$SOURCE_REPO}"
 DEVICE="${1:-}"
 RUST_OVERLAY="$SCRIPT_ROOT/rust"
 RUST_REPACK_MAKEFILE="$SCRIPT_ROOT/rust-repack.mk"
+SECURITY_OVERLAY_TEST="$SCRIPT_ROOT/tests/security-overlay-check.sh"
 SOURCE_PREP_VERSION=1
 RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.85.1}"
 RUST_TARGET="${RUST_TARGET:-armv7-unknown-linux-gnueabi}"
@@ -74,6 +75,8 @@ PATCH_FILES=(
 	"$SCRIPT_ROOT/patches/rust-components.patch"
 	"$SCRIPT_ROOT/patches/security-hardening.patch"
 	"$SCRIPT_ROOT/patches/wps-shell-hardening.patch"
+	"$SCRIPT_ROOT/patches/wireless-policy-ui.patch"
+	"$SCRIPT_ROOT/patches/runtime-policy.patch"
 )
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
 ROUTER_PACKAGE_JOBS="${ROUTER_PACKAGE_JOBS:-1}"
@@ -696,6 +699,9 @@ fi
 
 echo "Installing Rust component overlay"
 install_rust_components
+
+echo "Verifying security overlay invariants"
+bash "$SECURITY_OVERLAY_TEST" "$ROOT"
 
 if [ "$BUILD_MODE" != "clean" ]; then
 	echo "Skipping full source timestamp normalization in $BUILD_MODE mode"

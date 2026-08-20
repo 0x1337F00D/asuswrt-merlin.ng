@@ -136,22 +136,11 @@ index 521d80637f1..e0a7e808a37 100644
  static void clear_residual_bw_qos_state(void);
  #endif
  
++extern int rust_httpd_wireless_identity_is_readonly(const char *name, size_t length);
++
 +static int is_readonly_wireless_identity_key(const char *name)
 +{
-+	const char *suffix;
-+
-+	if (!name)
-+		return 0;
-+	if (!strcmp(name, "wl_ifnames") || !strcmp(name, "wl_ifname") ||
-+	    !strcmp(name, "wl_hwaddr") || !strcmp(name, "wl_phytype") ||
-+	    !strcmp(name, "wl_phytypes") || !strcmp(name, "wl_radioids"))
-+		return 1;
-+	if (name[0] != 'w' || name[1] != 'l' || !isdigit((unsigned char)name[2]))
-+		return 0;
-+	suffix = strchr(name + 2, '_');
-+	return suffix && (!strcmp(suffix, "_ifname") || !strcmp(suffix, "_hwaddr") ||
-+		!strcmp(suffix, "_phytype") || !strcmp(suffix, "_phytypes") ||
-+		!strcmp(suffix, "_radioids"));
++	return name && rust_httpd_wireless_identity_is_readonly(name, strlen(name));
 +}
 +
  int validate_apply(webs_t wp, json_object *root)
@@ -226,15 +215,11 @@ index 521d80637f1..e0a7e808a37 100644
  	IKEV2CERT_TIMEOUT
  };
  
++extern int rust_httpd_multipart_filename_validate(const char *name, size_t length);
++
 +static int ca_upload_filename_is_safe(const char *name)
 +{
-+	size_t len;
-+
-+	if (!name || !*name || name[0] == '-')
-+		return 0;
-+	len = strlen(name);
-+	return len <= 63 && strcmp(name, ".") && strcmp(name, "..") &&
-+		strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-") == len;
++	return name && rust_httpd_multipart_filename_validate(name, strlen(name));
 +}
 +
  static void
@@ -287,36 +272,135 @@ index f603a742747..46e7f61ec40 100644
  	free(param);
  }
  
-+static int
-+safe_imported_custom_option(const char *option)
++static int safe_decimal_option(const char *value)
 +{
-+	static const char *allowed[] = {
-+		"auth-nocache", "cipher", "data-ciphers", "data-ciphers-fallback",
-+		"dhcp-option", "explicit-exit-notify", "float", "fragment", "inactive",
-+		"keepalive", "mssfix", "mute-replay-warnings", "ping", "ping-restart",
-+		"pull-filter", "rcvbuf", "remote-cert-tls", "resolv-retry", "route",
-+		"route-ipv6", "sndbuf", "tls-version-min", "tun-mtu"
-+	};
-+	size_t i;
-+
-+	if (!option)
++	size_t len;
++	if (!value || !(len = strlen(value)) || len > 10)
 +		return 0;
-+	for (i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i) {
-+		if (streq(option, allowed[i]))
-+			return 1;
++	return strspn(value, "0123456789") == len;
++}
++
++static int safe_modern_cipher(const char *value)
++{
++	return value && (streq(value, "AES-256-GCM") || streq(value, "AES-128-GCM") ||
++		streq(value, "CHACHA20-POLY1305"));
++}
++
++static int safe_modern_cipher_list(const char *value)
++{
++	char copy[128], *cursor, *token;
++	if (!value || strlen(value) >= sizeof(copy))
++		return 0;
++	strlcpy(copy, value, sizeof(copy));
++	cursor = copy;
++	while ((token = strsep(&cursor, ":")) != NULL) {
++		if (!*token || !safe_modern_cipher(token))
++			return 0;
 +	}
++	return 1;
++}
++
++static int safe_modern_digest(const char *value)
++{
++	return value && (streq(value, "SHA256") || streq(value, "SHA384") ||
++		streq(value, "SHA512"));
++}
++
++static int safe_imported_custom_option(char *p[])
++{
++	if (!p || !p[0])
++		return 0;
++	if (streq(p[0], "auth-nocache") || streq(p[0], "float") ||
++	    streq(p[0], "mute-replay-warnings"))
++		return !p[1];
++	if (streq(p[0], "cipher") || streq(p[0], "data-ciphers-fallback"))
++		return p[1] && !p[2] && safe_modern_cipher(p[1]);
++	if (streq(p[0], "data-ciphers"))
++		return p[1] && !p[2] && safe_modern_cipher_list(p[1]);
++	if (streq(p[0], "tls-version-min"))
++		return p[1] && !p[2] && (streq(p[1], "1.2") || streq(p[1], "1.3"));
++	if (streq(p[0], "remote-cert-tls"))
++		return p[1] && !p[2] && streq(p[1], "server");
++	if (streq(p[0], "explicit-exit-notify") || streq(p[0], "mssfix"))
++		return !p[1] || (!p[2] && safe_decimal_option(p[1]));
++	if (streq(p[0], "inactive") || streq(p[0], "ping") ||
++	    streq(p[0], "ping-restart") || streq(p[0], "rcvbuf") ||
++	    streq(p[0], "sndbuf") || streq(p[0], "tun-mtu"))
++		return p[1] && !p[2] && safe_decimal_option(p[1]);
++	if (streq(p[0], "keepalive"))
++		return p[1] && p[2] && !p[3] && safe_decimal_option(p[1]) &&
++			safe_decimal_option(p[2]);
++	if (streq(p[0], "resolv-retry"))
++		return p[1] && !p[2] &&
++			(streq(p[1], "infinite") || safe_decimal_option(p[1]));
 +	return 0;
 +}
 +
  static int
  add_option (char *p[], int line, int unit)
  {
-@@ -651,9 +672,13 @@ add_option (char *p[], int line, int unit)
+@@ -464,23 +526,17 @@ add_option (char *p[], int line, int unit)
+ 	else if (streq (p[0], "comp-lzo"))
+ 	{
+-		if(p[1])
+-			nvram_pf_set(prefix, "comp", p[1]);
+-		else
+-			nvram_pf_set(prefix, "comp", "adaptive");
++		nvram_pf_set(prefix, "comp", "no");
+ 	}
+ 	else if (streq (p[0], "compress"))
+ 	{
+-		if (p[1]) {
+-			if (streq (p[1], "lzo"))
+-				nvram_pf_set(prefix, "comp", "yes");
+-			else if (streq (p[1], "lz4"))
+-				nvram_pf_set(prefix, "comp", "lz4");
+-			else if (streq (p[1], "lz4-v2"))
+-				nvram_pf_set(prefix, "comp", "lz4-v2");
+-			else if (streq (p[1], "stub"))
+-				nvram_pf_set(prefix, "comp", "stub");
+-                        else if (streq (p[1], "stub-v2"))
+-                                nvram_pf_set(prefix, "comp", "stub-v2");
+-		} else {
+-			nvram_pf_set(prefix, "comp", "no");
+-		}
++		nvram_pf_set(prefix, "comp", "no");
++		_dprintf("OpenVPN import disabled compression on line %d\n", line);
+ 	}
+ #if 0
+ 	else if (streq (p[0], "cipher") && p[1])
+@@ -490,7 +546,11 @@ add_option (char *p[], int line, int unit)
+ #endif
+ 	else if (streq (p[0], "auth") && p[1])
+ 	{
+-		nvram_pf_set(prefix, "digest", p[1]);
++		if (safe_modern_digest(p[1]) && !p[2])
++			nvram_pf_set(prefix, "digest", p[1]);
++		else
++			_dprintf("OpenVPN import ignored weak or malformed auth digest on line %d\n",
++				line);
+ 	}
+ 	else if (streq (p[0], "verb") && p[1])
+ 	{
+@@ -651,9 +711,18 @@ add_option (char *p[], int line, int unit)
+ 	}
+ 	else if (streq (p[0], "ncp-ciphers") && p[1])
+ 	{
+-		nvram_pf_set(prefix, "ncp_ciphers", p[1]);
++		if (safe_modern_cipher_list(p[1]) && !p[2])
++			nvram_pf_set(prefix, "ncp_ciphers", p[1]);
++		else
++			_dprintf("OpenVPN import ignored weak or malformed NCP cipher list on line %d\n",
++				line);
+ 	}
+ 	else if (streq (p[0], "redirect-gateway") && (!p[1] || streq (p[1], "def1")))	// Only handle if default GW
+ 	{
+@@ -672,9 +741,13 @@ add_option (char *p[], int line, int unit)
  		) {
  			;//ignore
  		}
 -		else {
-+		else if (safe_imported_custom_option(p[0])) {
++		else if (safe_imported_custom_option(p)) {
  			add_custom(unit, p);
  		}
 +		else {
@@ -335,24 +419,54 @@ index c2b14f526c9..fb42c0d1510 100644
  #define START_TIME 1
  
 +static int firewall_apply_failed;
++static char firewall_fail_wan_if[IFNAMSIZ + 1];
 +
  #ifdef RTCONFIG_IPV6
  char wan6face[IFNAMSIZ + 1];
  // RFC-4890, sec. 4.3.1
-@@ -8896,6 +8898,7 @@ int start_firewall(int wanunit, int lanunit)
+@@ -8896,11 +8898,14 @@ int start_firewall(int wanunit, int lanunit)
  	}
  
  	lock = file_lock("firewall");
 +	firewall_apply_failed = 0;
++	firewall_fail_wan_if[0] = '\0';
  
  	snprintf(prefix, sizeof(prefix), "wan%d_", wanunit);
  
+ 	//(void)wan_ifname(wanunit, wan_if);
+ 	strcpy(wan_if, get_wan_ifname(wanunit));
++	strlcpy(firewall_fail_wan_if, wan_if, sizeof(firewall_fail_wan_if));
+ 
+ 	strcpy(wan_ip, nvram_safe_get(strcat_r(prefix, "ipaddr", tmp)));
+ 	strcpy(wanx_if, nvram_safe_get(strcat_r(prefix, "ifname", tmp)));
 @@ -9097,6 +9100,10 @@ int start_firewall(int wanunit, int lanunit)
  	}
  #endif
  
 +	if (firewall_apply_failed) {
-+		logmessage("firewall", "ruleset apply failed; IP forwarding remains disabled");
++		int emergency_v4 = 0;
++#ifdef RTCONFIG_IPV6
++		int emergency_v6 = 0;
++#endif
++		f_write_string("/proc/sys/net/ipv4/ip_forward", "0", 0, 0);
++#ifdef RTCONFIG_IPV6
++		f_write_string("/proc/sys/net/ipv6/conf/all/forwarding", "0", 0, 0);
++#endif
++		if (firewall_fail_wan_if[0]) {
++			emergency_v4 = eval("iptables", "-I", "INPUT", "1", "-i",
++				firewall_fail_wan_if, "-j", "DROP");
++#ifdef RTCONFIG_IPV6
++			emergency_v6 = eval("ip6tables", "-I", "INPUT", "1", "-i",
++				firewall_fail_wan_if, "-j", "DROP");
++#endif
++		}
++		if (emergency_v4
++#ifdef RTCONFIG_IPV6
++		    || emergency_v6
++#endif
++		   )
++			logmessage("firewall", "emergency WAN INPUT drop could not be installed");
++		logmessage("firewall", "ruleset apply failed; WAN INPUT is blocked and forwarding remains disabled");
 +		goto leave;
 +	}
  	enable_ip_forward();
@@ -461,6 +575,7 @@ index 4b8e6eaa708..cd4607583e0 100644
  #include <sys/resource.h>
  #include <errno.h>
 +
++/* Fail-closed validators provided by the router-security Rust crate. */
 +extern int rust_validate_ipsec_identity(const char *value);
 +extern int rust_validate_ipsec_filename(const char *value);
 +extern int rust_update_wireguard_endpoint(const char *path, const char *address);
@@ -482,6 +597,7 @@ index f46a49a75ca..12f07b7636b 100644
  
  typedef struct json_object json_object;
  
++/* Narrow apply allowlist provided by the router-security Rust crate. */
 +extern int rust_validate_apply_input_value(const char *candidate, const char *key);
 +
  int chk_acscli2_cmds(char *cmd)
@@ -610,13 +726,16 @@ index 257ffd7d739..2da195fc85a 100644
 -            system(cmd);
 -        }
 +    char source[SZ_BUF];
-+    char output[SZ_BUF];
++    char cert_output[SZ_BUF];
++    char ca_output[SZ_BUF];
++    char key_output[SZ_BUF];
 +    char password_file[SZ_BUF];
 +    char passin[SZ_BUF];
 +    char stem[SZ_MIN];
 +    const char *password;
 +    char *extension;
 +    int fd;
++    int success = 0;
 +
 +    if (asus_cert && rust_validate_ipsec_filename(asus_cert)) {
 +        snprintf(source, sizeof(source), "%s%s", FILE_PATH_CA_ETC, asus_cert);
@@ -657,18 +776,31 @@ index 257ffd7d739..2da195fc85a 100644
 +    close(fd);
 +    snprintf(passin, sizeof(passin), "file:%s", password_file);
 +
-+    snprintf(output, sizeof(output), "/tmp/etc/ipsec.d/certs/%s.pem", stem);
-+    eval("openssl", "pkcs12", "-in", source, "-clcerts", "-out", output,
-+         "-passin", passin);
-+    chmod(output, 0600);
-+    snprintf(output, sizeof(output), "/tmp/etc/ipsec.d/cacerts/%s.pem", stem);
-+    eval("openssl", "pkcs12", "-in", source, "-cacerts", "-out", output,
-+         "-passin", passin);
-+    chmod(output, 0600);
-+    snprintf(output, sizeof(output), "/tmp/etc/ipsec.d/private/%s.pem", stem);
-+    eval("openssl", "pkcs12", "-in", source, "-nodes", "-out", output,
-+         "-passin", passin);
-+    chmod(output, 0600);
++    snprintf(cert_output, sizeof(cert_output), "/tmp/etc/ipsec.d/certs/%s.pem", stem);
++    snprintf(ca_output, sizeof(ca_output), "/tmp/etc/ipsec.d/cacerts/%s.pem", stem);
++    snprintf(key_output, sizeof(key_output), "/tmp/etc/ipsec.d/private/%s.pem", stem);
++    unlink(cert_output);
++    unlink(ca_output);
++    unlink(key_output);
++    if (eval("openssl", "pkcs12", "-in", source, "-clcerts", "-out", cert_output,
++             "-passin", passin) != 0 || chmod(cert_output, 0600) != 0)
++        goto p12_cleanup;
++    if (eval("openssl", "pkcs12", "-in", source, "-cacerts", "-out", ca_output,
++             "-passin", passin) != 0 || chmod(ca_output, 0600) != 0)
++        goto p12_cleanup;
++    if (eval("openssl", "pkcs12", "-in", source, "-nodes", "-out", key_output,
++             "-passin", passin) != 0 || chmod(key_output, 0600) != 0)
++        goto p12_cleanup;
++    success = 1;
++
++p12_cleanup:
++    unlink(password_file);
++    if (!success) {
++        unlink(cert_output);
++        unlink(ca_output);
++        unlink(key_output);
++        logmessage("ipsec", "PKCS#12 extraction failed; partial files removed");
++    }
  }
  
  void rc_ipsec_ca_export(char *verify_pwd)

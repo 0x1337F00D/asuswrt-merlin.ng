@@ -1,5 +1,13 @@
 [workspace]
-members = ["httpd-parsers", "infosvr", "nt-event", "rstats", "wanduck-transition"]
+members = [
+    "httpd-parsers",
+    "infosvr",
+    "nt-event",
+    "router-policy",
+    "router-security",
+    "rstats",
+    "wanduck-transition",
+]
 resolver = "2"
 
 [profile.release]

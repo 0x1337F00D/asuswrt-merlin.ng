@@ -5,6 +5,9 @@ version = 4
 [[package]]
 name = "httpd-parsers"
 version = "0.1.0"
+dependencies = [
+ "router-policy",
+]
 
 [[package]]
 name = "infosvr"
@@ -13,6 +16,17 @@ version = "0.1.0"
 [[package]]
 name = "nt-event"
 version = "0.1.0"
+
+[[package]]
+name = "router-policy"
+version = "0.1.0"
+
+[[package]]
+name = "router-security"
+version = "0.1.0"
+dependencies = [
+ "router-policy",
+]
 
 [[package]]
 name = "rstats"

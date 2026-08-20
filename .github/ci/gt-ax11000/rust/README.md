@@ -13,10 +13,11 @@ existing ARM binary formats. History V0 files are migrated to V1, and speed
 archives now correctly accept any valid count from zero through 35 records.
 
 The third component is `httpd-parsers`, a Rust static library used by the
-existing C web server. It parses URL-encoded query and form pairs in place,
-decodes names and values only after their raw structural delimiters have been
-identified, and rejects encoded NUL bytes. The HTTP state machine, CGI hash
-table and request handlers remain in C to keep this migration narrowly scoped.
+existing C web server. It parses URL-encoded query/form and multipart filename
+boundaries, rejects encoded NUL bytes, protects WLAN identity/regulatory and
+raw calibration keys, authorizes only a country-profile test-lab request, and
+validates complete WLAN authentication/cipher/PMF/WPS tuples. The HTTP state
+machine, CGI hash table and request handlers remain in C.
 
 The fourth component is `wanduck-transition`. It owns the pure, duplicated
 dual-WAN failover/failback transition logic while PHY probes, NVRAM access,
@@ -30,6 +31,19 @@ the source-reconstructable `Notify_Event2NC` input boundary. It strictly parses
 the hexadecimal event identifier, bounds the message to the public 512-byte
 ABI and then hands the typed event to the unchanged proprietary `libnt`
 transport.
+
+The sixth component is `router-security`, the shell-free security boundary
+linked into `rc`. It owns the narrow apply/NVRAM allowlist, strict IPsec
+identity and basename validation, atomic WireGuard endpoint replacement, and
+bounded parsing of effective IPv4/IPv6 firewall rules exported to private
+temporary files. Keeping these policy and filesystem operations separate
+leaves `wanduck-transition` as a pure WAN state machine.
+
+The seventh component is `router-policy`, a dependency-free typed policy
+library. Its country-only test-lab and WLAN modules are enforced through
+`httpd-parsers`; its effective terminal-DROP invariant is enforced through
+`router-security`. WAN-admin and complete VPN kill-switch manifest coverage is
+typed and tested but is not yet wired into the running firewall.
 
 `infosvr` security boundary:
 
@@ -50,15 +64,24 @@ program and fixed arguments, never through a shell, and decompressed output is
 hard-limited before it reaches a codec. State and JavaScript files use atomic
 replacement.
 
-`httpd-parsers` exposes three small C-ABI functions. It performs no allocation
-across the ABI and never retains a caller pointer. Unit tests cover malformed
-escapes, encoded delimiters, empty fields, mixed separators and parameter
-smuggling through encoded NUL.
+`httpd-parsers` exposes small, bounded C-ABI functions. It performs no
+allocation across the ABI and never retains a caller pointer. Unit tests cover
+malformed escapes, encoded delimiters, empty fields, mixed separators,
+parameter smuggling, raw regulatory/calibration writes, exact country consent,
+and fail-closed WLAN security combinations.
 
 `wanduck-transition` accepts and returns fixed-layout C structs, performs no
 I/O or allocation, and leaves unknown legacy states to the existing C fallback.
 Its tests exercise transition priority and retry-counter invariants without
 requiring router hardware.
+
+`router-security` rejects null pointers, invalid UTF-8, unknown apply keys,
+path-like IPsec names and malformed WireGuard endpoints. WireGuard updates
+reject symlinks and oversized files, write a new mode-0600 file, sync it and
+atomically rename it over the old configuration. Effective firewall snapshots
+also reject symlinks, non-ASCII or oversized input and require INPUT/FORWARD to
+end in unconditional DROP rules before forwarding is enabled. It never invokes
+a shell.
 
 `nt-event` rejects empty, signed, overflowing and partially parsed event IDs.
 The ARM-only FFI is limited to the documented `initial_nt_event`,
@@ -70,6 +93,7 @@ Host tests:
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+bash ../tests/security-overlay-check.sh /path/to/patched/source
 ```
 
 The CI additionally checks the ARM target and exhaustively verifies that all

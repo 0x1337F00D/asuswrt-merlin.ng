@@ -378,7 +378,7 @@ diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
 index 71cb66ddfe..0d8ff8f258 100644
 --- a/release/src/router/rc/Makefile
 +++ b/release/src/router/rc/Makefile
-@@ -1321,8 +1321,28 @@ LDFLAGS += -L$(TOP)/libhostapi -lhostapi
+@@ -1321,8 +1321,38 @@ LDFLAGS += -L$(TOP)/libhostapi -lhostapi
  endif
  
  ifeq ($(RTCONFIG_BCM_AFC),y)
@@ -387,37 +387,43 @@ index 71cb66ddfe..0d8ff8f258 100644
  endif
 +
 +RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_WORKSPACE_MANIFEST := $(RUST_COMPONENTS_DIR)/Cargo.toml
 +RUST_WANDUCK_MANIFEST := $(RUST_COMPONENTS_DIR)/wanduck-transition/Cargo.toml
++RUST_SECURITY_MANIFEST := $(RUST_COMPONENTS_DIR)/router-security/Cargo.toml
 +RUST_TOOLCHAIN ?= 1.85.1
 +RUST_TARGET ?= armv7-unknown-linux-gnueabi
 +RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
 +RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
 +
-+ifneq ($(wildcard $(RUST_WANDUCK_MANIFEST)),)
++ifneq ($(and $(wildcard $(RUST_WORKSPACE_MANIFEST)),$(wildcard $(RUST_WANDUCK_MANIFEST)),$(wildcard $(RUST_SECURITY_MANIFEST))),)
 +RUST_WANDUCK_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libwanduck_transition.a
-+RUST_WANDUCK_SYSTEM_LIBS := -ldl -lpthread -lrt
++RUST_SECURITY_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/librouter_security.a
++RUST_RC_SYSTEM_LIBS := -ldl -lpthread -lrt
 +
 +.DEFAULT_GOAL := all
 +
-+.PHONY: $(RUST_WANDUCK_LIB)
++.PHONY: rust-rc-libs
 +
-+$(RUST_WANDUCK_LIB):
++rust-rc-libs:
 +	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
 +	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
 +	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
-+		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_WANDUCK_MANIFEST)" \
-+			-p wanduck-transition --release --target "$(RUST_TARGET)" --locked --offline
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_WORKSPACE_MANIFEST)" \
++			-p wanduck-transition -p router-security --release --target "$(RUST_TARGET)" \
++			--locked --offline
++
++$(RUST_WANDUCK_LIB) $(RUST_SECURITY_LIB): rust-rc-libs
 +endif
  
  all: PB rc $(if $(RTCONFIG_BRCM_HOSTAPD), $(WPS_PBCD)) init.prep
-@@ -1355,8 +1375,8 @@ $(NMP_API_LIB):
+@@ -1355,8 +1385,8 @@ $(NMP_API_LIB):
  endif
  
 -rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,) $(if $(NMP_API_LIB),| $(NMP_API_LIB),)
-+rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,) $(RUST_WANDUCK_LIB) $(if $(NMP_API_LIB),| $(NMP_API_LIB),)
++rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,) $(RUST_WANDUCK_LIB) $(RUST_SECURITY_LIB) $(if $(NMP_API_LIB),| $(NMP_API_LIB),)
  	@echo " [rc] CC $@"
 -	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS)
-+	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS) $(RUST_WANDUCK_SYSTEM_LIBS) -Wl,-z,relro,-z,now
++	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS) $(RUST_RC_SYSTEM_LIBS) -Wl,-z,relro,-z,now
  
  	$(SIZECHECK)
  	$(CPTMP)

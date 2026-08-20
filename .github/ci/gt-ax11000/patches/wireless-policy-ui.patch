@@ -1,0 +1,144 @@
+diff --git a/release/src/router/www/Advanced_WAdvanced_Content.asp b/release/src/router/www/Advanced_WAdvanced_Content.asp
+index 01b2ade7412..ec7a6ead318 100644
+--- a/release/src/router/www/Advanced_WAdvanced_Content.asp
++++ b/release/src/router/www/Advanced_WAdvanced_Content.asp
+@@ -308,6 +308,7 @@ function initial(){
+ 	register_event();
+ 	init_cookie();
+ 	backForwardCompatibility();
++	regulatory_lab_render_status();
+ 
+ 	if(lantiq_support){
+ 		checkWLReady();
+@@ -839,10 +840,13 @@ function generate_country_selection(){
+ 	var code = '';
+ 	var matched = false;
++	var hasAll = false;
+ 	
+ 	code += '<select class="input_option" name="ui_location_code">';
+ 	for(i=0; i<country_array.length; i++){
+ 		var index = country_array[i];
++		if(index == "ALL")
++			hasAll = true;
+ 		if(index == "NZ")
+ 			index = "AU";
+ 		var country = country_selection_array[index];
+@@ -856,6 +860,9 @@ function generate_country_selection(){
+ 		code += '<option value='+ index +'>'+ name +'</option>';
+ 	}
+ 
++	if(!hasAll)
++		code += '<option value="ALL">ALL (test-lab)</option>';
++
+ 	if(!matched){
+ 		code += '<option value='+ tcode +' ><#Setting_factorydefault_value#></option>';
+ 	}
+@@ -963,11 +963,35 @@ function changeRSSI(_switch){
+ 	}
+ }
+ 
++function regulatory_lab_render_status(){
++	var target = document.getElementById("regulatory_lab_status");
++	if(!target)
++		return;
++	var state = httpApi.nvramGet([
++		"wl0_country_code", "wl0_chanspec", "wl0_acs_dfs", "wl0_txpower",
++		"wl1_country_code", "wl1_chanspec", "wl1_acs_dfs", "wl1_txpower",
++		"wl2_country_code", "wl2_chanspec", "wl2_acs_dfs", "wl2_txpower"
++	]);
++	var channelSets = [
++		httpApi.hookGet("channel_list_2g") || [],
++		httpApi.hookGet("channel_list_5g") || [],
++		httpApi.hookGet("channel_list_5g_2") || []
++	];
++	var labels = ["2.4 GHz", "5 GHz-1", "5 GHz-2"];
++	var lines = [];
++	for(var unit = 0; unit < 3; ++unit){
++		var prefix = "wl" + unit + "_";
++		var channels = Array.isArray(channelSets[unit]) ? channelSets[unit].join(", ") : String(channelSets[unit]);
++		lines.push(labels[unit] + ": country=" + state[prefix + "country_code"] +
++			", current channel=" + state[prefix + "chanspec"] +
++			", DFS=" + (state[prefix + "acs_dfs"] == "1" ? "enabled" : "disabled") +
++			", current power setting=" + state[prefix + "txpower"] +
++			"% of the country/board-calibrated cap" +
++			", driver channels=" + channels);
++	}
++	target.textContent = lines.join("\n");
++}
++
++function regulatory_lab_change_confirmed(){
++	var regionControl = document.form.ui_location_code;
++	var currentRegion = (orig_region == "") ? tcode : orig_region;
++	var regionChanged = regionControl && !regionControl.disabled &&
++		(regionControl.value != currentRegion);
++	if(!regionChanged)
++		return true;
++
++	var acknowledgement = document.getElementById("regulatory_lab_ack");
++	if(!acknowledgement || !acknowledgement.checked){
++		alert("Confirm the regulatory test-lab warning before changing the country.");
++		return false;
++	}
++
++	if(!confirm("The selected country, including ALL, controls the driver-provided channels, DFS rules and maximum board-calibrated transmit power for every radio. The correct selection is your responsibility. Continue?"))
++		return false;
++
++	var uiRegion = regionControl.value;
++	var driverRegion = (U5_country_code && uiRegion == "U5") ? "AA" : uiRegion;
++	var applied = false;
++	$.ajax({
++		url: "/set_regulatory_testlab.cgi",
++		type: "POST",
++		dataType: "json",
++		async: false,
++		data: {
++			"country": driverRegion,
++			"confirmation": "ACKNOWLEDGE_REGULATORY_AND_HARDWARE_RISK_V1"
++		},
++		success: function(response){
++			applied = response && response.statusCode == "0" && response.applied === true;
++		}
++	});
++	if(!applied){
++		alert("The atomic country-profile update was rejected; no regulatory value was changed.");
++		return false;
++	}
++	alert("Country profile accepted. Wireless is restarting; this page will reload.");
++	setTimeout(refreshpage, 15000);
++	return false;
++}
++
+ function applyRule(){
+ 	if(lantiq_support && wave_ready != 1){
+ 		alert(`<#Wireless_ready#>`);
+ 		return false;
+ 	}
++	if(!regulatory_lab_change_confirmed())
++		return false;
+ 	
+ 	if(validForm()){
+ 		if(wifi_hw_sw_support && !Qcawifi_support) { //For N55U
+@@ -2126,6 +2150,17 @@ function wl_disable11b(obj){
+ 							</select>
+ 						</td>
+ 					</tr>
++					<tr id="regulatory_lab_warning">
++						<th>Advanced regulatory test-lab</th>
++						<td style="color:#FC0;line-height:1.45;">
++							The country selector is the only test-lab control for regulatory
++							frequencies and transmit power. The selected country, including ALL,
++							determines the driver-provided channels, DFS rules and maximum
++							board-calibrated power on all three radios. Individual channel lists,
++							power values and raw PA calibration cannot be edited here. The correct
++							country selection and regulatory compliance are your responsibility.
++							The displayed power is the current configured percentage/cap, not a live
++							RF measurement.<br>
++							<pre id="regulatory_lab_status" style="white-space:pre-wrap;color:#FFF;"></pre>
++							<label><input type="checkbox" id="regulatory_lab_ack"> I understand
++							that a change can disconnect clients and restart wireless service.</label>
++						</td>
++					</tr>
+-					<tr id="wl_txPower_field">
++					<tr id="wl_txPower_field" style="display:none;">
+ 						<th><a id="wl_txPower_field_title" class="hintstyle" href="javascript:void(0);" onClick="openHint(0, 16);"><#WLANConfig11b_TxPower_itemname#></a></th>
+ 						<td>
