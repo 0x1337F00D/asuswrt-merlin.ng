@@ -34,7 +34,7 @@ jobs:
             "https://github.com/${GITHUB_REPOSITORY}.git"
           git -C overlay sparse-checkout init --cone
           git -C overlay sparse-checkout set .github/ci/gt-ax11000
-          git -C overlay fetch --depth=1 origin "$GITHUB_SHA"
+          git -C overlay fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
           git -C overlay checkout --detach FETCH_HEAD
           test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
 
