@@ -7,11 +7,33 @@ export PATH
 TRIAL_DIR=/data/firmware-trial-rollback
 STATE_FILE="$TRIAL_DIR/state"
 LOG_FILE="$TRIAL_DIR/guard.log"
-CANDIDATE_STATE=BOOT_SET_PART1_IMAGE
-FALLBACK_STATE=BOOT_SET_PART2_IMAGE
-FALLBACK_ONCE_STATE=BOOT_SET_PART2_IMAGE_ONCE
-WEB_PAYLOAD_MANIFEST_SHA256=d564d4ecace0465d7b004c6aeee54ab0dc9374310edb7ce19dc590878237e4f9
+WEB_PAYLOAD_MANIFEST_SHA256=94a4622ba0ce9a51f808f9105e6f9520016dd639db06c0ce348d79eeb3c17ed8
 WEB_SYMLINK_MANIFEST_SHA256=e651541e58c5ae985d833ccc6782752281b2c4f6f8d0b2782bf0000fc5f6b0bf
+
+set_boot_roles() {
+	bootstate=$(/bin/bcm_bootstate 2>/dev/null) || return 1
+	case "$bootstate" in
+		*"Booted Partition: First"*)
+			CANDIDATE_STATE=BOOT_SET_PART1_IMAGE
+			FALLBACK_STATE=BOOT_SET_PART2_IMAGE
+			FALLBACK_ONCE_STATE=BOOT_SET_PART2_IMAGE_ONCE
+			CANDIDATE_PARTITION=PART1
+			CANDIDATE_BOOT_LABEL=First
+			FALLBACK_PARTITION=PART2
+			;;
+		*"Booted Partition: Second"*)
+			CANDIDATE_STATE=BOOT_SET_PART2_IMAGE
+			FALLBACK_STATE=BOOT_SET_PART1_IMAGE
+			FALLBACK_ONCE_STATE=BOOT_SET_PART1_IMAGE_ONCE
+			CANDIDATE_PARTITION=PART2
+			CANDIDATE_BOOT_LABEL=Second
+			FALLBACK_PARTITION=PART1
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
 
 log_guard() {
 	mkdir -p "$TRIAL_DIR" 2>/dev/null || return 0
@@ -72,7 +94,7 @@ is_candidate_identity() {
 	[ "$(nvram get firmver)" = "3.0.0.6" ] &&
 	[ "$(nvram get buildno)" = "102.8" ] &&
 	[ "$(nvram get extendno)" = "4" ] &&
-	/bin/bcm_bootstate 2>/dev/null | grep -q 'Booted Partition: First' &&
+	/bin/bcm_bootstate 2>/dev/null | grep -q "Booted Partition: $CANDIDATE_BOOT_LABEL" &&
 	grep -Fq 'id="regulatory_lab_country"' /www/Advanced_WAdvanced_Content.asp &&
 	grep -Fq 'regulatory_lab_store_acknowledgement' /www/Advanced_WAdvanced_Content.asp &&
 	[ -s /www/EN.dict ] &&
@@ -121,23 +143,25 @@ healthy() {
 
 case "${1:-}" in
 	arm)
+		set_boot_roles || exit 1
 		is_candidate_identity || exit 0
 		if bootstate_has "$CANDIDATE_STATE"; then
 			/bin/bcm_bootstate "$FALLBACK_ONCE_STATE" >/dev/null || exit 1
-			set_state BOOT_GUARD_PART1_ARMED
-			log_guard arm fallback-partition2-once
+			set_state "BOOT_GUARD_${CANDIDATE_PARTITION}_ARMED"
+			log_guard arm "fallback-${FALLBACK_PARTITION}-once"
 		fi
 		;;
 	promote)
+		set_boot_roles || exit 1
 		if healthy; then
 			/bin/bcm_bootstate "$CANDIDATE_STATE" >/dev/null || exit 1
-			set_state PROMOTED_UI_NVRAM_PART1
+			set_state "PROMOTED_UI_NVRAM_${CANDIDATE_PARTITION}"
 			log_guard promote health-pass
 			exit 0
 		fi
 		if is_candidate_identity; then
 			/bin/bcm_bootstate "$FALLBACK_STATE" >/dev/null || exit 1
-			set_state HEALTH_FAIL_FALLBACK_PART2
+			set_state "HEALTH_FAIL_FALLBACK_${FALLBACK_PARTITION}"
 			log_guard rollback health-fail-auto-reboot
 			sync
 			(sleep 2; /sbin/reboot) >/dev/null 2>&1 &

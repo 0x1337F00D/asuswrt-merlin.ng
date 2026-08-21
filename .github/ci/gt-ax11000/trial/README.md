@@ -69,20 +69,22 @@ python3 -m unittest discover -s .github/ci/gt-ax11000/trial \
 ## Persistent promotion guard
 
 `router-persistent-guard.sh` is deliberately separate from the one-shot trial
-controller. It describes the validated deployment: candidate on partition 1
-and known-good fallback on partition 2. Candidate identity requires the exact
-model/version, running partition, final test-lab UI markers, the `httpd` NVRAM
-marker, and complete file-plus-symlink Web manifests; the shared base firmware
-version string alone is not sufficient.
+controller. It derives candidate and fallback roles from the currently booted
+partition, so either slot can be promoted while the opposite slot remains the
+known-good fallback. Candidate identity requires the exact model/version,
+running partition, final test-lab UI markers, the `httpd` NVRAM marker, and
+complete file-plus-symlink Web manifests; the shared base firmware version
+string alone is not sufficient.
 
 The manifests live under `/usr/share/codex`. ASUS maps `/etc` to volatile
 `/tmp/etc` at runtime, so immutable candidate identity must never be stored
 there.
 
-On every persistent candidate boot, `arm` selects partition 2 for one boot.
-The delayed `services-start` hook invokes `promote` after 120 seconds. Only the
-complete services, WAN/DNS, three-radio, firewall, kernel-log and UI-marker
-health gate restores persistent partition 1. A reachable health failure selects
-partition 2 persistently and requests a reboot. A candidate that never becomes
-reachable still requires out-of-band power control to trigger the already armed
-fallback, as documented above.
+On every persistent candidate boot, `arm` selects the opposite partition for
+one boot. The delayed `services-start` hook invokes `promote` after 120 seconds.
+Only the complete services, WAN/DNS, three-radio, firewall, kernel-log and
+UI-marker health gate restores the currently booted candidate persistently. A
+reachable health failure selects the opposite partition persistently and
+requests a reboot. A candidate that never becomes reachable still requires
+out-of-band power control to trigger the already armed fallback, as documented
+above.
