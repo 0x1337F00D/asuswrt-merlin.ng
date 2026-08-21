@@ -8,6 +8,9 @@ DEVICE="${1:-}"
 RUST_OVERLAY="$SCRIPT_ROOT/rust"
 RUST_REPACK_MAKEFILE="$SCRIPT_ROOT/rust-repack.mk"
 SECURITY_OVERLAY_TEST="$SCRIPT_ROOT/tests/security-overlay-check.sh"
+NETWORK_HARDENING_TEST="$SCRIPT_ROOT/tests/network-hardening-check.sh"
+WEB_PAYLOAD_TEST="$SCRIPT_ROOT/tests/verify-web-payload.sh"
+WEB_SYMLINK_TEST="$SCRIPT_ROOT/tests/verify-web-symlinks.sh"
 SOURCE_PREP_VERSION=1
 RUST_TOOLCHAIN="${RUST_TOOLCHAIN:-1.85.1}"
 RUST_TARGET="${RUST_TARGET:-armv7-unknown-linux-gnueabi}"
@@ -77,6 +80,7 @@ PATCH_FILES=(
 	"$SCRIPT_ROOT/patches/wps-shell-hardening.patch"
 	"$SCRIPT_ROOT/patches/wireless-policy-ui.patch"
 	"$SCRIPT_ROOT/patches/runtime-policy.patch"
+	"$SCRIPT_ROOT/patches/network-hardening.patch"
 )
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
 ROUTER_PACKAGE_JOBS="${ROUTER_PACKAGE_JOBS:-1}"
@@ -98,6 +102,8 @@ OUTPUT_DIR="${ASUSWRT_OUTPUT_DIR:-$SCRIPT_ROOT/output/$MAKE_TARGET}"
 SDK_DIR="$ROOT/$SDK_PATH"
 LOG_FILE="$SDK_DIR/output-${MAKE_TARGET}-wsl.log"
 RUST_CONSUMER_MANIFEST="$ROOT/.asuswrt-rust-consumers-expected"
+WEB_PAYLOAD_MANIFEST="$ROOT/.asuswrt-web-payload-expected"
+WEB_SYMLINK_MANIFEST="$ROOT/.asuswrt-web-symlinks-expected"
 OUTER_USER="$(id -un)"
 BUILD_STARTED_EPOCH="${ASUSWRT_BUILD_STARTED_EPOCH:-$(date +%s)}"
 
@@ -187,6 +193,10 @@ prepare_ccache_toolchain_view() {
 			echo "No HND cross-compilers found for reused ccache view" >&2
 			exit 1
 		fi
+		# A prior view can predate host-runtime libraries added to the RAM copy.
+		# Merge only missing immutable toolchain files while preserving the ccache
+		# compiler symlinks already installed in the view.
+		cp -aln "$TOOLCHAIN_SRC/." "$TOOLCHAIN_VIEW/"
 		CCACHE_PATH_VALUE="$(IFS=:; echo "${compiler_paths[*]}")"
 		TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_VIEW"
 		mkdir -p "$CCACHE_DIR"
@@ -567,7 +577,7 @@ prepare_gt_ax11000_tree() {
 	fi
 }
 
-for cmd in apt-get cargo dpkg-deb make md5sum rsync rustc sha256sum; do
+for cmd in apt-get cargo cmp dpkg-deb make md5sum rsync rustc sha256sum; do
 	require_cmd "$cmd"
 done
 
@@ -692,8 +702,8 @@ if [ ! -d "$TOOLCHAIN_SRC" ]; then
 	exit 1
 fi
 
-if [ "$BUILD_MODE" = "rust-fast" ] && [ ! -f "$RUST_REPACK_MAKEFILE" ]; then
-	echo "Rust repack makefile not found: $RUST_REPACK_MAKEFILE" >&2
+if [ ! -f "$RUST_REPACK_MAKEFILE" ]; then
+	echo "Manifest-bound repack makefile not found: $RUST_REPACK_MAKEFILE" >&2
 	exit 1
 fi
 
@@ -702,6 +712,8 @@ install_rust_components
 
 echo "Verifying security overlay invariants"
 bash "$SECURITY_OVERLAY_TEST" "$ROOT"
+echo "Verifying network hardening invariants"
+bash "$NETWORK_HARDENING_TEST" "$ROOT"
 
 if [ "$BUILD_MODE" != "clean" ]; then
 	echo "Skipping full source timestamp normalization in $BUILD_MODE mode"
@@ -785,14 +797,16 @@ fi
 export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC TOOLCHAIN_MOUNT_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
 export MAKE_JOBS ROUTER_PACKAGE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
 export DIRECT_TOOLCHAIN CCACHE_ENABLED CCACHE_DIR CCACHE_MAXSIZE CCACHE_PATH_VALUE
-export RUST_REPACK_MAKEFILE RUST_CONSUMER_MANIFEST RUST_TOOLCHAIN RUST_TARGET RUST_CPU_FLAGS
+export RUST_REPACK_MAKEFILE RUST_CONSUMER_MANIFEST WEB_PAYLOAD_MANIFEST WEB_SYMLINK_MANIFEST
+export RUST_TOOLCHAIN RUST_TARGET RUST_CPU_FLAGS
 
 echo "Building $BUILD_NAME via $SDK_PATH with $MAKE_JOBS jobs ($BUILD_MODE mode)"
 mkdir -p "$OUTPUT_DIR"
-rm -f -- "$RUST_CONSUMER_MANIFEST"
+rm -f -- "$RUST_CONSUMER_MANIFEST" "$WEB_PAYLOAD_MANIFEST" "$WEB_SYMLINK_MANIFEST"
 find "$OUTPUT_DIR" -maxdepth 1 -type f \
 	\( -name "$IMAGE_GLOB" -o -name "output-${MAKE_TARGET}-wsl.log" -o \
 	-name SHA256SUMS -o -name MD5SUMS -o -name RUST-CONSUMERS.sha256 -o \
+	-name WEB-PAYLOAD.sha256 -o -name WEB-SYMLINKS.manifest -o \
 	-name BUILD-STATE.txt \) -delete
 find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
 	-name "$IMAGE_GLOB" -delete 2>/dev/null || true
@@ -862,7 +876,7 @@ if [ "$CCACHE_ENABLED" = "1" ]; then
 	export CCACHE_NOHASHDIR=true
 	export CCACHE_UMASK=002
 fi
-export LD_LIBRARY_PATH="/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/lib:/opt/toolchains/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/lib:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/lib:/opt/toolchains/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/lib:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/lib:/opt/toolchains/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/lib:$HOSTTOOLS/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
 export PATH="$HOME/.cargo/bin:$FAKEBIN:$HOSTTOOLS/usr/bin:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2011.09/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2013.11/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 cd "$ROOT/$SDK_PATH"
@@ -904,6 +918,18 @@ for attempt in 1 2; do
 	fi
 	break
 done
+if [ "$make_rc" -eq 0 ]; then
+	set +e
+	{
+		echo "Finalizing firmware through the common manifest-bound repack"
+		stage_started=$SECONDS
+		make -j1 -f Makefile -f "$RUST_REPACK_MAKEFILE" \
+			SHELL=/bin/bash rust-firmware-repack
+		echo "FIRMWARE_REPACK_SECONDS=$((SECONDS - stage_started))"
+	} 2>&1 | tee -a "$LOG_FILE"
+	make_rc=${PIPESTATUS[0]}
+	set -e
+fi
 fi
 exit "$make_rc"
 EOF
@@ -927,6 +953,7 @@ if [ "$build_rc" -eq 0 ] && { [ ! -L "$rt_tables_link" ] || [ "$(readlink "$rt_t
 fi
 
 rootfs_dir="$SDK_DIR/targets/$PROFILE/fs"
+dict_enum_file=$(find "$SDK_DIR" -type f -path '*/src/image/dictenum.txt' -print -quit)
 rust_consumers=(
 	usr/sbin/infosvr
 	bin/rstats
@@ -943,12 +970,35 @@ if [ "$build_rc" -eq 0 ]; then
 	done
 fi
 
-if [ "$build_rc" -eq 0 ] && [ "$BUILD_MODE" = "rust-fast" ]; then
+if [ "$build_rc" -eq 0 ]; then
 	if [ ! -s "$RUST_CONSUMER_MANIFEST" ]; then
 		echo "Rust repack did not publish an expected consumer manifest" >&2
 		build_rc=1
 	elif ! (cd "$rootfs_dir" && sha256sum --check --strict "$RUST_CONSUMER_MANIFEST"); then
 		echo "Repacked rootfs does not contain the exact freshly linked Rust consumers" >&2
+		build_rc=1
+	fi
+	if [ ! -s "$WEB_PAYLOAD_MANIFEST" ]; then
+		echo "Rust repack did not publish the complete AUTODICT Web manifest" >&2
+		build_rc=1
+	elif [ -e "$rootfs_dir/www/www" ]; then
+		echo "Repacked rootfs contains a forbidden nested /www/www tree" >&2
+		build_rc=1
+	elif ! cmp -s "$WEB_PAYLOAD_MANIFEST" "$rootfs_dir/usr/share/codex/web-payload.sha256"; then
+		echo "Rootfs does not embed the exact generated AUTODICT Web manifest" >&2
+		build_rc=1
+	elif ! cmp -s "$WEB_SYMLINK_MANIFEST" "$rootfs_dir/usr/share/codex/web-symlinks.manifest"; then
+		echo "Rootfs does not embed the exact generated Web symlink manifest" >&2
+		build_rc=1
+	elif ! (cd "$rootfs_dir" && sha256sum --check --strict "$WEB_PAYLOAD_MANIFEST"); then
+		echo "Repacked rootfs Web pages and dictionaries do not match the generated set" >&2
+		build_rc=1
+	elif [ -z "$dict_enum_file" ] || \
+		! bash "$WEB_PAYLOAD_TEST" "$rootfs_dir" "$dict_enum_file" "$WEB_PAYLOAD_MANIFEST"; then
+		echo "Repacked AUTODICT Web payload failed semantic validation" >&2
+		build_rc=1
+	elif ! bash "$WEB_SYMLINK_TEST" "$rootfs_dir" "$WEB_SYMLINK_MANIFEST"; then
+		echo "Repacked Web symlink set failed validation" >&2
 		build_rc=1
 	fi
 fi
@@ -980,6 +1030,8 @@ if [ "$build_rc" -eq 0 ]; then
 		cd "$rootfs_dir"
 		sha256sum "${rust_consumers[@]}"
 	) > "$OUTPUT_DIR/RUST-CONSUMERS.sha256"
+	cp -f "$WEB_PAYLOAD_MANIFEST" "$OUTPUT_DIR/WEB-PAYLOAD.sha256"
+	cp -f "$WEB_SYMLINK_MANIFEST" "$OUTPUT_DIR/WEB-SYMLINKS.manifest"
 	{
 		echo "upstream_sha=$(git -C "$SOURCE_REPO" rev-parse HEAD)"
 		echo "source_state=${ASUSWRT_SOURCE_STATE_ID:-unknown}"

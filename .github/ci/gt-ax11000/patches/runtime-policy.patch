@@ -121,8 +121,7 @@ index bd024c2785d..43fd8e223d8 100644
  extern int rust_httpd_wireless_identity_is_readonly(const char *name, size_t length);
 +extern int rust_httpd_wlan_security_validate(const char *authentication,
 +	size_t authentication_length, const char *cipher, size_t cipher_length,
-+	const char *pmf, size_t pmf_length, const char *wps, size_t wps_length,
-+	int allow_transition, int allow_wps_with_wpa2);
++	const char *pmf, size_t pmf_length, const char *wps, size_t wps_length);
  
  static int is_readonly_wireless_identity_key(const char *name)
  {
@@ -155,9 +154,7 @@ index bd024c2785d..43fd8e223d8 100644
 +		wlan_candidate_value(root, "wps_enable", "wps_enable");
 +
 +	return rust_httpd_wlan_security_validate(authentication, strlen(authentication),
-+		cipher, strlen(cipher), pmf, strlen(pmf), wps, strlen(wps),
-+		nvram_match("rust_wlan_allow_transition", "1"),
-+		nvram_match("rust_wlan_allow_wps_wpa2", "1"));
++		cipher, strlen(cipher), pmf, strlen(pmf), wps, strlen(wps));
 +}
 +
 +static int validate_wlan_security_request(json_object *root)

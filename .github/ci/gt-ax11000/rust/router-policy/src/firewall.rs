@@ -1,5 +1,5 @@
 use crate::{valid_identifier, PolicyError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_RULES: usize = 512;
@@ -138,8 +138,9 @@ impl FirewallManifest {
 
     /// Derive only the terminal-DROP facts from effective `iptables-save`
     /// output. The last appended INPUT and FORWARD rule must be an exact,
-    /// unconditional DROP. A preceding DROP is not sufficient because a later
-    /// rule could otherwise remain reachable.
+    /// unconditional DROP, either directly or through a logging-only chain
+    /// whose final verdict is DROP. A preceding DROP is not sufficient because
+    /// a later rule could otherwise remain reachable.
     pub fn from_effective_filter_saves(
         ipv4: &str,
         ipv6: Option<&str>,
@@ -221,8 +222,9 @@ fn terminal_drop_rules(
 
     let mut in_filter = false;
     let mut committed = false;
-    let mut last_input = None;
-    let mut last_forward = None;
+    let mut last_input = None::<String>;
+    let mut last_forward = None::<String>;
+    let mut user_chain_rules = HashMap::<String, Vec<Vec<String>>>::new();
     for line in input.lines() {
         let line = line.trim();
         if line == "*filter" {
@@ -241,16 +243,31 @@ fn terminal_drop_rules(
             continue;
         }
         let words: Vec<_> = line.split_ascii_whitespace().collect();
-        match words.as_slice() {
-            ["-A", "INPUT", rest @ ..] => last_input = Some(*rest == ["-j", "DROP"]),
-            ["-A", "FORWARD", rest @ ..] => last_forward = Some(*rest == ["-j", "DROP"]),
-            _ => {}
+        if let ["-A", chain, rest @ ..] = words.as_slice() {
+            if *chain == "INPUT" || *chain == "FORWARD" {
+                let target = match rest {
+                    ["-j", target] => Some((*target).to_owned()),
+                    _ => None,
+                };
+                if *chain == "INPUT" {
+                    last_input = target;
+                } else {
+                    last_forward = target;
+                }
+            } else {
+                user_chain_rules
+                    .entry((*chain).to_owned())
+                    .or_default()
+                    .push(rest.iter().map(|word| (*word).to_owned()).collect());
+            }
         }
     }
     if in_filter || !committed {
         return Err(PolicyError::InvalidFormat);
     }
-    if last_input != Some(true) || last_forward != Some(true) {
+    if !last_target_is_drop(last_input.as_deref(), &user_chain_rules)
+        || !last_target_is_drop(last_forward.as_deref(), &user_chain_rules)
+    {
         return Err(PolicyError::Invariant("effective terminal DROP"));
     }
     Ok(vec![
@@ -263,6 +280,37 @@ fn terminal_drop_rules(
             chain: FilterChain::Forward,
         },
     ])
+}
+
+fn last_target_is_drop(
+    target: Option<&str>,
+    user_chain_rules: &HashMap<String, Vec<Vec<String>>>,
+) -> bool {
+    let Some(target) = target else {
+        return false;
+    };
+    if target == "DROP" {
+        return true;
+    }
+    let Some(rules) = user_chain_rules.get(target) else {
+        return false;
+    };
+    let Some((last, preceding)) = rules.split_last() else {
+        return false;
+    };
+    if last.as_slice() != ["-j", "DROP"] {
+        return false;
+    }
+    preceding.iter().all(|rule| {
+        if rule.iter().any(|word| word == "-g" || word == "--goto") {
+            return false;
+        }
+        let jumps = rule
+            .windows(2)
+            .filter_map(|words| (words[0] == "-j").then_some(words[1].as_str()))
+            .collect::<Vec<_>>();
+        jumps.as_slice() == ["LOG"]
+    })
 }
 
 impl FirewallRequirements {
@@ -431,6 +479,31 @@ vpn-killswitch ipv6 eth0 wg0 deny
             assert!(
                 FirewallManifest::from_effective_filter_saves(invalid, None).is_err(),
                 "accepted invalid effective ruleset: {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn vendor_logging_drop_chain_is_semantically_terminal() {
+        let rules = "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:logdrop - [0:0]\n-A INPUT -j logdrop\n-A FORWARD -j logdrop\n-A logdrop -m state --state NEW -j LOG --log-prefix DROP\n-A logdrop -j DROP\nCOMMIT\n";
+        FirewallManifest::from_effective_filter_saves(rules, Some(rules))
+            .unwrap()
+            .validate_terminal_drops(true)
+            .unwrap();
+
+        for unsafe_chain in [
+            "-A logdrop -j ACCEPT\n-A logdrop -j DROP",
+            "-A logdrop -j RETURN\n-A logdrop -j DROP",
+            "-A logdrop -g acceptor -j LOG\n-A logdrop -j DROP",
+            "-A logdrop -j LOG\n-A logdrop -j ACCEPT",
+            "-A logdrop -j DROP\n-A logdrop -j LOG",
+        ] {
+            let candidate = format!(
+                "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:logdrop - [0:0]\n-A INPUT -j logdrop\n-A FORWARD -j logdrop\n{unsafe_chain}\nCOMMIT\n"
+            );
+            assert!(
+                FirewallManifest::from_effective_filter_saves(&candidate, None).is_err(),
+                "accepted unsafe logging chain: {unsafe_chain:?}"
             );
         }
     }

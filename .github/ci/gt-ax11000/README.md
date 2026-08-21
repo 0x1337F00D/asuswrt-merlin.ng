@@ -63,12 +63,25 @@ flags. The repack compares the exact SHA-256 values of all five post-strip
 package artifacts with the completed rootfs, so a copied stale binary fails the
 cycle even if its timestamp is new.
 
+Clean, fast and Rust-fast builds all finish through the same manifest-bound
+repack. `www-install` must leave a fresh nested staging tree; the finalizer then
+replaces the complete Web payload, records every regular-file hash and every
+symbolic-link target, and embeds both manifests in immutable
+`/usr/share/codex`. (`/etc` is a volatile `/tmp/etc` link on this platform.) Host verification
+checks the exact path counts, all 25 equal-length language dictionaries,
+numeric AUTODICT bounds and fixed English/German semantic sentinels before an
+image can be published. The persistent router guard rechecks the embedded
+manifests before it may promote a trial slot.
+
 For a change confined to the authenticated HTTP boundary or its Web page, the
 platform makefile also exposes `rust-ui-httpd-relink`. It preserves the HND
-platform exports, rebuilds only `httpd` and `www`, and then uses the same
-idempotent firmware repack. The repack promotes only the five known consumer
-artifacts and the selected Web page into the flat rootfs and removes their
-package staging roots, preventing `/httpd`, `/rc` or `/www/www` duplicates.
+platform exports, rebuilds only `httpd` and the complete AUTODICT Web payload,
+and then uses the same idempotent firmware repack. Compressed ASP pages and all
+language dictionaries are one inseparable generated set: the repack refuses a
+missing nested staging tree and atomically replaces the old flat `/www` tree
+with the complete new set. It also promotes only the five known consumer
+artifacts and removes their package staging roots, preventing `/httpd`, `/rc`
+or `/www/www` duplicates.
 
 The local loop intentionally leaves router installation outside the build
 script. A candidate is transferred only to router RAM, checked with

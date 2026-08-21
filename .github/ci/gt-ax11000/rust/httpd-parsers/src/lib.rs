@@ -1,16 +1,54 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use core::ffi::{c_char, c_int};
+use core::ffi::{c_char, c_int, CStr};
 use core::{ptr, slice};
 use router_policy::testlab::{TestlabRequest, TESTLAB_CONFIRMATION};
-use router_policy::wlan::{
-    Authentication, Cipher, ProtectedManagementFrames, WlanPolicy, WlanSecurityTuple,
-};
+use router_policy::wlan::{Authentication, Cipher, ProtectedManagementFrames, WlanSecurityTuple};
 
 const INVALID_INPUT: c_int = -1;
 const EMBEDDED_NUL: c_int = -2;
 const MAX_QUERY_LENGTH: usize = 65_535;
 const MAX_QUERY_PAIRS: usize = 1_024;
+
+/// `libovpn.so` is consumed by both `httpd` and `rc`. Each executable exports
+/// this same narrow ABI from an already-linked, consumer-specific Rust archive,
+/// so `httpd` does not need a second Rust runtime archive.
+///
+/// # Safety
+///
+/// Every non-null pointer must address a NUL-terminated string for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_openvpn_import_option_allowed(
+    name: *const c_char,
+    arg1: *const c_char,
+    arg2: *const c_char,
+    arg3: *const c_char,
+) -> c_int {
+    if name.is_null() || !arg3.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    let Ok(name) = unsafe { CStr::from_ptr(name) }.to_str() else {
+        return 0;
+    };
+
+    let mut args = Vec::with_capacity(2);
+    for argument in [arg1, arg2] {
+        if argument.is_null() {
+            break;
+        }
+        // SAFETY: The ABI contract requires readable NUL-terminated strings.
+        let Ok(argument) = unsafe { CStr::from_ptr(argument) }.to_str() else {
+            return 0;
+        };
+        args.push(argument);
+    }
+    if arg1.is_null() && !arg2.is_null() {
+        return 0;
+    }
+
+    router_policy::vpn::openvpn_import_directive_allowed(name, &args).into()
+}
 
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
@@ -389,14 +427,7 @@ pub unsafe extern "C" fn rust_httpd_testlab_country_authorize(
     )
 }
 
-fn asus_wlan_security_is_valid(
-    authentication: &str,
-    cipher: &str,
-    pmf: &str,
-    wps: &str,
-    allow_transition: bool,
-    allow_wps_with_wpa2: bool,
-) -> bool {
+fn asus_wlan_security_is_valid(authentication: &str, cipher: &str, pmf: &str, wps: &str) -> bool {
     let authentication = match authentication {
         "psk2" => Authentication::Wpa2Personal,
         "sae" | "wpa3" => Authentication::Wpa3Sae,
@@ -429,10 +460,7 @@ fn asus_wlan_security_is_valid(
         pmf,
         wps_enabled,
     }
-    .validate(WlanPolicy {
-        allow_wpa2_wpa3_transition: allow_transition,
-        allow_wps_with_wpa2,
-    })
+    .validate()
     .is_ok()
 }
 
@@ -460,8 +488,6 @@ pub unsafe extern "C" fn rust_httpd_wlan_security_validate(
     pmf_length: usize,
     wps: *const c_char,
     wps_length: usize,
-    allow_transition: c_int,
-    allow_wps_with_wpa2: c_int,
 ) -> c_int {
     // SAFETY: This function forwards the caller's exact-length ABI contract.
     let values = unsafe {
@@ -480,8 +506,6 @@ pub unsafe extern "C" fn rust_httpd_wlan_security_validate(
         cipher,
         pmf,
         wps,
-        allow_transition == 1,
-        allow_wps_with_wpa2 == 1,
     ))
 }
 
@@ -489,6 +513,45 @@ pub unsafe extern "C" fn rust_httpd_wlan_security_validate(
 mod tests {
     use super::*;
     use core::ffi::CStr;
+    use std::ffi::CString;
+
+    #[test]
+    fn openvpn_import_abi_export_is_fail_closed() {
+        let cipher = CString::new("cipher").unwrap();
+        let modern = CString::new("AES-256-GCM").unwrap();
+        let weak = CString::new("AES-256-CBC").unwrap();
+
+        // SAFETY: Every non-null pointer is backed by a live C string.
+        unsafe {
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    cipher.as_ptr(),
+                    modern.as_ptr(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                ),
+                1
+            );
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    cipher.as_ptr(),
+                    weak.as_ptr(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                ),
+                0
+            );
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                ),
+                0
+            );
+        }
+    }
 
     fn decode(input: &[u8], plus_as_space: bool) -> Result<Vec<u8>, c_int> {
         let mut buffer = input.to_vec();
@@ -774,14 +837,9 @@ mod tests {
 
     #[test]
     fn asus_wlan_tuple_is_atomic_fail_closed_and_country_independent() {
-        assert!(asus_wlan_security_is_valid(
-            "psk2", "aes", "1", "0", false, false
-        ));
-        assert!(asus_wlan_security_is_valid(
-            "sae", "aes", "2", "0", false, false
-        ));
+        assert!(asus_wlan_security_is_valid("psk2", "aes", "1", "0"));
+        assert!(asus_wlan_security_is_valid("sae", "aes", "2", "0"));
         for values in [
-            ("psk2sae", "aes", "1", "0"),
             ("sae", "aes", "1", "0"),
             ("sae", "aes", "2", "1"),
             ("psk2", "tkip", "1", "0"),
@@ -789,11 +847,29 @@ mod tests {
             ("unknown", "aes", "2", "0"),
         ] {
             assert!(!asus_wlan_security_is_valid(
-                values.0, values.1, values.2, values.3, false, false
+                values.0, values.1, values.2, values.3
             ));
         }
-        assert!(asus_wlan_security_is_valid(
-            "psk2sae", "aes", "1", "0", true, false
-        ));
+        assert!(asus_wlan_security_is_valid("psk2sae", "aes", "1", "0"));
+        assert!(!asus_wlan_security_is_valid("psk2", "aes", "1", "1"));
+
+        let live = (b"psk2sae", b"aes", b"1", b"0");
+        // SAFETY: Each fixed byte string remains readable for its exact length.
+        assert_eq!(
+            unsafe {
+                rust_httpd_wlan_security_validate(
+                    live.0.as_ptr().cast(),
+                    live.0.len(),
+                    live.1.as_ptr().cast(),
+                    live.1.len(),
+                    live.2.as_ptr().cast(),
+                    live.2.len(),
+                    live.3.as_ptr().cast(),
+                    live.3.len(),
+                )
+            },
+            1,
+            "the deployed psk2sae/aes/PMF-optional tuple must remain applyable"
+        );
     }
 }

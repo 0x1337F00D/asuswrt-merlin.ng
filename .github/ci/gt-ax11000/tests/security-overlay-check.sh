@@ -36,10 +36,13 @@ wireguard="$router/rc/wireguard.c"
 wps="$router/rc/sysdeps/wps-broadcom.c"
 openvpn="$router/libovpn/openvpn_options.c"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
+security_rust="$router/rust-components/router-security/src/lib.rs"
+policy_rust="$router/rust-components/router-policy/src/vpn.rs"
 wireless_ui="$router/www/Advanced_WAdvanced_Content.asp"
 
 for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$ipsec" \
-	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$wireless_ui"; do
+	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
+	"$policy_rust" "$wireless_ui"; do
 	test -f "$file" || { echo "security input is missing: $file" >&2; exit 1; }
 done
 
@@ -53,12 +56,17 @@ reject_text "$rc_stubs" 'return system(cmd);'
 # The regulatory test lab has exactly one authenticated mutation endpoint.
 require_text "$web" '{ "set_regulatory_testlab.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_set_regulatory_testlab_cgi, do_auth }'
 require_text "$wireless_ui" 'regulatory_lab_prepare_controls();'
-require_text "$wireless_ui" 'mount.appendChild(region);'
+require_text "$wireless_ui" 'document.getElementById("regulatory_lab_country")'
+require_text "$wireless_ui" '<select id="regulatory_lab_country" class="input_option"></select>'
+reject_text "$wireless_ui" 'name="regulatory_lab_country"'
+require_text "$wireless_ui" 'document.form.ui_location_code.disabled = true;'
 require_text "$wireless_ui" 'nvram_match("rust_regulatory_testlab_ack_v1", "1", "accepted")'
 require_text "$wireless_ui" 'acknowledgement.disabled = regulatory_lab_ack_stored;'
 require_text "$wireless_ui" 'regulatory_lab_store_acknowledgement()'
 require_text "$wireless_ui" '"acknowledge_only": "1"'
-require_text "$wireless_ui" 'Apply country profile'
+require_text "$wireless_ui" 'Länderprofil anwenden'
+require_text "$wireless_ui" '(!acknowledgement || !acknowledgement.checked)'
+require_text "$wireless_ui" 'aktuelle Leistungseinstellung='
 require_text "$httpd_stubs" 'websGetVar(stream, "country", "")'
 require_text "$httpd_stubs" 'websGetVar(stream, "confirmation", "")'
 require_text "$httpd_stubs" 'websGetVar(stream, "acknowledge_only", "0")'
@@ -100,11 +108,20 @@ require_text "$wireguard" 'rust_update_wireguard_endpoint(path, address)'
 require_text "$wps" 'argv[argc++] = "/usr/sbin/hostapd_cli";'
 reject_text "$wps" 'popen(cmd'
 
-# Imported OpenVPN profiles cannot smuggle routes, pull filters, weak ciphers,
-# weak digests, compression, or arbitrary custom directives.
-require_text "$openvpn" 'safe_imported_custom_option'
-require_text "$openvpn" 'safe_modern_cipher_list'
-require_text "$openvpn" 'safe_modern_digest'
+# Imported OpenVPN profiles are checked by the same bounded Rust policy in the
+# one existing Rust archive of each libovpn consumer (httpd and rc).
+require_text "$openvpn" 'rust_openvpn_import_option_allowed(const char *name,'
+require_text "$openvpn" '__attribute__((weak))'
+require_text "$openvpn" 'p && p[0] && rust_openvpn_import_option_allowed &&'
+require_text "$openvpn" 'rust_openvpn_import_option_allowed(p[0], p[1], p[2], p[3])'
+require_text "$openvpn" 'imported_openvpn_option_allowed(p)'
+require_text "$httpd_rust" 'pub unsafe extern "C" fn rust_openvpn_import_option_allowed'
+require_text "$security_rust" 'pub unsafe extern "C" fn rust_openvpn_import_option_allowed'
+require_text "$policy_rust" 'pub enum OpenVpnImportDirective'
+require_text "$policy_rust" 'openvpn_import_directive_allowed'
+reject_text "$openvpn" 'safe_imported_custom_option'
+reject_text "$openvpn" 'safe_modern_cipher_list'
+reject_text "$openvpn" 'safe_modern_digest'
 require_text "$openvpn" 'OpenVPN import disabled compression'
 require_text "$openvpn" 'OpenVPN import ignored unsafe or unsupported directive'
 

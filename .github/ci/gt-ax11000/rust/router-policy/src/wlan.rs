@@ -32,12 +32,6 @@ pub struct WlanSecurityTuple {
     pub wps_enabled: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct WlanPolicy {
-    pub allow_wpa2_wpa3_transition: bool,
-    pub allow_wps_with_wpa2: bool,
-}
-
 impl WlanSecurityTuple {
     /// Parse `auth=...;cipher=...;pmf=...;wps=...` without accepting aliases.
     pub fn parse(input: &str) -> Result<Self, PolicyError> {
@@ -76,13 +70,11 @@ impl WlanSecurityTuple {
         })
     }
 
-    pub fn validate(self, policy: WlanPolicy) -> Result<(), PolicyError> {
+    pub fn validate(self) -> Result<(), PolicyError> {
         if self.cipher != Cipher::AesCcmp {
             return Err(PolicyError::Invariant("WEP/TKIP/open cipher prohibited"));
         }
-        if self.wps_enabled
-            && !(self.authentication == Authentication::Wpa2Personal && policy.allow_wps_with_wpa2)
-        {
+        if self.wps_enabled {
             return Err(PolicyError::Invariant("WPS prohibited"));
         }
         match self.authentication {
@@ -97,11 +89,6 @@ impl WlanSecurityTuple {
                 }
             }
             Authentication::Wpa2Wpa3Transition => {
-                if !policy.allow_wpa2_wpa3_transition {
-                    return Err(PolicyError::Invariant(
-                        "WPA2/WPA3 transition mode not approved",
-                    ));
-                }
                 if self.pmf == ProtectedManagementFrames::Disabled || self.wps_enabled {
                     return Err(PolicyError::Invariant(
                         "transition mode requires PMF and no WPS",
@@ -132,7 +119,7 @@ mod tests {
             tuple("wpa2-personal", "aes-ccmp", "required", "off"),
             tuple("wpa3-sae", "aes-ccmp", "required", "off"),
         ] {
-            value.validate(WlanPolicy::default()).unwrap();
+            value.validate().unwrap();
         }
     }
 
@@ -142,9 +129,7 @@ mod tests {
             for cipher in ["tkip", "tkip+aes", "none"] {
                 for pmf in ["disabled", "optional", "required"] {
                     assert!(
-                        tuple(auth, cipher, pmf, "off")
-                            .validate(WlanPolicy::default())
-                            .is_err(),
+                        tuple(auth, cipher, pmf, "off").validate().is_err(),
                         "accepted {auth}/{cipher}/{pmf}"
                     );
                 }
@@ -156,35 +141,21 @@ mod tests {
     fn wpa3_requires_pmf_and_forbids_wps() {
         for pmf in ["disabled", "optional"] {
             assert!(tuple("wpa3-sae", "aes-ccmp", pmf, "off")
-                .validate(WlanPolicy::default())
+                .validate()
                 .is_err());
         }
         assert!(tuple("wpa3-sae", "aes-ccmp", "required", "on")
-            .validate(WlanPolicy {
-                allow_wps_with_wpa2: true,
-                ..WlanPolicy::default()
-            })
+            .validate()
             .is_err());
     }
 
     #[test]
-    fn compatibility_exceptions_must_be_individually_enabled() {
+    fn transition_is_supported_but_wps_has_no_exception() {
         let transition = tuple("wpa2-wpa3-transition", "aes-ccmp", "optional", "off");
-        assert!(transition.validate(WlanPolicy::default()).is_err());
-        transition
-            .validate(WlanPolicy {
-                allow_wpa2_wpa3_transition: true,
-                allow_wps_with_wpa2: false,
-            })
-            .unwrap();
+        transition.validate().unwrap();
 
         let wps = tuple("wpa2-personal", "aes-ccmp", "optional", "on");
-        assert!(wps.validate(WlanPolicy::default()).is_err());
-        wps.validate(WlanPolicy {
-            allow_wpa2_wpa3_transition: false,
-            allow_wps_with_wpa2: true,
-        })
-        .unwrap();
+        assert!(wps.validate().is_err());
     }
 
     #[test]

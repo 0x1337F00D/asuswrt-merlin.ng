@@ -3,34 +3,32 @@
 This file tracks known limitations of the GT-AX11000 overlay. A successful
 compile is not sufficient evidence for releasing or flashing a candidate.
 
-## Current validated candidate
+## Last hardware-tested candidate (promoted)
 
-- Image: `GT-AX11000_3006_102.8_2_ubi.w`
-- SHA-256: `5d142b3bd7b31eefb58f40c3166c342d77521fa262737be77246e6d22cedc09c`
-- Upstream: `d2701f4e238c2f423849fc78368223d883efbf44`
-- Repacked entirely in `/tmp` tmpfs from the validated RAM-only full build with
-  all eight overlays. Only `httpd` and the Web UI were relinked for the final
-  NVRAM acknowledgement change. The sequential patch gate, security-overlay
-  gate, firmware/rootfs manifests, 91 host Rust tests, Clippy, formatting,
-  ARM/EABI checks and all five consumer hashes passed. The final image has the
-  same 79,822,868-byte envelope and 2,810-file rootfs as the clean build.
-- The one-shot partition-1 hardware trial passed on 2026-08-21 while the known
-  stable Rust firmware remained selected on partition 2: services, WAN, local
-  DNS, all three radios, malformed HTTP requests, IPv4/IPv6 terminal DROP
-  rules, kernel log, stable service PIDs, `rstats`, `infosvr`, notification
-  handling and read-only infosvr protocol fixtures all passed.
-- An unauthenticated country-profile POST did not change the SHA-256 snapshot
-  of country, regrev, channel-list, power, or raw calibration NVRAM values.
-- The candidate is now persistent on partition 1. The partition-aware guard
-  arms partition 2 on every candidate boot, promotes partition 1 only after a
-  delayed full health pass, and automatically requests a partition-2 reboot
-  after a reachable health failure. Two arm/promote cycles passed. The warning
-  acknowledgement was committed as `rust_regulatory_testlab_ack_v1=1` and
-  remained set after reboot.
+- Image: `GT-AX11000_3006_102.8_4_ubi.w`
+- SHA-256: `c9cf6edc0a30f013b0697793c07443100bd6a4ce730edfe64a2b4cf06043d239`
+- Size: 79,822,868 bytes; upstream:
+  `088512a1296e361d65e5429e7d8d61ef3fdf4c86`.
+- Built and repacked entirely in `/tmp` tmpfs. All nine overlays, 99 host Rust
+  tests, Clippy, formatting, ARM/EABI checks, five consumer hashes, three QEMU
+  runtime paths, 25 matching 5,078-line dictionaries, 1,105 Web files and 31
+  Web symlinks passed their gates.
+- A partition-1 one-shot trial passed while partition 2 remained the known
+  baseline, followed by an explicit and verified reboot back to partition 2.
+  Services, WAN, local DNS, all three radios, malformed HTTP input,
+  IPv4/IPv6 terminal DROP, kernel log, stable service PIDs, `rstats`, `infosvr`,
+  notification handling, Web semantics and read-only infosvr protocol fixtures
+  all passed, followed by verified automatic rollback to partition 2.
+- Persistent promotion passed the real boot guard: early `init-start` armed
+  `BOOT_SET_PART2_IMAGE_ONCE`; after 120 seconds the complete manifest, service,
+  WAN/DNS, radio, firewall and kernel health gate selected partition 1 again.
+  A subsequent persistent health run passed. Partition 2 remains intact.
+- Runtime state after promotion: country profile `ALL`, persisted warning
+  acknowledgement `rust_regulatory_testlab_ack_v1=1`, and WPS disabled.
 
 ## Release blockers
 
-- [x] Complete a clean RAM-only build of all seven overlays and pass the
+- [x] Complete a clean RAM-only build of all nine overlays and pass the
   firmware/rootfs manifest gates.
 - [x] Run the candidate through the one-shot partition-2 trial controller,
   verify LAN, WAN, all three radios, firewall, VPN, `infosvr`, `rstats`,
@@ -41,6 +39,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   settings restored from NVRAM.
 - [x] Do not publish the branch or trigger GitHub Actions until the local image
   and hardware trial pass.
+- [x] Rebuild the complete AUTODICT Web payload and verify matching pages and
+  all dictionaries in a new one-shot partition-1 trial.
+- [ ] Exercise an ordinary WLAN Apply and the isolated country endpoint in an
+  authenticated browser session. Static/runtime markers and persisted NVRAM
+  values passed, but Windows browser automation was unavailable during the
+  final hardware trial.
+- [x] Build from current upstream `088512a1296e361d65e5429e7d8d61ef3fdf4c86`,
+  which includes miniupnpd 2.3.11 and its 2026 heap-overflow fix; no candidate
+  from the older `d2701f4e238c` base may be promoted.
 
 ## Security debt
 
@@ -50,8 +57,13 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Integrate country-only test-lab authorization, atomic WLAN security
   tuples, and effective IPv4/IPv6 terminal-DROP checks into runtime call sites.
 - [ ] Integrate the remaining typed `router-policy` WAN-admin and VPN
-  kill-switch requirements into effective-rule inspection. The VPN profile
-  models are still preparatory; OpenVPN import hardening remains in reviewed C.
+  kill-switch requirements into effective-rule inspection. Terminal INPUT and
+  FORWARD policy is enforced after VPN/custom hooks (including a verified
+  `logdrop -> LOG; DROP` chain), but effective WAN-admin and per-profile
+  kill-switch coverage still need real router ruleset fixtures.
+- [x] Move imported OpenVPN custom-directive validation from ad-hoc C into a
+  bounded Rust allowlist. Weak ciphers/digests, compression, scripts, routes,
+  pull filters, unknown directives and malformed numeric values fail closed.
 - [ ] Verify the emergency firewall failure path on hardware: forwarding must
   stay disabled, WAN INPUT must be dropped for IPv4 and IPv6, and custom
   `firewall-start` scripts must not run after a failed ruleset apply.
@@ -115,9 +127,10 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [ ] Make one code path own patch application. When CI supplies a prepared
   worktree, record and verify the actual source diff hash instead of trusting
   only the intended patch list.
-- [ ] Pin the GitHub overlay checkout to `GITHUB_SHA`, and key any Rust cache by
-  overlay SHA, upstream SHA, toolchain SHA, and Rust version without a broad
-  fallback that can inject stale final artifacts.
+- [x] Pin the GitHub overlay checkout to the exact `GITHUB_SHA`; bind the Rust
+  cache to the overlay, upstream, toolchain and Rust identities. Restored Cargo
+  fingerprints are safe because every firmware consumer recipe is forced and
+  Cargo revalidates the current sources before Make consumes an artifact.
 - [ ] Confirm the GitHub-hosted public runner pilot (no self-hosted runner),
   including peak disk use, runtime, cache effectiveness, and artifact upload.
 
@@ -148,3 +161,28 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   missing-command message is currently non-fatal noise.
 - Proprietary components prevent complete source-level verification, so binary
   ABI checks and hardware tests are mandatory.
+
+## Rejected candidate: mixed AUTODICT Web payload
+
+The 2026-08-21 Partition 1 candidate is rejected. Its fast UI repack promoted a
+new `Advanced_WAdvanced_Content.asp` while retaining older language
+dictionaries, so numeric AUTODICT identifiers rendered as unrelated labels
+such as `game` and `English`. Normal settings also shared control flow with the
+experimental country selector. The router was returned to the known-good,
+persistent Partition 2 baseline.
+
+Release gates now require `www-install` to produce a complete nested Web tree;
+the repack atomically replaces the entire `/www` payload and refuses to reuse a
+flat/stale tree. The test-lab selector has no form name, the vendor region input
+is disabled, and country application is isolated from ordinary wireless form
+submission. Do not promote another candidate until the generated dictionaries,
+pages and rollback trial have passed on hardware. An authenticated browser
+exercise of ordinary Apply and the isolated country endpoint remains an
+explicit follow-up gate for changing regulatory profiles, rather than an
+image-boot blocker.
+
+## Fixed during hardware promotion
+
+- Web payload identity manifests are stored under immutable
+  `/usr/share/codex`; `/etc` is a volatile `/tmp/etc` link on this platform and
+  cannot carry reboot-persistent firmware identity.

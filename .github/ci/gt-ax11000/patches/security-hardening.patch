@@ -272,68 +272,13 @@ index f603a742747..46e7f61ec40 100644
  	free(param);
  }
  
-+static int safe_decimal_option(const char *value)
-+{
-+	size_t len;
-+	if (!value || !(len = strlen(value)) || len > 10)
-+		return 0;
-+	return strspn(value, "0123456789") == len;
-+}
++extern int rust_openvpn_import_option_allowed(const char *name,
++	const char *arg1, const char *arg2, const char *arg3) __attribute__((weak));
 +
-+static int safe_modern_cipher(const char *value)
++static int imported_openvpn_option_allowed(char *p[])
 +{
-+	return value && (streq(value, "AES-256-GCM") || streq(value, "AES-128-GCM") ||
-+		streq(value, "CHACHA20-POLY1305"));
-+}
-+
-+static int safe_modern_cipher_list(const char *value)
-+{
-+	char copy[128], *cursor, *token;
-+	if (!value || strlen(value) >= sizeof(copy))
-+		return 0;
-+	strlcpy(copy, value, sizeof(copy));
-+	cursor = copy;
-+	while ((token = strsep(&cursor, ":")) != NULL) {
-+		if (!*token || !safe_modern_cipher(token))
-+			return 0;
-+	}
-+	return 1;
-+}
-+
-+static int safe_modern_digest(const char *value)
-+{
-+	return value && (streq(value, "SHA256") || streq(value, "SHA384") ||
-+		streq(value, "SHA512"));
-+}
-+
-+static int safe_imported_custom_option(char *p[])
-+{
-+	if (!p || !p[0])
-+		return 0;
-+	if (streq(p[0], "auth-nocache") || streq(p[0], "float") ||
-+	    streq(p[0], "mute-replay-warnings"))
-+		return !p[1];
-+	if (streq(p[0], "cipher") || streq(p[0], "data-ciphers-fallback"))
-+		return p[1] && !p[2] && safe_modern_cipher(p[1]);
-+	if (streq(p[0], "data-ciphers"))
-+		return p[1] && !p[2] && safe_modern_cipher_list(p[1]);
-+	if (streq(p[0], "tls-version-min"))
-+		return p[1] && !p[2] && (streq(p[1], "1.2") || streq(p[1], "1.3"));
-+	if (streq(p[0], "remote-cert-tls"))
-+		return p[1] && !p[2] && streq(p[1], "server");
-+	if (streq(p[0], "explicit-exit-notify") || streq(p[0], "mssfix"))
-+		return !p[1] || (!p[2] && safe_decimal_option(p[1]));
-+	if (streq(p[0], "inactive") || streq(p[0], "ping") ||
-+	    streq(p[0], "ping-restart") || streq(p[0], "rcvbuf") ||
-+	    streq(p[0], "sndbuf") || streq(p[0], "tun-mtu"))
-+		return p[1] && !p[2] && safe_decimal_option(p[1]);
-+	if (streq(p[0], "keepalive"))
-+		return p[1] && p[2] && !p[3] && safe_decimal_option(p[1]) &&
-+			safe_decimal_option(p[2]);
-+	if (streq(p[0], "resolv-retry"))
-+		return p[1] && !p[2] &&
-+			(streq(p[1], "infinite") || safe_decimal_option(p[1]));
-+	return 0;
++	return p && p[0] && rust_openvpn_import_option_allowed &&
++		rust_openvpn_import_option_allowed(p[0], p[1], p[2], p[3]);
 +}
 +
  static int
@@ -374,7 +319,7 @@ index f603a742747..46e7f61ec40 100644
  	else if (streq (p[0], "auth") && p[1])
  	{
 -		nvram_pf_set(prefix, "digest", p[1]);
-+		if (safe_modern_digest(p[1]) && !p[2])
++		if (imported_openvpn_option_allowed(p))
 +			nvram_pf_set(prefix, "digest", p[1]);
 +		else
 +			_dprintf("OpenVPN import ignored weak or malformed auth digest on line %d\n",
@@ -387,7 +332,7 @@ index f603a742747..46e7f61ec40 100644
  	else if (streq (p[0], "ncp-ciphers") && p[1])
  	{
 -		nvram_pf_set(prefix, "ncp_ciphers", p[1]);
-+		if (safe_modern_cipher_list(p[1]) && !p[2])
++		if (imported_openvpn_option_allowed(p))
 +			nvram_pf_set(prefix, "ncp_ciphers", p[1]);
 +		else
 +			_dprintf("OpenVPN import ignored weak or malformed NCP cipher list on line %d\n",
@@ -400,7 +345,7 @@ index f603a742747..46e7f61ec40 100644
  			;//ignore
  		}
 -		else {
-+		else if (safe_imported_custom_option(p)) {
++		else if (imported_openvpn_option_allowed(p)) {
  			add_custom(unit, p);
  		}
 +		else {

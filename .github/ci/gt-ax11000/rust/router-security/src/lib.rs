@@ -170,6 +170,46 @@ pub unsafe extern "C" fn rust_validate_apply_input_value(
     i32::from(validate_legacy_apply_arguments(candidate, key))
 }
 
+/// Validate one imported OpenVPN directive against the typed Rust allowlist.
+/// A null argument pointer terminates the argument list; gaps and more than two
+/// arguments are rejected.
+///
+/// # Safety
+///
+/// Every non-null pointer must address a NUL-terminated string for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_openvpn_import_option_allowed(
+    name: *const c_char,
+    arg1: *const c_char,
+    arg2: *const c_char,
+    arg3: *const c_char,
+) -> c_int {
+    if name.is_null() || !arg3.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    let Ok(name) = unsafe { CStr::from_ptr(name) }.to_str() else {
+        return 0;
+    };
+
+    let mut args = Vec::with_capacity(2);
+    for argument in [arg1, arg2] {
+        if argument.is_null() {
+            break;
+        }
+        // SAFETY: The ABI contract requires readable NUL-terminated strings.
+        let Ok(argument) = unsafe { CStr::from_ptr(argument) }.to_str() else {
+            return 0;
+        };
+        args.push(argument);
+    }
+    if arg1.is_null() && !arg2.is_null() {
+        return 0;
+    }
+
+    router_policy::vpn::openvpn_import_directive_allowed(name, &args).into()
+}
+
 /// Validate an IPsec certificate identity as an IP address or strict DNS name.
 ///
 /// # Safety
@@ -414,6 +454,73 @@ mod tests {
             assert_eq!(rust_validate_ipsec_filename(core::ptr::null()), 0);
             assert_eq!(
                 rust_update_wireguard_endpoint(core::ptr::null(), valid.as_ptr()),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn openvpn_import_ffi_is_typed_and_fail_closed() {
+        let auth = CString::new("auth").unwrap();
+        let sha256 = CString::new("SHA256").unwrap();
+        let sha1 = CString::new("SHA1").unwrap();
+        let extra = CString::new("extra").unwrap();
+        let invalid_utf8 = CString::from_vec_with_nul(vec![0xff, 0]).unwrap();
+
+        // SAFETY: Every non-null pointer is backed by a live C string.
+        unsafe {
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    auth.as_ptr(),
+                    sha256.as_ptr(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                ),
+                1
+            );
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    auth.as_ptr(),
+                    sha1.as_ptr(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                ),
+                0
+            );
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    auth.as_ptr(),
+                    sha256.as_ptr(),
+                    core::ptr::null(),
+                    extra.as_ptr(),
+                ),
+                0
+            );
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    auth.as_ptr(),
+                    core::ptr::null(),
+                    sha256.as_ptr(),
+                    core::ptr::null(),
+                ),
+                0
+            );
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    invalid_utf8.as_ptr(),
+                    sha256.as_ptr(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                ),
+                0
+            );
+            assert_eq!(
+                rust_openvpn_import_option_allowed(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                ),
                 0
             );
         }
