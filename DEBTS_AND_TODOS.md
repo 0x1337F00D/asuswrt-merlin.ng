@@ -6,22 +6,27 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 ## Current validated candidate
 
 - Image: `GT-AX11000_3006_102.8_2_ubi.w`
-- SHA-256: `3856d5e0ea8f759b09adb645b0a8d11f6b1584bbbd8e58377d60adb496cdfe76`
+- SHA-256: `5d142b3bd7b31eefb58f40c3166c342d77521fa262737be77246e6d22cedc09c`
 - Upstream: `d2701f4e238c2f423849fc78368223d883efbf44`
-- Source state: `f9a98b7d245859d8886327df5aea7dd523bb6cad07ca70cc020064637dd919ae`
-- Built entirely in `/tmp` tmpfs with all eight overlays. The security-overlay
-  gate, firmware/rootfs manifests, 94 host Rust tests, Clippy, ARMv7 checks,
-  five consumer ABI/library checks, and three QEMU runtime paths passed.
-- The one-shot partition-2 hardware trial passed on 2026-08-21: expected
-  candidate/fallback boot states and version, services, WAN, local DNS, all
-  three radios, malformed HTTP request, IPv4/IPv6 terminal DROP rules, clean
-  kernel log, stable service PIDs, `rstats`, `infosvr`, and `Notify_Event2NC`.
+- Repacked entirely in `/tmp` tmpfs from the validated RAM-only full build with
+  all eight overlays. Only `httpd` and the Web UI were relinked for the final
+  NVRAM acknowledgement change. The sequential patch gate, security-overlay
+  gate, firmware/rootfs manifests, 91 host Rust tests, Clippy, formatting,
+  ARM/EABI checks and all five consumer hashes passed. The final image has the
+  same 79,822,868-byte envelope and 2,810-file rootfs as the clean build.
+- The one-shot partition-1 hardware trial passed on 2026-08-21 while the known
+  stable Rust firmware remained selected on partition 2: services, WAN, local
+  DNS, all three radios, malformed HTTP requests, IPv4/IPv6 terminal DROP
+  rules, kernel log, stable service PIDs, `rstats`, `infosvr`, notification
+  handling and read-only infosvr protocol fixtures all passed.
 - An unauthenticated country-profile POST did not change the SHA-256 snapshot
   of country, regrev, channel-list, power, or raw calibration NVRAM values.
-- The explicit second reboot returned to partition 1, persistent partition-1
-  state and `3.0.0.4/388.11/0`; baseline services, WAN/DNS, radios and
-  forwarding passed. The candidate is validated for continued development,
-  not promoted as a permanent router image.
+- The candidate is now persistent on partition 1. The partition-aware guard
+  arms partition 2 on every candidate boot, promotes partition 1 only after a
+  delayed full health pass, and automatically requests a partition-2 reboot
+  after a reachable health failure. Two arm/promote cycles passed. The warning
+  acknowledgement was committed as `rust_regulatory_testlab_ack_v1=1` and
+  remained set after reboot.
 
 ## Release blockers
 
@@ -74,6 +79,9 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Add a UI read-back panel that shows effective driver country, channel
   list, channel specification, DFS state, and power for all three radios before
   and after applying a test-lab profile.
+- [x] Store the versioned warning acknowledgement once in NVRAM. Normal Apply
+  and the atomic country-profile endpoint share the same persisted key; the UI
+  renders it checked and disabled on later page loads.
 - [ ] Export/import the test-lab profile separately from the normal NVRAM
   backup so that a factory reset does not silently re-enable it.
 
@@ -96,6 +104,9 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 - [ ] Fix the fast-resume path so unchanged kernel configuration does not force
   repeated kernel rebuilds. Record per-phase timing in the build metadata.
+- [x] Add an idempotent `rust-ui-httpd-relink` path that rebuilds only `httpd`
+  and `www`, promotes exact artifacts into the flat rootfs, removes package
+  staging duplicates, and repacks without rebuilding kernel or drivers.
 - [ ] Make local ccache optional without a failed pilot attempt, or provision a
   checksummed RAM-local ccache binary. Never write the cache to SSD.
 - [ ] Keep top-level orchestration at `-j1`; only enable package-graph `-j2`

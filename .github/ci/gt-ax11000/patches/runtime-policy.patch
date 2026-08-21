@@ -29,14 +29,28 @@ index 1bb1dcb959b..8bb170803ca 100644
 +{
 +	char *country;
 +	char *confirmation;
++	char *acknowledge_only;
 +
 +	(void)url;
 +	country = websGetVar(stream, "country", "");
 +	confirmation = websGetVar(stream, "confirmation", "");
++	acknowledge_only = websGetVar(stream, "acknowledge_only", "0");
 +	if (!rust_httpd_testlab_country_authorize(country, strlen(country),
 +		confirmation, strlen(confirmation))) {
 +		syslog(LOG_WARNING, "rejected invalid regulatory test-lab request");
 +		websWrite(stream, "{\"statusCode\":\"-1\",\"applied\":false}");
++		return;
++	}
++	if (strcmp(acknowledge_only, "0") && strcmp(acknowledge_only, "1")) {
++		syslog(LOG_WARNING, "rejected invalid regulatory test-lab acknowledgement mode");
++		websWrite(stream, "{\"statusCode\":\"-1\",\"acknowledged\":false}");
++		return;
++	}
++	if (!strcmp(acknowledge_only, "1")) {
++		nvram_set("rust_regulatory_testlab_ack_v1", "1");
++		nvram_commit();
++		syslog(LOG_NOTICE, "regulatory test-lab warning acknowledged");
++		websWrite(stream, "{\"statusCode\":\"0\",\"acknowledged\":true}");
 +		return;
 +	}
 +
@@ -77,6 +91,10 @@ index 1bb1dcb959b..8bb170803ca 100644
 +	nvram_set("wl0_txpower", "100");
 +	nvram_set("wl1_txpower", "100");
 +	nvram_set("wl2_txpower", "100");
++	/* The versioned warning acknowledgement is persisted only after the
++	 * complete Rust-authorized profile has been applied successfully. */
++	nvram_set("rust_regulatory_testlab_ack_v1", "1");
++	nvram_commit();
 +	syslog(LOG_NOTICE, "authenticated regulatory country profile applied: %.3s", country);
 +	notify_rc("restart_wireless");
 +	websWrite(stream, "{\"statusCode\":\"0\",\"applied\":true}");

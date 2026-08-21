@@ -6,6 +6,7 @@ index 01b2ade7412..ec7a6ead318 100644
  	register_event();
  	init_cookie();
  	backForwardCompatibility();
++	regulatory_lab_prepare_controls();
 +	regulatory_lab_render_status();
  
  	if(lantiq_support){
@@ -37,33 +38,119 @@ index 01b2ade7412..ec7a6ead318 100644
  	}
  }
  
++function regulatory_lab_prepare_controls(){
++	var row = document.getElementById("region_tr");
++	var region = document.getElementById("region_div");
++	var mount = document.getElementById("regulatory_lab_country_mount");
++	try{
++		generate_country_selection();
++		if(region && mount){
++			mount.appendChild(region);
++			if(row)
++				row.style.display = "none";
++		}
++		else if(row){
++			row.style.display = "";
++		}
++	}
++	catch(error){
++		if(row)
++			row.style.display = "";
++		if(mount)
++			mount.textContent = "Country selector initialization failed. Reload this page before applying a profile.";
++	}
++	regulatory_lab_restore_acknowledgement();
++}
++
++function regulatory_lab_restore_acknowledgement(){
++	var acknowledgement = document.getElementById("regulatory_lab_ack");
++	if(!acknowledgement)
++		return;
++	regulatory_lab_ack_stored = '<% nvram_match("rust_regulatory_testlab_ack_v1", "1", "accepted"); %>' == "accepted";
++	acknowledgement.checked = regulatory_lab_ack_stored;
++	acknowledgement.disabled = regulatory_lab_ack_stored;
++}
++
 +function regulatory_lab_render_status(){
 +	var target = document.getElementById("regulatory_lab_status");
 +	if(!target)
 +		return;
-+	var state = httpApi.nvramGet([
-+		"wl0_country_code", "wl0_chanspec", "wl0_acs_dfs", "wl0_txpower",
-+		"wl1_country_code", "wl1_chanspec", "wl1_acs_dfs", "wl1_txpower",
-+		"wl2_country_code", "wl2_chanspec", "wl2_acs_dfs", "wl2_txpower"
-+	]);
-+	var channelSets = [
-+		httpApi.hookGet("channel_list_2g") || [],
-+		httpApi.hookGet("channel_list_5g") || [],
-+		httpApi.hookGet("channel_list_5g_2") || []
-+	];
-+	var labels = ["2.4 GHz", "5 GHz-1", "5 GHz-2"];
-+	var lines = [];
-+	for(var unit = 0; unit < 3; ++unit){
-+		var prefix = "wl" + unit + "_";
-+		var channels = Array.isArray(channelSets[unit]) ? channelSets[unit].join(", ") : String(channelSets[unit]);
-+		lines.push(labels[unit] + ": country=" + state[prefix + "country_code"] +
-+			", current channel=" + state[prefix + "chanspec"] +
-+			", DFS=" + (state[prefix + "acs_dfs"] == "1" ? "enabled" : "disabled") +
-+			", current power setting=" + state[prefix + "txpower"] +
-+			"% of the country/board-calibrated cap" +
-+			", driver channels=" + channels);
++	try{
++		var state = httpApi.nvramGet([
++			"wl0_country_code", "wl0_chanspec", "wl0_acs_dfs", "wl0_txpower",
++			"wl1_country_code", "wl1_chanspec", "wl1_acs_dfs", "wl1_txpower",
++			"wl2_country_code", "wl2_chanspec", "wl2_acs_dfs", "wl2_txpower"
++		]) || {};
++		var channelSets = [
++			httpApi.hookGet("channel_list_2g") || [],
++			httpApi.hookGet("channel_list_5g") || [],
++			httpApi.hookGet("channel_list_5g_2") || []
++		];
++		var labels = ["2.4 GHz", "5 GHz-1", "5 GHz-2"];
++		var lines = [];
++		for(var unit = 0; unit < 3; ++unit){
++			var prefix = "wl" + unit + "_";
++			var channels = Array.isArray(channelSets[unit]) ? channelSets[unit].join(", ") : String(channelSets[unit]);
++			lines.push(labels[unit] + ": country=" + state[prefix + "country_code"] +
++				", current channel=" + state[prefix + "chanspec"] +
++				", DFS=" + (state[prefix + "acs_dfs"] == "1" ? "enabled" : "disabled") +
++				", current power setting=" + state[prefix + "txpower"] +
++				"% of the country/board-calibrated cap" +
++				", driver channels=" + channels);
++		}
++		target.textContent = lines.join("\n");
 +	}
-+	target.textContent = lines.join("\n");
++	catch(error){
++		target.textContent = "Effective radio status is temporarily unavailable. Country selection remains enabled; reload the page before applying if this persists.";
++	}
++}
++
++var regulatory_lab_ack_stored = false;
++
++function regulatory_lab_store_acknowledgement(){
++	var acknowledgement = document.getElementById("regulatory_lab_ack");
++	if(regulatory_lab_ack_stored || !acknowledgement || !acknowledgement.checked)
++		return true;
++
++	var regionControl = document.form.ui_location_code;
++	var uiRegion = regionControl ? regionControl.value : ((orig_region == "") ? tcode : orig_region);
++	var driverRegion = (U5_country_code && uiRegion == "U5") ? "AA" : uiRegion;
++	var stored = false;
++	$.ajax({
++		url: "/set_regulatory_testlab.cgi",
++		type: "POST",
++		dataType: "json",
++		async: false,
++		data: {
++			"country": driverRegion,
++			"confirmation": "ACKNOWLEDGE_REGULATORY_AND_HARDWARE_RISK_V1",
++			"acknowledge_only": "1"
++		},
++		success: function(response){
++			stored = response && response.statusCode == "0" && response.acknowledged === true;
++		}
++	});
++	if(!stored){
++		alert("The warning acknowledgement could not be stored in router NVRAM.");
++		return false;
++	}
++	regulatory_lab_ack_stored = true;
++	acknowledgement.checked = true;
++	acknowledgement.disabled = true;
++	return true;
++}
++
++function regulatory_lab_apply_profile(){
++	if(regulatory_lab_change_confirmed()){
++		var acknowledgement = document.getElementById("regulatory_lab_ack");
++		if(!regulatory_lab_ack_stored && acknowledgement && acknowledgement.checked){
++			if(regulatory_lab_store_acknowledgement())
++				alert("The warning acknowledgement was stored permanently in router NVRAM.");
++		}
++		else
++			alert("Select a country different from the currently configured profile first.");
++	}
++	return false;
 +}
 +
 +function regulatory_lab_change_confirmed(){
@@ -115,6 +202,8 @@ index 01b2ade7412..ec7a6ead318 100644
  	}
 +	if(!regulatory_lab_change_confirmed())
 +		return false;
++	if(!regulatory_lab_store_acknowledgement())
++		return false;
  	
  	if(validForm()){
  		if(wifi_hw_sw_support && !Qcawifi_support) { //For N55U
@@ -133,9 +222,17 @@ index 01b2ade7412..ec7a6ead318 100644
 +							country selection and regulatory compliance are your responsibility.
 +							The displayed power is the current configured percentage/cap, not a live
 +							RF measurement.<br>
++							<div style="margin:10px 0;">
++								<label for="regulatory_lab_country_mount">Country profile:</label>
++								<div id="regulatory_lab_country_mount" style="display:inline-block;margin-left:8px;"></div>
++							</div>
 +							<pre id="regulatory_lab_status" style="white-space:pre-wrap;color:#FFF;"></pre>
 +							<label><input type="checkbox" id="regulatory_lab_ack"> I understand
-+							that a change can disconnect clients and restart wireless service.</label>
++							that a change can disconnect clients and restart wireless service.</label><br>
++							<span>This acknowledgement is stored once in router NVRAM by the normal
++							Apply button or together with the first country-profile change.</span><br>
++							<input class="button_gen" type="button" value="Apply country profile"
++								onclick="regulatory_lab_apply_profile();">
 +						</td>
 +					</tr>
 -					<tr id="wl_txPower_field">

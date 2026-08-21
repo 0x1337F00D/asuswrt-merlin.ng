@@ -63,6 +63,13 @@ flags. The repack compares the exact SHA-256 values of all five post-strip
 package artifacts with the completed rootfs, so a copied stale binary fails the
 cycle even if its timestamp is new.
 
+For a change confined to the authenticated HTTP boundary or its Web page, the
+platform makefile also exposes `rust-ui-httpd-relink`. It preserves the HND
+platform exports, rebuilds only `httpd` and `www`, and then uses the same
+idempotent firmware repack. The repack promotes only the five known consumer
+artifacts and the selected Web page into the flat rootfs and removes their
+package staging roots, preventing `/httpd`, `/rc` or `/www/www` duplicates.
+
 The local loop intentionally leaves router installation outside the build
 script. A candidate is transferred only to router RAM, checked with
 `firmware_check`, written to the inactive partition, armed with the matching

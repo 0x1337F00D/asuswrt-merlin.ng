@@ -65,3 +65,19 @@ Run the fake-transport regression suite without a router:
 python3 -m unittest discover -s .github/ci/gt-ax11000/trial \
   -p 'test_*.py' -v
 ```
+
+## Persistent promotion guard
+
+`router-persistent-guard.sh` is deliberately separate from the one-shot trial
+controller. It describes the validated deployment: candidate on partition 1
+and known-good fallback on partition 2. Candidate identity requires the model,
+version, running partition, final test-lab UI marker and final `httpd` NVRAM
+marker; the shared firmware version string alone is not sufficient.
+
+On every persistent candidate boot, `arm` selects partition 2 for one boot.
+The delayed `services-start` hook invokes `promote` after 120 seconds. Only the
+complete services, WAN/DNS, three-radio, firewall, kernel-log and UI-marker
+health gate restores persistent partition 1. A reachable health failure selects
+partition 2 persistently and requests a reboot. A candidate that never becomes
+reachable still requires out-of-band power control to trigger the already armed
+fallback, as documented above.

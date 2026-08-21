@@ -36,9 +36,10 @@ wireguard="$router/rc/wireguard.c"
 wps="$router/rc/sysdeps/wps-broadcom.c"
 openvpn="$router/libovpn/openvpn_options.c"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
+wireless_ui="$router/www/Advanced_WAdvanced_Content.asp"
 
 for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$ipsec" \
-	"$wireguard" "$wps" "$openvpn" "$httpd_rust"; do
+	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$wireless_ui"; do
 	test -f "$file" || { echo "security input is missing: $file" >&2; exit 1; }
 done
 
@@ -51,12 +52,24 @@ reject_text "$rc_stubs" 'return system(cmd);'
 
 # The regulatory test lab has exactly one authenticated mutation endpoint.
 require_text "$web" '{ "set_regulatory_testlab.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_set_regulatory_testlab_cgi, do_auth }'
+require_text "$wireless_ui" 'regulatory_lab_prepare_controls();'
+require_text "$wireless_ui" 'mount.appendChild(region);'
+require_text "$wireless_ui" 'nvram_match("rust_regulatory_testlab_ack_v1", "1", "accepted")'
+require_text "$wireless_ui" 'acknowledgement.disabled = regulatory_lab_ack_stored;'
+require_text "$wireless_ui" 'regulatory_lab_store_acknowledgement()'
+require_text "$wireless_ui" '"acknowledge_only": "1"'
+require_text "$wireless_ui" 'Apply country profile'
 require_text "$httpd_stubs" 'websGetVar(stream, "country", "")'
 require_text "$httpd_stubs" 'websGetVar(stream, "confirmation", "")'
+require_text "$httpd_stubs" 'websGetVar(stream, "acknowledge_only", "0")'
+require_text "$httpd_stubs" '{\"statusCode\":\"0\",\"acknowledged\":true}'
+require_text "$httpd_stubs" 'strcmp(acknowledge_only, "0") && strcmp(acknowledge_only, "1")'
 reject_text "$httpd_stubs" 'websGetVar(stream, "tx'
 reject_text "$httpd_stubs" 'websGetVar(stream, "wl'
 reject_text "$httpd_stubs" 'nvram_set("wl0_chlist"'
 reject_text "$httpd_stubs" 'nvram_set("0:maxp'
+require_text "$httpd_stubs" 'nvram_set("rust_regulatory_testlab_ack_v1", "1");'
+require_text "$httpd_stubs" 'nvram_commit();'
 for unit in 0 1 2; do
 	require_text "$httpd_stubs" "nvram_set(\"${unit}:ccode\", country);"
 	require_text "$httpd_stubs" "nvram_set(\"wl${unit}_txpower\", \"100\");"
