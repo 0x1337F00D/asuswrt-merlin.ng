@@ -38,6 +38,28 @@ fn valid_decimal(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+fn parse_admin_ports(value: &str) -> Option<Vec<u16>> {
+    if value.is_empty() || value.len() > 95 || !value.is_ascii() {
+        return None;
+    }
+    let mut ports = Vec::new();
+    for raw in value.split(',') {
+        if ports.len() == 16
+            || raw.is_empty()
+            || raw.len() > 5
+            || !raw.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        let port = raw.parse::<u16>().ok().filter(|port| *port != 0)?;
+        if ports.contains(&port) {
+            return None;
+        }
+        ports.push(port);
+    }
+    Some(ports)
+}
+
 fn valid_qos_bw_rulelist(value: &str) -> bool {
     if value.is_empty() {
         return true;
@@ -210,6 +232,24 @@ pub unsafe extern "C" fn rust_openvpn_import_option_allowed(
     router_policy::vpn::openvpn_import_directive_allowed(name, &args).into()
 }
 
+/// Validate the complete vendor OpenVPN custom-configuration field. Unknown
+/// directives and any parser ambiguity fail closed.
+///
+/// # Safety
+///
+/// `config` must address a NUL-terminated string for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_openvpn_custom_config_allowed(config: *const c_char) -> c_int {
+    if config.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    unsafe { CStr::from_ptr(config) }
+        .to_str()
+        .is_ok_and(router_policy::vpn::openvpn_custom_config_allowed)
+        .into()
+}
+
 /// Validate an IPsec certificate identity as an IP address or strict DNS name.
 ///
 /// # Safety
@@ -356,6 +396,77 @@ pub unsafe extern "C" fn rust_validate_effective_firewall_files(
         .and_then(|manifest| manifest.validate_terminal_drops(require_ipv6 != 0))
         .is_ok()
         .into()
+}
+
+/// Validate terminal DROP plus the first-rule WAN administration guard that
+/// is installed after every vendor/VPN/custom firewall hook.
+///
+/// # Safety
+///
+/// All required pointers must address NUL-terminated strings for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_validate_effective_firewall_policy_files(
+    ipv4_path: *const c_char,
+    ipv6_path: *const c_char,
+    require_ipv6: c_int,
+    wan_ipv4_interface: *const c_char,
+    wan_ipv6_interface: *const c_char,
+    admin_ports: *const c_char,
+) -> c_int {
+    if ipv4_path.is_null()
+        || wan_ipv4_interface.is_null()
+        || admin_ports.is_null()
+        || (require_ipv6 != 0 && (ipv6_path.is_null() || wan_ipv6_interface.is_null()))
+    {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires readable NUL-terminated strings.
+    let (Ok(ipv4_path), Ok(wan_ipv4_interface), Ok(admin_ports)) = (
+        unsafe { CStr::from_ptr(ipv4_path) }.to_str(),
+        unsafe { CStr::from_ptr(wan_ipv4_interface) }.to_str(),
+        unsafe { CStr::from_ptr(admin_ports) }.to_str(),
+    ) else {
+        return 0;
+    };
+    let Some(admin_ports) = parse_admin_ports(admin_ports) else {
+        return 0;
+    };
+    let Some(ipv4) = read_regular_ascii_file(Path::new(ipv4_path), MAX_FIREWALL_RULESET_SIZE)
+    else {
+        return 0;
+    };
+    let ipv6 = if require_ipv6 != 0 {
+        // SAFETY: The non-null path is required above for enabled IPv6.
+        let Ok(path) = unsafe { CStr::from_ptr(ipv6_path) }.to_str() else {
+            return 0;
+        };
+        match read_regular_ascii_file(Path::new(path), MAX_FIREWALL_RULESET_SIZE) {
+            Some(value) => Some(value),
+            None => return 0,
+        }
+    } else {
+        None
+    };
+    let wan_ipv6_interface = if require_ipv6 != 0 {
+        // SAFETY: The non-null path is required above for enabled IPv6.
+        match unsafe { CStr::from_ptr(wan_ipv6_interface) }.to_str() {
+            Ok(value) => Some(value),
+            Err(_) => return 0,
+        }
+    } else {
+        None
+    };
+
+    router_policy::firewall::validate_effective_firewall_policy(
+        &ipv4,
+        ipv6.as_deref(),
+        require_ipv6 != 0,
+        wan_ipv4_interface,
+        wan_ipv6_interface,
+        &admin_ports,
+    )
+    .is_ok()
+    .into()
 }
 
 #[cfg(test)]
@@ -523,6 +634,18 @@ mod tests {
                 ),
                 0
             );
+
+            let safe_custom = CString::new(
+                "auth-nocache\ntls-version-min 1.2\ndata-ciphers AES-256-GCM:AES-128-GCM\n",
+            )
+            .unwrap();
+            let unsafe_custom = CString::new("up /jffs/evil.sh\n").unwrap();
+            assert_eq!(rust_openvpn_custom_config_allowed(safe_custom.as_ptr()), 1);
+            assert_eq!(
+                rust_openvpn_custom_config_allowed(unsafe_custom.as_ptr()),
+                0
+            );
+            assert_eq!(rust_openvpn_custom_config_allowed(core::ptr::null()), 0);
         }
     }
 
@@ -611,6 +734,60 @@ mod tests {
         );
 
         fs::remove_file(link).unwrap();
+        fs::remove_file(ipv4).unwrap();
+        fs::remove_file(ipv6).unwrap();
+    }
+
+    #[test]
+    fn effective_firewall_policy_ffi_requires_wan_guard() {
+        let rules = "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:CODEX_WAN_GUARD - [0:0]\n-A INPUT -i eth0 -j CODEX_WAN_GUARD\n-A INPUT -j DROP\n-A FORWARD -j DROP\n-A CODEX_WAN_GUARD -p tcp -m tcp --dport 22 -j DROP\n-A CODEX_WAN_GUARD -p tcp -m tcp --dport 443 -j DROP\n-A CODEX_WAN_GUARD -j RETURN\nCOMMIT\n";
+        let ipv4 = temporary_path("iptables-policy-save");
+        let ipv6 = temporary_path("ip6tables-policy-save");
+        fs::write(&ipv4, rules).unwrap();
+        fs::write(&ipv6, rules).unwrap();
+        let ipv4_c = CString::new(ipv4.as_os_str().as_encoded_bytes()).unwrap();
+        let ipv6_c = CString::new(ipv6.as_os_str().as_encoded_bytes()).unwrap();
+        let wan = CString::new("eth0").unwrap();
+        let ports = CString::new("22,443").unwrap();
+        let incomplete_ports = CString::new("22,8443").unwrap();
+
+        // SAFETY: All C strings and files remain valid for these calls.
+        unsafe {
+            assert_eq!(
+                rust_validate_effective_firewall_policy_files(
+                    ipv4_c.as_ptr(),
+                    ipv6_c.as_ptr(),
+                    1,
+                    wan.as_ptr(),
+                    wan.as_ptr(),
+                    ports.as_ptr(),
+                ),
+                1
+            );
+            assert_eq!(
+                rust_validate_effective_firewall_policy_files(
+                    ipv4_c.as_ptr(),
+                    core::ptr::null(),
+                    0,
+                    wan.as_ptr(),
+                    core::ptr::null(),
+                    incomplete_ports.as_ptr(),
+                ),
+                0
+            );
+            assert_eq!(
+                rust_validate_effective_firewall_policy_files(
+                    ipv4_c.as_ptr(),
+                    ipv6_c.as_ptr(),
+                    1,
+                    wan.as_ptr(),
+                    core::ptr::null(),
+                    ports.as_ptr(),
+                ),
+                0
+            );
+        }
+
         fs::remove_file(ipv4).unwrap();
         fs::remove_file(ipv6).unwrap();
     }

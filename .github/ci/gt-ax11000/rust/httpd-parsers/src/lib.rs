@@ -50,6 +50,24 @@ pub unsafe extern "C" fn rust_openvpn_import_option_allowed(
     router_policy::vpn::openvpn_import_directive_allowed(name, &args).into()
 }
 
+/// Validate the full OpenVPN custom field before libovpn appends it to a
+/// generated configuration.
+///
+/// # Safety
+///
+/// `config` must address a NUL-terminated string for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_openvpn_custom_config_allowed(config: *const c_char) -> c_int {
+    if config.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    unsafe { CStr::from_ptr(config) }
+        .to_str()
+        .is_ok_and(router_policy::vpn::openvpn_custom_config_allowed)
+        .into()
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),

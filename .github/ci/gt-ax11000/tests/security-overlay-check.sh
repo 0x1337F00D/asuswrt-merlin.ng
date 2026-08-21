@@ -35,14 +35,22 @@ ipsec="$router/rc/rc_ipsec.c"
 wireguard="$router/rc/wireguard.c"
 wps="$router/rc/sysdeps/wps-broadcom.c"
 openvpn="$router/libovpn/openvpn_options.c"
+openvpn_setup="$router/libovpn/openvpn_setup.c"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
 security_rust="$router/rust-components/router-security/src/lib.rs"
 policy_rust="$router/rust-components/router-policy/src/vpn.rs"
 wireless_ui="$router/www/Advanced_WAdvanced_Content.asp"
+wifi_base="$root/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools"
 
 for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$ipsec" \
 	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
-	"$policy_rust" "$wireless_ui"; do
+	"$policy_rust" "$wireless_ui" "$openvpn_setup" \
+	"$wifi_base/hostapd/src/common/sae.c" \
+	"$wifi_base/hostapd/src/radius/radius.c" \
+	"$wifi_base/hostapd/src/rsn_supp/wpa.c" \
+	"$wifi_base/wpa_supplicant/src/common/sae.c" \
+	"$wifi_base/wpa_supplicant/src/radius/radius.c" \
+	"$wifi_base/wpa_supplicant/src/rsn_supp/wpa.c"; do
 	test -f "$file" || { echo "security input is missing: $file" >&2; exit 1; }
 done
 
@@ -92,12 +100,16 @@ done
 
 # The effective firewall is checked after custom/VPN hooks and forwarding is
 # enabled only after that check. Failures install the emergency WAN deny.
-require_text "$firewall" 'rust_validate_effective_firewall_files'
+require_text "$firewall" 'rust_validate_effective_firewall_policy_files'
+require_text "$firewall" '#define CODEX_WAN_GUARD "CODEX_WAN_GUARD"'
+require_text "$firewall" 'install_wan_admin_guard(wan_if)'
 require_text "$firewall" 'firewall_enter_fail_closed();'
 custom_line=$(grep -nF 'run_custom_script("firewall-start"' "$firewall" | tail -1 | cut -d: -f1)
+guard_line=$(grep -nF '!install_wan_admin_guard(wan_if)' "$firewall" | tail -1 | cut -d: -f1)
 validation_line=$(grep -nF '!validate_effective_firewall_policy()' "$firewall" | tail -1 | cut -d: -f1)
 forward_line=$(grep -nF $'\t\tenable_ip_forward();' "$firewall" | tail -1 | cut -d: -f1)
-if ! [ "$custom_line" -lt "$validation_line" ] || ! [ "$validation_line" -lt "$forward_line" ]; then
+if ! [ "$custom_line" -lt "$guard_line" ] || ! [ "$guard_line" -lt "$validation_line" ] || \
+   ! [ "$validation_line" -lt "$forward_line" ]; then
 	echo "firewall validation/forwarding order is unsafe" >&2
 	exit 1
 fi
@@ -121,10 +133,24 @@ require_text "$httpd_rust" 'pub unsafe extern "C" fn rust_openvpn_import_option_
 require_text "$security_rust" 'pub unsafe extern "C" fn rust_openvpn_import_option_allowed'
 require_text "$policy_rust" 'pub enum OpenVpnImportDirective'
 require_text "$policy_rust" 'openvpn_import_directive_allowed'
+require_text "$policy_rust" 'openvpn_custom_config_allowed'
 reject_text "$openvpn" 'safe_imported_custom_option'
 reject_text "$openvpn" 'safe_modern_cipher_list'
 reject_text "$openvpn" 'safe_modern_digest'
 require_text "$openvpn" 'OpenVPN import disabled compression'
 require_text "$openvpn" 'OpenVPN import ignored unsafe or unsupported directive'
+require_text "$openvpn_setup" 'OVPN_HARDENED_DATA_CIPHERS'
+require_text "$openvpn_setup" 'rust_openvpn_custom_config_allowed'
+require_text "$openvpn_setup" 'allow-compression no'
+require_text "$openvpn_setup" 'tls-version-min 1.2'
+require_text "$openvpn_setup" 'remote-cert-tls server'
+reject_text "$openvpn_setup" 'data-ciphers-fallback AES-128-CBC'
+
+# Security fixes are backported into both duplicate vendor trees.
+for wifi_tree in hostapd wpa_supplicant; do
+	require_text "$wifi_base/$wifi_tree/src/common/sae.c" 'dragonfly_sqrt(sae->tmp->ec, y, y)'
+	require_text "$wifi_base/$wifi_tree/src/radius/radius.c" 'attr->length != sizeof(*attr) + MD5_MAC_LEN'
+	require_text "$wifi_base/$wifi_tree/src/rsn_supp/wpa.c" 'sm->network_ctx, sm->key_mgmt'
+done
 
 echo "security overlay invariants verified"

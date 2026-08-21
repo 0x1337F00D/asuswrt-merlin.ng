@@ -81,6 +81,8 @@ PATCH_FILES=(
 	"$SCRIPT_ROOT/patches/wireless-policy-ui.patch"
 	"$SCRIPT_ROOT/patches/runtime-policy.patch"
 	"$SCRIPT_ROOT/patches/network-hardening.patch"
+	"$SCRIPT_ROOT/patches/runtime-hardening-2026.patch"
+	"$SCRIPT_ROOT/patches/wifi-upstream-security.patch"
 )
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
 ROUTER_PACKAGE_JOBS="${ROUTER_PACKAGE_JOBS:-1}"

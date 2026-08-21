@@ -56,16 +56,49 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Security debt
 
+### Current unpromoted 2026 hardening work
+
+- [x] Backport the applicable upstream hostap/wpa security fixes to both
+  duplicated Broadcom 2.9 trees: constant-time SAE/EAP-pwd processing
+  (2022-1), PMKSA network-context and AKMP matching (2026-2), and exact RADIUS
+  Message-Authenticator length validation (2026-5). The resulting `hostapd`
+  and `wpa_supplicant` ARM/EABI5 targets build successfully.
+- [x] Enforce generated OpenVPN configurations with AEAD-only data ciphers,
+  SHA-256, TLS 1.2 or newer, disabled compression and server-certificate role
+  verification. Retained NVRAM and complete custom blocks pass bounded Rust
+  policy before they can affect generated configuration.
+- [x] Install and semantically verify an IPv4/IPv6 `CODEX_WAN_GUARD` after VPN
+  and custom firewall hooks but before forwarding is enabled. It protects
+  disabled WAN HTTP(S), SSH and Telnet exposure with fixed-argv commands and
+  Rust inspection of the effective saved ruleset.
+- [x] Rebuild the affected `rc`, `libovpn`, `hostapd` and `wpa_supplicant`
+  targets and verify the intended ARM symbols and hardening markers.
+- [x] Build and manifest-check a complete firmware containing the new
+  eleven-patch series in tmpfs. Candidate SHA-256:
+  `bca665e49f63138eaccc9fea4217e2e0a9d2e511dd9cacba3cb0a6aabb12251a`.
+  The five Rust consumers, 1,105 Web files, 31 Web symlinks and 25 matching
+  5,078-entry dictionaries passed their final image gates.
+- [ ] One-shot-test that eleven-patch candidate on the fallback-protected
+  partition and verify OpenVPN, IPv4/IPv6 WAN guard, all three radios and
+  rollback before promotion. The last promoted image above predates these
+  changes and must not be represented as containing them.
+- [ ] Migrate an OpenVPN server to `tls-crypt-v2` (or `tls-crypt`) in a
+  controlled compatibility test and re-export every affected client profile.
+  Enabling it silently would strand existing clients, so it is intentionally
+  not forced by this overlay.
+
 - [x] Replace or explicitly disable security-sensitive compatibility stubs that
   reported false EULA, privacy, or security-update success. Unsupported
   operations now fail closed and configuration changes produce syslog entries.
 - [x] Integrate country-only test-lab authorization, atomic WLAN security
   tuples, and effective IPv4/IPv6 terminal-DROP checks into runtime call sites.
-- [ ] Integrate the remaining typed `router-policy` WAN-admin and VPN
-  kill-switch requirements into effective-rule inspection. Terminal INPUT and
-  FORWARD policy is enforced after VPN/custom hooks (including a verified
-  `logdrop -> LOG; DROP` chain), but effective WAN-admin and per-profile
-  kill-switch coverage still need real router ruleset fixtures.
+- [x] Integrate typed WAN-admin requirements into effective-rule inspection.
+  The first WAN INPUT jump and the exact IPv4/IPv6 management-port DROP rules
+  are now verified after VPN/custom hooks, together with the terminal INPUT
+  and FORWARD policy (including `logdrop -> LOG; DROP`).
+- [ ] Integrate per-profile VPN kill-switch requirements into semantic
+  effective-rule inspection. This still needs representative real-router
+  ruleset fixtures for each OpenVPN and WireGuard client mode.
 - [x] Move imported OpenVPN custom-directive validation from ad-hoc C into a
   bounded Rust allowlist. Weak ciphers/digests, compression, scripts, routes,
   pull filters, unknown directives and malformed numeric values fail closed.
@@ -75,9 +108,12 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Add a build-time security-overlay gate covering authenticated routing,
   country-only mutation, raw calibration-key denial, firewall ordering,
   OpenVPN imports, IPsec cleanup, WireGuard and WPS argv execution.
-- [ ] Add executable fixture tests for OpenVPN imports (compression, legacy
-  ciphers/digests, route and `pull-filter` injection), IPsec multipart names,
-  PKCS#12 cleanup, WireGuard endpoint updates, and WPS interface names.
+- [x] Add executable Rust policy fixtures for OpenVPN compression, legacy
+  ciphers/digests, script/route/`pull-filter` injection, malformed bounds and
+  complete custom blocks.
+- [ ] Add end-to-end C-consumer fixtures for OpenVPN profile generation, IPsec
+  multipart names, PKCS#12 cleanup, WireGuard endpoint updates, and WPS
+  interface names.
 - [ ] Re-audit every remaining `system`, `popen`, shell-script generation, and
   NVRAM-to-command path. Prefer fixed argv execution and typed Rust parsers.
 - [ ] Review proprietary prebuilt objects/libraries borrowed from other ASUS
@@ -162,6 +198,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   before `configure`. On WSL this triggered one false "newly created file is
   older" clock error; an unchanged fast retry passed. Add a deterministic
   timestamp barrier without changing firmware contents.
+- The proprietary Web compressor prints `Segmentation fault` for some
+  long-column JavaScript inputs and continues. The complete generated payload,
+  dictionary cardinality, path set and hashes pass afterward, but this tool
+  should be replaced or wrapped with an explicit per-input output check so a
+  future partial result cannot be mistaken for success.
 - The build expects a `repo` command even though this overlay uses Git; the
   missing-command message is currently non-fatal noise.
 - Proprietary components prevent complete source-level verification, so binary
