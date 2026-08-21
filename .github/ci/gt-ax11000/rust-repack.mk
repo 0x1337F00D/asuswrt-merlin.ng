@@ -1,0 +1,102 @@
+.PHONY: rust-components-relink rust-ui-httpd-relink rust-firmware-repack
+
+rust-components-relink:
+	# AUTODICT rewrites the complete compressed Web tree and its dictionaries as
+	# one versioned set.  Generate that set before rebuilding httpd consumers.
+	+$(MAKE) -C router www-install
+	+$(MAKE) -C router \
+		infosvr-install rstats-install nt_center-install httpd-install rc-install
+
+# Short iteration path for changes confined to the authenticated HTTP boundary
+# and its Web UI. Invoking this through the platform Makefile preserves all HND
+# exports that a direct `make -C router` call would miss.
+rust-ui-httpd-relink:
+	+$(MAKE) -C router www-install
+	+$(MAKE) -C router httpd-install
+
+rust-firmware-repack:
+	+$(MAKE) -C router strips
+	# A normal full build consumes the generated nested Web tree while creating
+	# its first image.  Regenerate the complete AUTODICT set immediately before
+	# manifesting/repacking so this finalizer is identical for every build mode.
+	+$(MAKE) -C router www-install
+	# www-install produces a mutually dependent set of compressed ASP pages and
+	# language dictionaries.  Never promote a single page into an older set: the
+	# numeric dictionary IDs would render as unrelated words.  Move the complete
+	# generated tree aside, validate its release-critical files, then replace the
+	# old flat tree as one unit before buildFS observes it.
+	test -d $(PROFILE_DIR)/fs.install/www/www
+	test -s $(PROFILE_DIR)/fs.install/www/www/Advanced_WAdvanced_Content.asp
+	test -s $(PROFILE_DIR)/fs.install/www/www/index.asp
+	test -s $(PROFILE_DIR)/fs.install/www/www/EN.dict
+	test -s $(PROFILE_DIR)/fs.install/www/www/DE.dict
+	test ! -e $(PROFILE_DIR)/fs.install/www.generated
+	mv $(PROFILE_DIR)/fs.install/www/www \
+		$(PROFILE_DIR)/fs.install/www.generated
+	rm -rf $(PROFILE_DIR)/fs.install/www
+	mv $(PROFILE_DIR)/fs.install/www.generated \
+		$(PROFILE_DIR)/fs.install/www
+	test ! -e $(PROFILE_DIR)/fs.install/www/www
+	# rootprep creates these model-wide links before the first image build.  The
+	# atomic WWW replacement above must restore them before manifesting, or all
+	# userN.asp links plus PAC/WPAD become dangling at runtime.
+	ln -sfn /tmp/var/wwwext $(PROFILE_DIR)/fs.install/www/ext
+	ln -sfn /tmp/var/wwwext $(PROFILE_DIR)/fs.install/www/user
+	ln -sfn /www/ext/proxy.pac $(PROFILE_DIR)/fs.install/www/proxy.pac
+	ln -sfn /www/ext/proxy.pac $(PROFILE_DIR)/fs.install/www/wpad.dat
+	cd $(PROFILE_DIR)/fs.install; \
+		find www -type f -print0 | sort -z | xargs -0 sha256sum \
+			> $(WEB_PAYLOAD_MANIFEST)
+	test -s $(WEB_PAYLOAD_MANIFEST)
+	cd $(PROFILE_DIR)/fs.install; \
+		find www -type l -print0 | sort -z | \
+		while IFS= read -r -d '' link; do \
+			printf '%s\t%s\n' "$$link" "$$(readlink "$$link")"; \
+		done > $(WEB_SYMLINK_MANIFEST)
+	test -s $(WEB_SYMLINK_MANIFEST)
+	install -D -m 0644 $(WEB_PAYLOAD_MANIFEST) \
+		$(PROFILE_DIR)/fs.install/usr/share/codex/web-payload.sha256
+	install -D -m 0644 $(WEB_SYMLINK_MANIFEST) \
+		$(PROFILE_DIR)/fs.install/usr/share/codex/web-symlinks.manifest
+	# Older iterations placed these files under /etc, which is a runtime link to
+	# volatile /tmp/etc on this platform.  Never package ambiguous stale copies.
+	rm -f \
+		$(PROFILE_DIR)/fs.install/etc/codex-web-payload.sha256 \
+		$(PROFILE_DIR)/fs.install/etc/codex-web-symlinks.manifest
+	promote_artifact() { \
+		source_file="$$1"; target_file="$$2"; \
+		if [ -f "$$source_file" ]; then \
+			install -D "$$source_file" "$$target_file"; \
+		else \
+			test -f "$$target_file"; \
+		fi; \
+	}; \
+	promote_artifact $(PROFILE_DIR)/fs.install/infosvr/usr/sbin/infosvr \
+		$(PROFILE_DIR)/fs.install/usr/sbin/infosvr; \
+	promote_artifact $(PROFILE_DIR)/fs.install/rstats/bin/rstats \
+		$(PROFILE_DIR)/fs.install/bin/rstats; \
+	promote_artifact $(PROFILE_DIR)/fs.install/nt_center/usr/sbin/Notify_Event2NC \
+		$(PROFILE_DIR)/fs.install/usr/sbin/Notify_Event2NC; \
+	promote_artifact $(PROFILE_DIR)/fs.install/httpd/usr/sbin/httpd \
+		$(PROFILE_DIR)/fs.install/usr/sbin/httpd; \
+	promote_artifact $(PROFILE_DIR)/fs.install/rc/sbin/rc \
+		$(PROFILE_DIR)/fs.install/sbin/rc
+	# Package install targets stage their complete payload below a package-named
+	# directory. The five selected artifacts have now been promoted into the
+	# flat firmware tree, so remove only those known duplicate staging roots.
+	rm -rf \
+		$(PROFILE_DIR)/fs.install/infosvr \
+		$(PROFILE_DIR)/fs.install/rstats \
+		$(PROFILE_DIR)/fs.install/nt_center \
+		$(PROFILE_DIR)/fs.install/httpd \
+		$(PROFILE_DIR)/fs.install/rc
+	cd $(PROFILE_DIR)/fs.install; sha256sum \
+		usr/sbin/infosvr \
+		bin/rstats \
+		usr/sbin/Notify_Event2NC \
+		usr/sbin/httpd \
+		sbin/rc > $(RUST_CONSUMER_MANIFEST)
+	cd $(TARGETS_DIR); ./buildFS
+	cd $(TARGETS_DIR); ./buildFS2
+	+$(MAKE) buildimage_final
+	rm -f $(PROFILE_DIR)/*cferom*

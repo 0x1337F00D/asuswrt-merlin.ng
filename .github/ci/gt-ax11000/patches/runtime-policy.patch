@@ -1,0 +1,357 @@
+diff --git a/release/src/router/httpd/httpd_compat_stubs.c b/release/src/router/httpd/httpd_compat_stubs.c
+index 1bb1dcb959b..8bb170803ca 100644
+--- a/release/src/router/httpd/httpd_compat_stubs.c
++++ b/release/src/router/httpd/httpd_compat_stubs.c
+@@ -1,14 +1,18 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ #include <stdint.h>
++#include <string.h>
+ #include <syslog.h>
+ 
+ #include <typedefs.h>
+ #include <json.h>
++#include <shared.h>
+ #include "httpd.h"
+ 
+ extern int ej_wps_info(int eid, webs_t wp, int argc, char_t **argv);
+ extern int ej_wl_chanspecs_6g(int eid, webs_t wp, int argc, char_t **argv);
++extern int rust_httpd_testlab_country_authorize(const char *country, size_t country_length,
++	const char *confirmation, size_t confirmation_length);
+ 
+ int nvram_modify_log(char *name, char *new, char *old, struct json_object *nvram_modify_obj)
+ {
+@@ -87,6 +91,63 @@ void do_get_security_update_cgi(char *url, FILE *stream)
+ 	websWrite(stream, "{\"supported\":false}");
+ }
+ 
++void do_set_regulatory_testlab_cgi(char *url, FILE *stream)
++{
++	char *country;
++	char *confirmation;
++	char *acknowledge_only;
++
++	(void)url;
++	country = websGetVar(stream, "country", "");
++	confirmation = websGetVar(stream, "confirmation", "");
++	acknowledge_only = websGetVar(stream, "acknowledge_only", "0");
++	if (!rust_httpd_testlab_country_authorize(country, strlen(country),
++		confirmation, strlen(confirmation))) {
++		syslog(LOG_WARNING, "rejected invalid regulatory test-lab request");
++		websWrite(stream, "{\"statusCode\":\"-1\",\"applied\":false}");
++		return;
++	}
++	if (strcmp(acknowledge_only, "0") && strcmp(acknowledge_only, "1")) {
++		syslog(LOG_WARNING, "rejected invalid regulatory test-lab acknowledgement mode");
++		websWrite(stream, "{\"statusCode\":\"-1\",\"acknowledged\":false}");
++		return;
++	}
++	if (!strcmp(acknowledge_only, "1")) {
++		nvram_set("rust_regulatory_testlab_ack_v1", "1");
++		nvram_commit();
++		syslog(LOG_NOTICE, "regulatory test-lab warning acknowledged");
++		websWrite(stream, "{\"statusCode\":\"0\",\"acknowledged\":true}");
++		return;
++	}
++
++	/* This is deliberately the only HTTP mutation boundary for regulatory
++	 * country, derived channel/DFS state, and country/board-limited power. */
++	nvram_set("location_code", country);
++	nvram_set("ui_location_code", country);
++	nvram_set("wl_country_code", country);
++	nvram_set("wl0_country_code", country);
++	nvram_set("wl1_country_code", country);
++	nvram_set("wl2_country_code", country);
++	nvram_set("0:ccode", country);
++	nvram_set("1:ccode", country);
++	nvram_set("2:ccode", country);
++	nvram_set("wl0_country_rev", "0");
++	nvram_set("wl1_country_rev", "0");
++	nvram_set("wl2_country_rev", "0");
++	nvram_set("0:regrev", "0");
++	nvram_set("1:regrev", "0");
++	nvram_set("2:regrev", "0");
++	/* Clear legacy per-radio overrides so the selected country profile is
++	 * the sole source for driver channel availability and DFS behavior. */
++	nvram_unset("wl_chlist");
++	nvram_unset("wl0_chlist");
++	nvram_unset("wl1_chlist");
++	nvram_unset("wl2_chlist");
++	nvram_unset("wl_acs_excl_chans");
++	nvram_unset("wl_acs_excl_chans_dfs");
++	nvram_unset("wl0_acs_excl_chans");
++	nvram_unset("wl1_acs_excl_chans");
++	nvram_unset("wl2_acs_excl_chans");
++	nvram_unset("wl0_acs_excl_chans_base");
++	nvram_unset("wl1_acs_excl_chans_base");
++	nvram_unset("wl2_acs_excl_chans_base");
++	/* 100 is a percentage of the selected regulatory/board-calibrated cap,
++	 * not an independent milliwatt or PA calibration override. */
++	nvram_set("wl_txpower", "100");
++	nvram_set("wl0_txpower", "100");
++	nvram_set("wl1_txpower", "100");
++	nvram_set("wl2_txpower", "100");
++	/* The versioned warning acknowledgement is persisted only after the
++	 * complete Rust-authorized profile has been applied successfully. */
++	nvram_set("rust_regulatory_testlab_ack_v1", "1");
++	nvram_commit();
++	syslog(LOG_NOTICE, "authenticated regulatory country profile applied: %.3s", country);
++	notify_rc("restart_wireless");
++	websWrite(stream, "{\"statusCode\":\"0\",\"applied\":true}");
++}
++
+ int webswrite(webs_t wp, const char *fmt, ...)
+ {
+ 	int ret;
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index bd024c2785d..43fd8e223d8 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -484,6 +484,7 @@ extern int app_auth(char *authinfo, char *authpass);
+ extern void do_set_security_update_cgi(char *url, FILE *stream);
+ extern void do_get_security_update_cgi(char *url, FILE *stream);
+ #endif
++extern void do_set_regulatory_testlab_cgi(char *url, FILE *stream);
+ 
+ extern void do_set_ASUS_privacy_policy_cgi(char *url, FILE *stream);
+ extern void do_get_ASUS_privacy_policy_cgi(char *url, FILE *stream);
+@@ -4264,12 +4265,69 @@ static void clear_residual_bw_qos_state(void);
+ #endif
+ 
+ extern int rust_httpd_wireless_identity_is_readonly(const char *name, size_t length);
++extern int rust_httpd_wlan_security_validate(const char *authentication,
++	size_t authentication_length, const char *cipher, size_t cipher_length,
++	const char *pmf, size_t pmf_length, const char *wps, size_t wps_length);
+ 
+ static int is_readonly_wireless_identity_key(const char *name)
+ {
+ 	return name && rust_httpd_wireless_identity_is_readonly(name, strlen(name));
+ }
+ 
++static const char *wlan_candidate_value(json_object *root, const char *generic,
++	const char *specific)
++{
++	char *candidate = get_cgi_json(generic, root);
++	return candidate ? candidate : nvram_safe_get(specific);
++}
++
++static int validate_wlan_security_tuple(json_object *root, int unit,
++	const char *wps_override)
++{
++	char prefix[16], key[32];
++	const char *authentication, *cipher, *pmf, *wps;
++
++	if (unit < 0 || unit > 2)
++		return 0;
++	snprintf(prefix, sizeof(prefix), "wl%d_", unit);
++	strlcat_r(prefix, "auth_mode_x", key, sizeof(key));
++	authentication = wlan_candidate_value(root, "wl_auth_mode_x", key);
++	strlcat_r(prefix, "crypto", key, sizeof(key));
++	cipher = wlan_candidate_value(root, "wl_crypto", key);
++	strlcat_r(prefix, "mfp", key, sizeof(key));
++	pmf = wlan_candidate_value(root, "wl_mfp", key);
++	wps = wps_override ? wps_override :
++		wlan_candidate_value(root, "wps_enable", "wps_enable");
++
++	return rust_httpd_wlan_security_validate(authentication, strlen(authentication),
++		cipher, strlen(cipher), pmf, strlen(pmf), wps, strlen(wps));
++}
++
++static int validate_wlan_security_request(json_object *root)
++{
++	char *unit_value;
++	char *wps_value;
++	int unit;
++
++	if (!get_cgi_json("wl_auth_mode_x", root) &&
++	    !get_cgi_json("wl_crypto", root) &&
++	    !get_cgi_json("wl_mfp", root) &&
++	    !get_cgi_json("wps_enable", root))
++		return 1;
++	wps_value = get_cgi_json("wps_enable", root);
++	if (wps_value && !strcmp(wps_value, "0") &&
++	    !get_cgi_json("wl_auth_mode_x", root) &&
++	    !get_cgi_json("wl_crypto", root) &&
++	    !get_cgi_json("wl_mfp", root))
++		return 1;
++	unit_value = get_cgi_json("wl_unit", root);
++	unit = unit_value ? safe_atoi(unit_value) : nvram_get_int("wl_unit");
++	return validate_wlan_security_tuple(root, unit, NULL);
++}
++
+ int validate_apply(webs_t wp, json_object *root)
+ {
+ 	struct nvram_tuple *t;
+@@ -4311,6 +4369,10 @@ int validate_apply(webs_t wp, json_object *root)
+ 	memset(acc_action_script, 0, sizeof(acc_action_script));
+ 	action_script = check_xss_blacklist(action_script, 0) ? "" : action_script;
+ #endif
++	if (!validate_wlan_security_request(root)) {
++		logmessage("httpd", "rejected incomplete or insecure WLAN security tuple");
++		return 0;
++	}
+ 	json_object *activity_obj = json_object_new_object();
+ 	/* go through each nvram value */
+ 	for (t = router_defaults; t->name; t++)
+@@ -13569,6 +13631,12 @@ apply_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ 		    !wps_pin_value || strlen(wps_pin_value) != 8 ||
+ 		    !isValid_digit_string(wps_pin_value))
+ 			goto wps_finish;
++		/* Disabling WPS is always a permitted security improvement. */
++		if (strcmp(wps_enable_value, "0") && !validate_wlan_security_tuple(root,
++		    wps_band_value[0] - '0', wps_enable_value)) {
++			logmessage("httpd", "rejected WPS request for insecure WLAN tuple");
++			goto wps_finish;
++		}
+ 
+ 		/* Apply only after the complete tuple passed validation. */
+ 		nvram_set("wps_band_x", wps_band_value);
+@@ -28665,6 +28733,7 @@ struct mime_handler mime_handlers[] =
+ 	{ "apply.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_apply_cgi, do_auth },
+ 	{ "applyapp.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_apply_cgi, do_auth },
+ 	{ "wl_apply.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_wl_apply_cgi, do_auth },
++	{ "set_regulatory_testlab.cgi*", "application/json", no_cache_IE7, do_html_post_and_get, do_set_regulatory_testlab_cgi, do_auth },
+ 	{ "appGet.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_appGet_cgi, do_auth },
+ 	{ "upgrade.cgi*", "text/html", no_cache_IE7, do_upgrade_post, do_upgrade_cgi, do_auth},
+ 	{ "upload.cgi*", "text/html", no_cache_IE7, do_upload_post, do_upload_cgi, do_auth },
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 6df924b6988..9db1af22d0a 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -34,6 +34,7 @@
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
+ #include <sys/types.h>
++#include <sys/stat.h>
+ #include <dirent.h>
+ #include <bcmnvram.h>
+ #include <shutils.h>
+@@ -81,6 +82,78 @@
+ static int firewall_apply_failed;
+ static char firewall_fail_wan_if[IFNAMSIZ + 1];
+ 
++extern int rust_validate_effective_firewall_files(const char *ipv4_path,
++	const char *ipv6_path, int require_ipv6);
++
++static int validate_effective_firewall_policy(void)
++{
++	static const char ipv4_path[] = "/tmp/firewall-effective-v4.rules";
++#ifdef RTCONFIG_IPV6
++	static const char ipv6_path[] = "/tmp/firewall-effective-v6.rules";
++#endif
++	char *ipv4_argv[] = { "iptables-save", "-t", "filter", NULL };
++#ifdef RTCONFIG_IPV6
++	char *ipv6_argv[] = { "ip6tables-save", "-t", "filter", NULL };
++	int require_ipv6 = ipv6_enabled();
++#else
++	int require_ipv6 = 0;
++#endif
++	int valid = 0;
++
++	unlink(ipv4_path);
++#ifdef RTCONFIG_IPV6
++	unlink(ipv6_path);
++#endif
++	if (_eval(ipv4_argv, ">/tmp/firewall-effective-v4.rules", 0, NULL) != 0 ||
++	    chmod(ipv4_path, 0600) != 0)
++		goto out;
++#ifdef RTCONFIG_IPV6
++	if (require_ipv6 &&
++	    (_eval(ipv6_argv, ">/tmp/firewall-effective-v6.rules", 0, NULL) != 0 ||
++	     chmod(ipv6_path, 0600) != 0))
++		goto out;
++	valid = rust_validate_effective_firewall_files(ipv4_path,
++		require_ipv6 ? ipv6_path : NULL, require_ipv6);
++#else
++	valid = rust_validate_effective_firewall_files(ipv4_path, NULL, 0);
++#endif
++
++out:
++	unlink(ipv4_path);
++#ifdef RTCONFIG_IPV6
++	unlink(ipv6_path);
++#endif
++	return valid;
++}
++
++static void firewall_enter_fail_closed(void)
++{
++	int emergency_v4 = 0;
++#ifdef RTCONFIG_IPV6
++	int emergency_v6 = 0;
++#endif
++
++	f_write_string("/proc/sys/net/ipv4/ip_forward", "0", 0, 0);
++#ifdef RTCONFIG_IPV6
++	f_write_string("/proc/sys/net/ipv6/conf/all/forwarding", "0", 0, 0);
++#endif
++	if (firewall_fail_wan_if[0]) {
++		emergency_v4 = eval("iptables", "-I", "INPUT", "1", "-i",
++			firewall_fail_wan_if, "-j", "DROP");
++#ifdef RTCONFIG_IPV6
++		emergency_v6 = eval("ip6tables", "-I", "INPUT", "1", "-i",
++			firewall_fail_wan_if, "-j", "DROP");
++#endif
++	}
++	if (emergency_v4
++#ifdef RTCONFIG_IPV6
++	    || emergency_v6
++#endif
++	   )
++		logmessage("firewall", "emergency WAN INPUT drop could not be installed");
++	logmessage("firewall", "ruleset validation failed; WAN INPUT is blocked and forwarding remains disabled");
++}
++
+ #ifdef RTCONFIG_IPV6
+ char wan6face[IFNAMSIZ + 1];
+ // RFC-4890, sec. 4.3.1
+@@ -9103,33 +9176,8 @@ int start_firewall(int wanunit, int lanunit)
+ 	}
+ #endif
+ 
+-	if (firewall_apply_failed) {
+-		int emergency_v4 = 0;
+-#ifdef RTCONFIG_IPV6
+-		int emergency_v6 = 0;
+-#endif
+-		f_write_string("/proc/sys/net/ipv4/ip_forward", "0", 0, 0);
+-#ifdef RTCONFIG_IPV6
+-		f_write_string("/proc/sys/net/ipv6/conf/all/forwarding", "0", 0, 0);
+-#endif
+-		if (firewall_fail_wan_if[0]) {
+-			emergency_v4 = eval("iptables", "-I", "INPUT", "1", "-i",
+-				firewall_fail_wan_if, "-j", "DROP");
+-#ifdef RTCONFIG_IPV6
+-			emergency_v6 = eval("ip6tables", "-I", "INPUT", "1", "-i",
+-				firewall_fail_wan_if, "-j", "DROP");
+-#endif
+-		}
+-		if (emergency_v4
+-#ifdef RTCONFIG_IPV6
+-		    || emergency_v6
+-#endif
+-		   )
+-			logmessage("firewall", "emergency WAN INPUT drop could not be installed");
+-		logmessage("firewall", "ruleset apply failed; WAN INPUT is blocked and forwarding remains disabled");
++	if (firewall_apply_failed)
+ 		goto leave;
+-	}
+-	enable_ip_forward();
+ 
+ #ifdef RTCONFIG_MULTIWAN_IF
+ add_mtwan:
+@@ -9367,6 +9415,14 @@ leave:
+ 
+ 	if (!firewall_apply_failed)
+ 		run_custom_script("firewall-start", 0, wan_if, NULL);
++	if (!firewall_apply_failed && !validate_effective_firewall_policy()) {
++		firewall_apply_failed = 1;
++		logmessage("firewall", "effective INPUT/FORWARD terminal DROP invariant failed");
++	}
++	if (firewall_apply_failed)
++		firewall_enter_fail_closed();
++	else
++		enable_ip_forward();
+ 
+ 	return firewall_apply_failed ? -1 : 0;
+ }

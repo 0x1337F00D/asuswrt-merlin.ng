@@ -1,0 +1,260 @@
+diff --git a/release/src/router/www/Advanced_WAdvanced_Content.asp b/release/src/router/www/Advanced_WAdvanced_Content.asp
+index 01b2ade7412..ec7a6ead318 100644
+--- a/release/src/router/www/Advanced_WAdvanced_Content.asp
++++ b/release/src/router/www/Advanced_WAdvanced_Content.asp
+@@ -308,6 +308,7 @@ function initial(){
+ 	register_event();
+ 	init_cookie();
+ 	backForwardCompatibility();
++	regulatory_lab_prepare_controls();
++	regulatory_lab_render_status();
+ 
+ 	if(lantiq_support){
+ 		checkWLReady();
+@@ -728,7 +729,8 @@ function initial(){
+ 	/*ui_location_code Setting*/		
+ 	if(location_list_support && !cfg_ui_region_disable){
+ 		generate_country_selection();
+-		document.getElementById('region_tr').style.display = "";
++		document.form.ui_location_code.disabled = true;
++		document.getElementById('region_tr').style.display = "none";
+ 	}
+ 
+ 	control_TimeField();
+@@ -963,11 +963,35 @@ function changeRSSI(_switch){
+ 	}
+ }
+ 
++function regulatory_lab_prepare_controls(){
++	var selector = document.getElementById("regulatory_lab_country");
++	var currentRegion = (orig_region == "") ? tcode : orig_region;
++	var hasCurrent = false;
++	var hasAll = false;
++	try{
++		if(!selector)
++			throw new Error("missing country selector");
++		for(var i = 0; i < country_array.length; ++i){
++			var index = country_array[i] == "NZ" ? "AU" : country_array[i];
++			if(index == "ALL")
++				hasAll = true;
++			if(index == currentRegion)
++				hasCurrent = true;
++			var country = country_selection_array[index];
++			var option = document.createElement("option");
++			option.value = index;
++			option.textContent = country ? country.name : index;
++			selector.appendChild(option);
++		}
++		if(!hasAll)
++			selector.appendChild(new Option("ALL (Testlabor)", "ALL"));
++		if(!hasCurrent)
++			selector.appendChild(new Option(currentRegion, currentRegion));
++		selector.value = currentRegion;
++	}
++	catch(error){
++		if(selector){
++			selector.disabled = true;
++			selector.title = "Länderauswahl konnte nicht initialisiert werden.";
++		}
++	}
++	regulatory_lab_restore_acknowledgement();
++}
++
++function regulatory_lab_restore_acknowledgement(){
++	var acknowledgement = document.getElementById("regulatory_lab_ack");
++	if(!acknowledgement)
++		return;
++	regulatory_lab_ack_stored = '<% nvram_match("rust_regulatory_testlab_ack_v1", "1", "accepted"); %>' == "accepted";
++	acknowledgement.checked = regulatory_lab_ack_stored;
++	acknowledgement.disabled = regulatory_lab_ack_stored;
++}
++
++function regulatory_lab_render_status(){
++	var target = document.getElementById("regulatory_lab_status");
++	if(!target)
++		return;
++	try{
++		var state = httpApi.nvramGet([
++			"wl0_country_code", "wl0_chanspec", "wl0_acs_dfs", "wl0_txpower",
++			"wl1_country_code", "wl1_chanspec", "wl1_acs_dfs", "wl1_txpower",
++			"wl2_country_code", "wl2_chanspec", "wl2_acs_dfs", "wl2_txpower"
++		]) || {};
++		var channelSets = [
++			httpApi.hookGet("channel_list_2g") || [],
++			httpApi.hookGet("channel_list_5g") || [],
++			httpApi.hookGet("channel_list_5g_2") || []
++		];
++		var labels = ["2.4 GHz", "5 GHz-1", "5 GHz-2"];
++		var lines = [];
++		for(var unit = 0; unit < 3; ++unit){
++			var prefix = "wl" + unit + "_";
++			var channels = Array.isArray(channelSets[unit]) ? channelSets[unit].join(", ") : String(channelSets[unit]);
++			lines.push(labels[unit] + ": Land=" + state[prefix + "country_code"] +
++				", aktueller Kanal=" + state[prefix + "chanspec"] +
++				", DFS=" + (state[prefix + "acs_dfs"] == "1" ? "aktiv" : "inaktiv") +
++				", aktuelle Leistungseinstellung=" + state[prefix + "txpower"] +
++				" % der landes- und boardkalibrierten Obergrenze" +
++				", Treiberkanäle=" + channels);
++		}
++		target.textContent = lines.join("\n");
++	}
++	catch(error){
++		target.textContent = "Der effektive Funkstatus ist vorübergehend nicht verfügbar. Bitte die Seite vor einer Änderung neu laden.";
++	}
++}
++
++var regulatory_lab_ack_stored = false;
++
++function regulatory_lab_store_acknowledgement(){
++	var acknowledgement = document.getElementById("regulatory_lab_ack");
++	if(regulatory_lab_ack_stored || !acknowledgement || !acknowledgement.checked)
++		return true;
++
++	var regionControl = document.getElementById("regulatory_lab_country");
++	var uiRegion = regionControl ? regionControl.value : ((orig_region == "") ? tcode : orig_region);
++	var driverRegion = (U5_country_code && uiRegion == "U5") ? "AA" : uiRegion;
++	var stored = false;
++	$.ajax({
++		url: "/set_regulatory_testlab.cgi",
++		type: "POST",
++		dataType: "json",
++		async: false,
++		data: {
++			"country": driverRegion,
++			"confirmation": "ACKNOWLEDGE_REGULATORY_AND_HARDWARE_RISK_V1",
++			"acknowledge_only": "1"
++		},
++		success: function(response){
++			stored = response && response.statusCode == "0" && response.acknowledged === true;
++		}
++	});
++	if(!stored){
++		alert("Die Bestätigung konnte nicht im NVRAM des Routers gespeichert werden.");
++		return false;
++	}
++	regulatory_lab_ack_stored = true;
++	acknowledgement.checked = true;
++	acknowledgement.disabled = true;
++	return true;
++}
++
++function regulatory_lab_apply_profile(){
++	var regionControl = document.getElementById("regulatory_lab_country");
++	var currentRegion = (orig_region == "") ? tcode : orig_region;
++	if(!regionControl || regionControl.value == currentRegion){
++		var acknowledgement = document.getElementById("regulatory_lab_ack");
++		if(!regulatory_lab_ack_stored &&
++		   (!acknowledgement || !acknowledgement.checked)){
++			alert("Bitte zuerst die Testlabor-Warnung bestätigen.");
++			return false;
++		}
++		if(!regulatory_lab_store_acknowledgement())
++			return false;
++		alert("Die Bestätigung ist dauerhaft im NVRAM gespeichert. Für ein neues Profil bitte ein anderes Land wählen.");
++		return false;
++	}
++	regulatory_lab_change_confirmed();
++	return false;
++}
++
++function regulatory_lab_change_confirmed(){
++	var regionControl = document.getElementById("regulatory_lab_country");
++	var currentRegion = (orig_region == "") ? tcode : orig_region;
++	var regionChanged = regionControl &&
++		(regionControl.value != currentRegion);
++	if(!regionChanged)
++		return true;
++
++	var acknowledgement = document.getElementById("regulatory_lab_ack");
++	if(!acknowledgement || !acknowledgement.checked){
++		alert("Bitte zuerst die Testlabor-Warnung bestätigen.");
++		return false;
++	}
++
++	if(!confirm("Das gewählte Land einschließlich ALL bestimmt Kanäle, DFS-Regeln und die maximale boardkalibrierte Sendeleistung aller Funkmodule. Die korrekte Auswahl liegt in deiner Verantwortung. Fortfahren?"))
++		return false;
++
++	var uiRegion = regionControl.value;
++	var driverRegion = (U5_country_code && uiRegion == "U5") ? "AA" : uiRegion;
++	var applied = false;
++	$.ajax({
++		url: "/set_regulatory_testlab.cgi",
++		type: "POST",
++		dataType: "json",
++		async: false,
++		data: {
++			"country": driverRegion,
++			"confirmation": "ACKNOWLEDGE_REGULATORY_AND_HARDWARE_RISK_V1"
++		},
++		success: function(response){
++			applied = response && response.statusCode == "0" && response.applied === true;
++		}
++	});
++	if(!applied){
++		alert("Das atomare Länderprofil wurde abgelehnt; kein regulatorischer Wert wurde geändert.");
++		return false;
++	}
++	alert("Länderprofil übernommen. WLAN wird neu gestartet; die Seite lädt anschließend neu.");
++	setTimeout(refreshpage, 15000);
++	return false;
++}
++
+ function applyRule(){
+ 	if(lantiq_support && wave_ready != 1){
+ 		alert(`<#Wireless_ready#>`);
+ 		return false;
+ 	}
++	if(!regulatory_lab_store_acknowledgement())
++		return false;
+ 	
+ 	if(validForm()){
+ 		if(wifi_hw_sw_support && !Qcawifi_support) { //For N55U
+@@ -1003,7 +1116,8 @@ function applyRule(){
+ 				document.form.acs_dfs.value = "0";
+ 		}
+ 		
+-		if(location_list_support && !cfg_ui_region_disable){
++		if(location_list_support && !cfg_ui_region_disable &&
++		   !document.form.ui_location_code.disabled){
+ 			if((orig_region.length > 0 && orig_region != document.form.ui_location_code.value)
+ 			|| (orig_region == "" && document.form.ui_location_code.value != tcode)){
+ 				if(amesh_support && ((isSwMode("RT") || isSwMode("WISP")) || isSwMode("ap")) && ameshRouter_support) {
+@@ -1092,7 +1206,8 @@ function applyRule(){
+ 				httpApi.nvramSet(postData);
+ 			}
+ 		}
+ 
+-		if(location_list_support && !cfg_ui_region_disable){
++		if(location_list_support && !cfg_ui_region_disable &&
++		   !document.form.ui_location_code.disabled){
+ 			var uiLocationCode = document.form.ui_location_code.value;
+ 			var locationCode = (U5_country_code && uiLocationCode == "U5") ? "AA" : uiLocationCode;
+ 			httpApi.nvramSet({
+@@ -2126,6 +2241,17 @@ function wl_disable11b(obj){
+ 							</select>
+ 						</td>
+ 					</tr>
++					<tr id="regulatory_lab_warning">
++						<th>Regulatorisches Testlabor</th>
++						<td style="color:#FC0;line-height:1.45;">
++							Nur die Länderauswahl steuert im Testlabor Frequenzen, DFS-Regeln und
++							die maximale boardkalibrierte Sendeleistung aller drei Funkmodule.
++							Einzelne Kanäle, Leistungswerte und PA-Kalibrierung sind nicht separat
++							änderbar. Auswahl und regulatorische Einhaltung liegen in deiner
++							Verantwortung. Die Anzeige ist keine live gemessene HF-Leistung.<br>
++							<div style="margin:10px 0;">
++								<label for="regulatory_lab_country">Länderprofil:</label>
++								<select id="regulatory_lab_country" class="input_option"></select>
++							</div>
++							<pre id="regulatory_lab_status" style="white-space:pre-wrap;color:#FFF;"></pre>
++							<label><input type="checkbox" id="regulatory_lab_ack"> Ich verstehe,
++							dass die Änderung Clients trennen und WLAN neu starten kann.</label><br>
++							<span>Diese Bestätigung wird einmalig im Router-NVRAM gespeichert.</span><br>
++							<input class="button_gen" type="button" value="Länderprofil anwenden"
++								onclick="regulatory_lab_apply_profile();">
++						</td>
++					</tr>
+-					<tr id="wl_txPower_field">
++					<tr id="wl_txPower_field" style="display:none;">
+ 						<th><a id="wl_txPower_field_title" class="hintstyle" href="javascript:void(0);" onClick="openHint(0, 16);"><#WLANConfig11b_TxPower_itemname#></a></th>
+ 						<td>

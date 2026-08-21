@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "httpd-parsers",
+    "infosvr",
+    "nt-event",
+    "router-policy",
+    "router-security",
+    "rstats",
+    "wanduck-transition",
+]
+resolver = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = false

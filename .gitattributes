@@ -1,0 +1,4 @@
+# Unified-diff context markers are data, not source indentation. Without this
+# exception `git diff --check` misclassifies the required leading context space
+# before a tab (and blank context markers) inside this generated patch.
+.github/ci/gt-ax11000/patches/*.patch whitespace=-space-before-tab,-blank-at-eol

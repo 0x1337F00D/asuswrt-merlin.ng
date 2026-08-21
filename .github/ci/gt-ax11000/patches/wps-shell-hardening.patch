@@ -1,0 +1,207 @@
+diff --git a/release/src/router/rc/sysdeps/wps-broadcom.c b/release/src/router/rc/sysdeps/wps-broadcom.c
+index f752a1bb9cb..3b041f2a77c 100644
+--- a/release/src/router/rc/sysdeps/wps-broadcom.c
++++ b/release/src/router/rc/sysdeps/wps-broadcom.c
+@@ -73,13 +73,14 @@
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ #include <wlif_utils.h>
+ #define HAPD_DIR	"/var/run/hostapd"
+-#define HAPD_CMD_BUF	256
+ #define WPA_CLI_APP	"wpa_cli-2.7"
+ static int wps_config_command;
+ static void hapd_wps_cleanup();
+ static int hapd_cmd_chk_status(const char *ifname, const char *pin, const char *mac);
+ static int hapd_cli_run(const char *ifname, const char *command,
+ 	const char *arg1, const char *arg2, const char *expected);
++static int wps_cli_run(const char *mode, const char *prefix, const char *ifname,
++	const char *command, const char *pin);
+ static inline bool
+ hapd_disabled()
+ {
+@@ -596,7 +597,6 @@ stop_wps_method(void)
+ 	if (!HAPD_DISABLED()) {
+ 		char prefix[]="wlXXXXXX_", tmp[128];
+ 		char *mode;
+-		char cmd[HAPD_CMD_BUF] = {0};
+ 		char ifname[NVRAM_MAX_PARAM_LEN];
+ 		int unit;
+ 
+@@ -618,21 +618,7 @@ stop_wps_method(void)
+ 				snprintf(ifname, sizeof(ifname), "%s", nvram_safe_get(strcat_r(prefix, "_ifname", tmp)));
+ 				mode = nvram_safe_get(strcat_r(prefix, "_mode", tmp));
+ 
+-				if (!strcmp(mode, "ap")) {
+-					/* Execute wps_cancel cli cmd and reset the wps state variables to 0 */
+-					snprintf(cmd, sizeof(cmd), "hostapd_cli -p"
+-						" %s -i %s wps_cancel", HAPD_DIR, ifname);
+-				} else {
+-#if defined(NEW_WPA_CLI)
+-					snprintf(cmd, sizeof(cmd), "%s -i %s wps_cancel",
+-						WPA_CLI_APP, ifname);
+-#else
+-					snprintf(cmd, sizeof(cmd), "%s -p "
+-						"/var/run/%s_wpa_supplicant -i %s wps_cancel",
+-						WPA_CLI_APP, prefix, ifname);
+-#endif
+-				}
+-				if (system(cmd) == 0) {
++				if (wps_cli_run(mode, prefix, ifname, "wps_cancel", NULL)) {
+ 					wps_config_command = WPS_UI_CMD_NONE;
+ 					wl_wlif_update_wps_ui(WLIF_WPS_UI_INIT);
+ 				}
+@@ -648,22 +634,7 @@ stop_wps_method(void)
+ 				snprintf(prefix, sizeof(prefix), "wl%d", unit);
+ 	                        mode = nvram_safe_get(strcat_r(prefix, "_mode", tmp));
+ 
+-				if (!strcmp(mode, "ap")) {
+-					/* Execute wps_cancel cli cmd and reset the wps state variables to 0 */
+-					snprintf(cmd, sizeof(cmd), "hostapd_cli -p"
+-						" %s -i %s wps_cancel", HAPD_DIR, word);
+-				} else {
+-#if defined(NEW_WPA_CLI)
+-					snprintf(cmd, sizeof(cmd), "%s -i %s wps_cancel",
+-						WPA_CLI_APP, word);
+-#else
+-					snprintf(cmd, sizeof(cmd), "%s -p "
+-						"/var/run/%s_wpa_supplicant -i %s wps_cancel",
+-						WPA_CLI_APP, prefix, word);
+-#endif
+-				}
+-
+-				if (system(cmd) == 0) {
++				if (wps_cli_run(mode, prefix, word, "wps_cancel", NULL)) {
+ 					wps_config_command = WPS_UI_CMD_NONE;
+ 					wl_wlif_update_wps_ui(WLIF_WPS_UI_INIT);
+ 				}
+@@ -702,22 +673,7 @@ stop_wps_method(void)
+ 			}
+ 
+ 
+-			if (!strcmp(mode, "ap")) {
+-				/* Execute wps_cancel cli cmd and reset the wps state variables to 0 */
+-				snprintf(cmd, sizeof(cmd), "hostapd_cli -p"
+-					" %s -i %s wps_cancel", HAPD_DIR, ifname);
+-			} else {
+-#if defined(NEW_WPA_CLI)
+-				snprintf(cmd, sizeof(cmd), "%s -i %s wps_cancel",
+-					WPA_CLI_APP, ifname);
+-#else
+-				snprintf(cmd, sizeof(cmd), "%s -p "
+-					"/var/run/%s_wpa_supplicant -i %s wps_cancel",
+-					WPA_CLI_APP, prefix, ifname);
+-#endif
+-			}
+-
+-			if (system(cmd) == 0) {
++			if (wps_cli_run(mode, prefix, ifname, "wps_cancel", NULL)) {
+ 				wps_config_command = WPS_UI_CMD_NONE;
+ 				wl_wlif_update_wps_ui(WLIF_WPS_UI_INIT);
+ 			}
+@@ -766,31 +722,6 @@ int start_wps_enr(void)
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ 	if (!HAPD_DISABLED()) {
+ 		int wps_method = WPS_UI_METHOD_PBC;
+-		char cmd[HAPD_CMD_BUF] = {0};
+-
+-		switch (wps_method){
+-			case WPS_UI_METHOD_PBC:
+-#if defined(NEW_WPA_CLI)
+-			snprintf(cmd, sizeof(cmd), "%s -i %s wps_pbc",
+-				WPA_CLI_APP, ifname);
+-#else
+-			snprintf(cmd, sizeof(cmd), "%s -p "
+-				"/var/run/%s_wpa_supplicant -i %s wps_pbc",
+-				WPA_CLI_APP, prefix, ifname);
+-#endif
+-			break;
+-
+-			case WPS_UI_METHOD_PIN:
+-#if defined(NEW_WPA_CLI)
+-			snprintf(cmd, sizeof(cmd), "%s -i %s wps_pin any %s",
+-				WPA_CLI_APP, ifname, nvram_safe_get("wps_device_pin"));
+-#else
+-			snprintf(cmd, sizeof(cmd), "%s -p "
+-				"/var/run/%s_wpa_supplicant -i %s wps_pin any %s",
+-				WPA_CLI_APP, prefix, ifname, nvram_safe_get("wps_device_pin"));
+-#endif
+-			break;
+-		}
+ 
+ #ifdef RTCONFIG_MLO
+ 		int isup = -1;
+@@ -801,12 +732,13 @@ int start_wps_enr(void)
+ 			sleep(1);
+ 		}
+ #endif
+-		if (system(cmd) == 0) {
++		if (wps_cli_run("sta", prefix, ifname,
++			wps_method == WPS_UI_METHOD_PIN ? "wps_pin" : "wps_pbc",
++			wps_method == WPS_UI_METHOD_PIN ? nvram_safe_get("wps_device_pin") : NULL)) {
+ 			wps_config_command = WPS_UI_CMD_START;
+ 			wl_wlif_update_wps_ui(WLIF_WPS_UI_FIND_PBC_AP);
+ 		} else {
+-			dbg("Err : %s failed to execute %s \n",
+-				__FUNCTION__, cmd);
++			dbg("Err : %s failed to execute WPA WPS command\n", __FUNCTION__);
+ 		}
+ 	} else
+ #endif	/* RTCONFIG_BRCM_HOSTAPD */
+@@ -1097,6 +1029,58 @@ static int hapd_cli_run(const char *ifname, const char *command,
+ 	return success;
+ }
+ 
++static int wps_cli_run(const char *mode, const char *prefix, const char *ifname,
++	const char *command, const char *pin)
++{
++	char control[64];
++	char *argv[12];
++	int argc = 0;
++	int status = 0;
++	pid_t pid;
++
++	if (!mode || !prefix || !ifname || !command || !*ifname ||
++		strlen(ifname) >= IFNAMSIZ ||
++		strspn(ifname, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-") != strlen(ifname) ||
++		strlen(prefix) >= 16 ||
++		strspn(prefix, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.:-") != strlen(prefix))
++		return 0;
++	if (strcmp(command, "wps_cancel") && strcmp(command, "wps_pbc") && strcmp(command, "wps_pin"))
++		return 0;
++	if ((!strcmp(command, "wps_pin") && (!pin || strlen(pin) != 8 ||
++		strspn(pin, "0123456789") != 8)) || (strcmp(command, "wps_pin") && pin))
++		return 0;
++
++	if (!strcmp(mode, "ap"))
++		return hapd_cli_run(ifname, command, NULL, NULL, NULL);
++
++	argv[argc++] = "/usr/sbin/wpa_cli-2.7";
++#if !defined(NEW_WPA_CLI)
++	if ((size_t)snprintf(control, sizeof(control), "/var/run/%s_wpa_supplicant", prefix) >= sizeof(control))
++		return 0;
++	argv[argc++] = "-p";
++	argv[argc++] = control;
++#else
++	(void)control;
++#endif
++	argv[argc++] = "-i";
++	argv[argc++] = (char *)ifname;
++	argv[argc++] = (char *)command;
++	if (pin) {
++		argv[argc++] = "any";
++		argv[argc++] = (char *)pin;
++	}
++	argv[argc] = NULL;
++
++	pid = fork();
++	if (pid == 0) {
++		execv(argv[0], argv);
++		_exit(127);
++	}
++	if (pid < 0 || waitpid(pid, &status, 0) < 0)
++		return 0;
++	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
++}
++
+ static int hapd_cmd_chk_status(const char *ifname, const char *pin, const char *mac) {
+ 	FILE *fp = NULL;
+ 	char buf[128];

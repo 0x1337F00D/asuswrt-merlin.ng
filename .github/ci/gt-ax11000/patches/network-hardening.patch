@@ -1,0 +1,59 @@
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -4338,11 +4338,21 @@ static int validate_wlan_security_request(json_object *root)
+ 	if (wps_value && !strcmp(wps_value, "0") &&
+ 	    !get_cgi_json("wl_auth_mode_x", root) &&
+ 	    !get_cgi_json("wl_crypto", root) &&
+-	    !get_cgi_json("wl_mfp", root))
++	    !get_cgi_json("wl_mfp", root)) {
++		nvram_set("wps_enable", "0");
++		nvram_set("wps_enable_x", "0");
+ 		return 1;
++	}
++	if (wps_value && strcmp(wps_value, "0"))
++		return 0;
+ 	unit_value = get_cgi_json("wl_unit", root);
+ 	unit = unit_value ? safe_atoi(unit_value) : nvram_get_int("wl_unit");
+-	return validate_wlan_security_tuple(root, unit, NULL);
++	if (!validate_wlan_security_tuple(root, unit, "0"))
++		return 0;
++	/* Atomically migrate existing installations away from WPS. */
++	nvram_set("wps_enable", "0");
++	nvram_set("wps_enable_x", "0");
++	return 1;
+ }
+ 
+ int validate_apply(webs_t wp, json_object *root)
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -3858,6 +3858,18 @@ check_wps_enable()
+ 	int wps_enable = nvram_get_int("wps_enable_x");
+ 	int unit = nvram_get_int("wps_band_x");
+ 
++#ifdef GTAX11000
++	/* This hardened image does not expose a WPS exception.  Persist the
++	 * one-time migration so button presses and stale settings cannot restart
++	 * the registrar after a reboot. */
++	if (wps_enable || nvram_invmatch("wps_enable", "0")) {
++		nvram_set("wps_enable", "0");
++		nvram_set("wps_enable_x", "0");
++		nvram_commit();
++		wps_enable = 0;
++	}
++#endif
++
+ #ifdef RTCONFIG_AMAS
+ 	if (nvram_get_int("re_mode") == 1)
+ 		return;
+@@ -4046,7 +4058,9 @@ start_wps(void)
+ #endif
+ 	if (nvram_match("wps_enable", "1")
+ #ifdef RTCONFIG_AMAS
++#ifndef GTAX11000
+ 		|| nvram_get_int("amesh_wps_enr")
++#endif
+ #endif
+ 	) {
+ #ifdef CONFIG_BCMWL5

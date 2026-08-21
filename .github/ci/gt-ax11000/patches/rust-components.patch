@@ -1,0 +1,571 @@
+diff --git a/release/src/router/infosvr/Makefile b/release/src/router/infosvr/Makefile
+index bc8958362f..10b6624837 100644
+--- a/release/src/router/infosvr/Makefile
++++ b/release/src/router/infosvr/Makefile
+@@ -78,8 +78,27 @@ install: all
+ 	install infosvr $(INSTALLDIR)/usr/sbin
+ 
+ 
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_INFOSVR_MANIFEST := $(RUST_COMPONENTS_DIR)/infosvr/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifneq ($(wildcard $(RUST_INFOSVR_MANIFEST)),)
++.PHONY: infosvr
++infosvr:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS) -Lnative=$(TOP_PLATFORM)/nvram${BCMEX}$(EX7) \
++		-Lnative=$(TOP)/shared -Lnative=$(TOP_PLATFORM)/wlcsm$(EXHND) \
++		-Clink-arg=-lshared -Clink-arg=-lwlcsm -Clink-arg=-lpthread -Clink-arg=-lgcc_s" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_INFOSVR_MANIFEST)" \
++			--release --target "$(RUST_TARGET)" --locked --offline
++	cp "$(RUST_TARGET_DIR)/$(RUST_TARGET)/release/infosvr" infosvr
++else
+ infosvr: ./infosvr.o ./common.o ./packet.o ./storage.o
+ 	$(CC) -o $@ $^ $(LDFLAGS) $(CFLAGS)
++endif
+ 
+ ifneq ($(wildcard ./prebuild/interface.o),)
+ interface.o:
+diff --git a/release/src/router/rstats/Makefile b/release/src/router/rstats/Makefile
+index d6a0f1c2ad..9b3a76f6bc 100755
+--- a/release/src/router/rstats/Makefile
++++ b/release/src/router/rstats/Makefile
+@@ -32,16 +32,35 @@ ifeq ($(RTCONFIG_MXL_826XX),y)
+ LDFLAGS += -L$(TOP)/libhostapi -lhostapi
+ endif
+ 
+-OBJS = rstats.o
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_RSTAT_MANIFEST := $(RUST_COMPONENTS_DIR)/rstats/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++RUST_RSTAT_FEATURES :=
++ifeq ($(RTCONFIG_ISP_METER),y)
++RUST_RSTAT_FEATURES := --features isp-meter
++endif
+ 
+ all: rstats
+ 
++ifneq ($(wildcard $(RUST_RSTAT_MANIFEST)),)
++.PHONY: rstats
++rstats:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS) -Lnative=$(TOP_PLATFORM)/nvram${BCMEX}$(EX7) \
++		-Lnative=$(TOP)/shared -Lnative=$(TOP_PLATFORM)/wlcsm$(EXHND) \
++		-Clink-arg=-lshared -Clink-arg=-lwlcsm -Clink-arg=-lpthread -Clink-arg=-lgcc_s" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_RSTAT_MANIFEST)" \
++			--release --target "$(RUST_TARGET)" $(RUST_RSTAT_FEATURES) --locked --offline
++	cp "$(RUST_TARGET_DIR)/$(RUST_TARGET)/release/rstats" rstats
++else
++OBJS = rstats.o
++
+ rstats: $(OBJS)
+ 	@echo " [rstats] CC -o $@"
+ 	$(CC) $(LDFLAGS) -o $@ $(OBJS)
+ 
+ 	$(SIZECHECK)
+ 	$(CPTMP)
++endif
+ 
+ clean:
+ 	rm -f rstats .*.depend
+@@ -52,6 +71,7 @@ install: all
+ 	install -D rstats $(INSTALLDIR)/bin/rstats
+ 	$(STRIP) $(INSTALLDIR)/bin/rstats
+ 
++ifeq ($(wildcard $(RUST_RSTAT_MANIFEST)),)
+ %.o: %.c .%.depend
+ 	@echo " [rstats] CC $@"
+ 	@$(CC) $(CFLAGS) -c $<
+@@ -63,3 +83,4 @@ install: all
+ 	@$(CC) $(CFLAGS) -M $< > $@
+ 
+ -include $(OBJS:%.o=.%.depend)
++endif
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+index 2311af7158..61366cc2cb 100644
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -202,6 +202,26 @@ ifeq ($(RTCONFIG_BCM_AFC),y)
+ OBJS += $(if $(wildcard asus_afc.c), asus_afc.o, prebuild/asus_afc.o)
+ endif
+ 
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_HTTPD_MANIFEST := $(RUST_COMPONENTS_DIR)/httpd-parsers/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifneq ($(wildcard $(RUST_HTTPD_MANIFEST)),)
++RUST_HTTPD_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libhttpd_parsers.a
++RUST_HTTPD_LINK := $(RUST_HTTPD_LIB) -ldl -lpthread -lrt
++
++.DEFAULT_GOAL := all
++
++.PHONY: $(RUST_HTTPD_LIB)
++
++$(RUST_HTTPD_LIB):
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_HTTPD_MANIFEST)" \
++			-p httpd-parsers --release --target "$(RUST_TARGET)" --locked --offline
++endif
++
+ LIBS = -L$(TOP_PLATFORM)/nvram${BCMEX}$(EX7) -lnvram -L$(TOP)/shared -lshared
+ ifeq ($(RTCONFIG_BCM_502L07P2),y)
+ LIBS += -L$(TOP_PLATFORM)/ethctl_lib -lethctl
+@@ -438,6 +458,6 @@ endif
+-httpd: $(OBJS)
++httpd: $(OBJS) $(RUST_HTTPD_LIB)
+ 	@echo " [httpd] CC $@"
+-	$(CC) -o $@ $(OBJS) $(LIBS) $(EXTRALDFLAGS)
++	$(CC) -o $@ $(OBJS) $(RUST_HTTPD_LINK) $(LIBS) $(EXTRALDFLAGS) -Wl,-z,relro,-z,now
+ 
+ 	$(SIZECHECK)
+ 	$(CPTMP)
+diff --git a/release/src/router/httpd/cgi.c b/release/src/router/httpd/cgi.c
+index 952dc5a7b4..8810c3b092 100644
+--- a/release/src/router/httpd/cgi.c
++++ b/release/src/router/httpd/cgi.c
+@@ -52,25 +52,24 @@ extern char *strsep(char **stringp, char *delim);
+ /* CGI hash table */
+ static struct hsearch_data htab;
+ 
++extern int rust_httpd_url_decode(char *buffer, size_t length, int plus_as_space);
++extern int rust_httpd_query_validate(const char *query, size_t length);
++extern size_t rust_httpd_query_capacity(const char *query, size_t length);
++extern int rust_httpd_query_next(char *query, size_t length, size_t *cursor,
++	char **name_out, char **value_out);
++
+ void
+ unescape(char *s, size_t len)
+ {
+-	unsigned int c;
+-
+-	while ((s = strpbrk(s, "%+"))) {
+-		/* Parse %xx */
+-		if (*s == '%') {
+-			if(isxdigit(s[1]) && isxdigit(s[2])){
+-				sscanf(s + 1, "%02x", &c);
+-				*s++ = (char) c;
+-				memmove(s, s+2, strlen(s+2)+1);	//including the '\0'
+-			}else
+-				s++;
+-		}
+-		/* Space is special */
+-		else if (*s == '+')
+-			*s++ = ' ';
+-	}
++	size_t length;
++
++	if (!s || !len)
++		return;
++
++	length = strnlen(s, len);
++	if (length == len)
++		return;
++
++	(void)rust_httpd_url_decode(s, length, 1);
+ }
+ 
+ char *
+@@ -164,8 +163,9 @@ set_cgi(char *name, char *value)
+ void
+ init_cgi(char *query)
+ {
+-	int len, nel;
+-	char *q, *name, *value;
++	size_t len, cursor, capacity;
++	char *name, *value;
++	int result;
+ 
+ 	/* Clear variables */
+ 	if (!query) {
+@@ -174,25 +174,15 @@ init_cgi(char *query)
+ 	}
+ 
+ 	/* Parse into individual assignments */
+-	q = query;
+ 	len = strlen(query);
++	if (!rust_httpd_query_validate(query, len))
++		return;
+-	nel = 1;
+-	while (strsep(&q, "&;"))
+-		nel++;
+-	hcreate_r(nel, &htab);
+-
+-	for (q = query; q < (query + len);) {
+-		/* Unescape each assignment */
+-		unescape(name = value = q, len+1);
+-
+-		/* Skip to next assignment */
+-		for (q += strlen(q); q < (query + len) && !*q; q++);
+-
+-		/* Assign variable */
+-		name = strsep(&value, "=");
+-		if (value) {
+-			//printf("set_cgi: name=%s, value=%s.\n", name , value);	// N12 test
+-			set_cgi(name, value);
+-		}
++	capacity = rust_httpd_query_capacity(query, len);
++	if (!hcreate_r(capacity, &htab))
++		return;
++
++	cursor = 0;
++	while ((result = rust_httpd_query_next(query, len, &cursor,
++		&name, &value)) > 0) {
++		set_cgi(name, value);
+ 	}
++	(void)result;
+ }
+@@ -243,34 +233,27 @@ void webcgi_set(char *name, char *value)
+ 
+ void webcgi_init(char *query)
+ {
+-       int nel;
+-       char *q, *end, *name, *value;
+- 
++       size_t len, cursor, capacity;
++       char *name, *value;
++       int result;
++
+ #if !(defined(__GLIBC__) || defined(__UBLIBC__))
+ 	if (!htab.__tab)
+ #else
+        if (htab.table)
+ #endif
+ 	       hdestroy_r(&htab);
+        if (query == NULL) return;
+- 
+-//    cprintf("query = %s\n", query);
+-       
+-       int len = strlen(query);
+-       end = query + strlen(query);
+-       q = query;
+-       nel = 1;
+-       while (strsep(&q, "&;")) {
+-               nel++;
+-       }
+-       hcreate_r(nel, &htab);
+- 
+-       for (q = query; q < end; ) {
+-               value = q;
+-               q += strlen(q) + 1;
+- 
+-               unescape(value, len+1);
+-               name = strsep(&value, "=");
+-               if (value) webcgi_set(name, value);
++
++       len = strlen(query);
++       if (!rust_httpd_query_validate(query, len))
++               return;
++       capacity = rust_httpd_query_capacity(query, len);
++       if (!hcreate_r(capacity, &htab))
++               return;
++
++       cursor = 0;
++       while ((result = rust_httpd_query_next(query, len, &cursor,
++               &name, &value)) > 0) {
++               webcgi_set(name, value);
+        }
++       (void)result;
+ }
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+index d20106aebb..174708d3c5 100644
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -409,6 +409,10 @@ extern void do_f(char *path, webs_t wp);
+ 
+ /* cgi.c */
+ extern void unescape(char *s, size_t len);
++extern int rust_httpd_url_decode(char *buffer, size_t length, int plus_as_space);
++extern int rust_httpd_query_validate(const char *query, size_t length);
++extern size_t rust_httpd_query_capacity(const char *query, size_t length);
++extern int rust_httpd_query_next(char *query, size_t length, size_t *cursor,
++	char **name_out, char **value_out);
+ extern char *get_cgi(char *name);
+ extern void set_cgi(char *name, char *value);
+ extern void init_cgi(char *query);
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+index f8dca4641c..cc1ed30bcd 100644
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -12814,22 +12814,10 @@ ftpServerTree_cgi(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg,
+ void
+ json_unescape(char *s)
+ {
+-	unsigned int c;
+-
+-	while ((s = strpbrk(s, "%+"))) {
+-		/* Parse %xx */
+-		if (*s == '%') {
+-			if(isxdigit(s[1]) && isxdigit(s[2])){
+-				sscanf(s + 1, "%02x", &c);
+-				*s++ = (char) c;
+-				memmove(s, s+2, strlen(s+2)+1);
+-			}else
+-				s++;
+-		}
+-		/* Space is special */
+-		else if (*s == '+')
+-			*s++ = ' ';
+-	}
++	if (!s)
++		return;
++
++	(void)rust_httpd_url_decode(s, strlen(s), 1);
+ }
+ 
+ void
+@@ -43673,10 +43661,11 @@ void parsing_payload(char *url, FILE *stream, int cl, char *method, struct json_o
+ 
+ void parsing_payload(char *url, FILE *stream, int cl, char *method, struct json_object *payload_obj){
+ 
+-	int len, nel;
+-	char *q, *name, *value;
++	size_t len, cursor;
++	char *name, *value;
+ 	char *query = NULL;
+ 	char playload[512] = {0};
++	int result;
+ 
+ 	if(strcasecmp(method, "post") == 0){
+ 		if (fgets(playload, MIN(cl+1, sizeof(playload)), stream)){
+@@ -43695,23 +43684,12 @@ void parsing_payload(char *url, FILE *stream, int cl, char *method, struct json_o
+ 	}
+ 
+ 	/* Parse into individual assignments */
+-	q = query = playload;
+-	len = strlen(q);
+-	nel = 1;
+-	while (strsep(&q, "&;"))
+-		nel++;
+-
+-	for (q = query; q < (query + len);) {
+-
+-		unescape(name = value = q, len+1);
+-		/* Skip to next assignment */
+-		for (q += strlen(q); q < (query + len) && !*q; q++);
+-
+-		/* Assign variable */
+-		name = strsep(&value, "=");
+-		if (value) {
+-			//dbg("name=%s, value=%s, len=%d\n", name , value , strlen(value));
+-			json_object_object_add(payload_obj, name, json_object_new_string(value));
+-		}
++	query = playload;
++	len = strlen(query);
++	if (!rust_httpd_query_validate(query, len))
++		return;
++	cursor = 0;
++	while ((result = rust_httpd_query_next(query, len, &cursor,
++		&name, &value)) > 0) {
++		json_object_object_add(payload_obj, name, json_object_new_string(value));
+ 	}
++	(void)result;
+ }
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+index 71cb66ddfe..0d8ff8f258 100644
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -1321,8 +1321,38 @@ LDFLAGS += -L$(TOP)/libhostapi -lhostapi
+ endif
+ 
+ ifeq ($(RTCONFIG_BCM_AFC),y)
+ OBJS += bcm_afc.o afc_coldreboot_monitor.o afc_heartbeat.o afc_data_collector.o
+ BCMAFC_OBJS += bcm_afc.o
+ endif
++
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_WORKSPACE_MANIFEST := $(RUST_COMPONENTS_DIR)/Cargo.toml
++RUST_WANDUCK_MANIFEST := $(RUST_COMPONENTS_DIR)/wanduck-transition/Cargo.toml
++RUST_SECURITY_MANIFEST := $(RUST_COMPONENTS_DIR)/router-security/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifneq ($(and $(wildcard $(RUST_WORKSPACE_MANIFEST)),$(wildcard $(RUST_WANDUCK_MANIFEST)),$(wildcard $(RUST_SECURITY_MANIFEST))),)
++RUST_WANDUCK_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libwanduck_transition.a
++RUST_SECURITY_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/librouter_security.a
++RUST_RC_SYSTEM_LIBS := -ldl -lpthread -lrt
++
++.DEFAULT_GOAL := all
++
++.PHONY: rust-rc-libs
++
++rust-rc-libs:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_WORKSPACE_MANIFEST)" \
++			-p wanduck-transition -p router-security --release --target "$(RUST_TARGET)" \
++			--locked --offline
++
++$(RUST_WANDUCK_LIB) $(RUST_SECURITY_LIB): rust-rc-libs
++endif
+ 
+ all: PB rc $(if $(RTCONFIG_BRCM_HOSTAPD), $(WPS_PBCD)) init.prep
+@@ -1355,8 +1385,8 @@ $(NMP_API_LIB):
+ endif
+ 
+-rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,) $(if $(NMP_API_LIB),| $(NMP_API_LIB),)
++rc: $(OBJS) $(if $(RTCONFIG_CONNDIAG),libconn_diag.so,) $(if $(RTCONFIG_ENERGY_SAVE),libes.so,) $(if $(RTCONFIG_BCM_AFC),libbcm_afc.so,) $(RUST_WANDUCK_LIB) $(RUST_SECURITY_LIB) $(if $(NMP_API_LIB),| $(NMP_API_LIB),)
+ 	@echo " [rc] CC $@"
+-	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS)
++	@$(CC) -o $@ $^ $(LDFLAGS2) $(CFLAGS) $(RUST_RC_SYSTEM_LIBS) -Wl,-z,relro,-z,now
+ 
+ 	$(SIZECHECK)
+ 	$(CPTMP)
+diff --git a/release/src/router/rc/wanduck.c b/release/src/router/rc/wanduck.c
+index 51d5327bbc..9ff79e71db 100644
+--- a/release/src/router/rc/wanduck.c
++++ b/release/src/router/rc/wanduck.c
+@@ -31,2 +31,27 @@ static int wdbg = 0;
++typedef struct WanduckTransitionInput {
++	int observed_state;
++	int previous_state;
++	int changed_state;
++	int disconnect_count;
++	int maximum_disconnect_count;
++	int data_limit_reached;
++	int disconnect_case;
++	int wan_disabled;
++	int ppp_auth_failed;
++	int other_configured;
++	int other_link_up;
++	int other_data_limited;
++	int special_states_enabled;
++} wanduck_transition_input;
++
++typedef struct WanduckTransitionOutput {
++	int previous_state;
++	int changed_state;
++	int disconnect_count;
++} wanduck_transition_output;
++
++extern int rust_wanduck_transition(const wanduck_transition_input *input,
++	wanduck_transition_output *output);
++
+ 
+ #define _wdbg(fmt, args...) do { if (wdbg) { dbg(fmt, ## args); }; } while (0)
+@@ -3242,5 +3267,46 @@ void set_disconn_count(int wan_unit, int flag){
+ 	changed_count[wan_unit] = flag;
+ }
+ 
++#ifdef RTCONFIG_DUALWAN
++static int apply_rust_wanduck_transition(int wan_unit, int other_unit, int wan_sbstate)
++{
++	wanduck_transition_input input;
++	wanduck_transition_output output;
++
++	memset(&input, 0, sizeof(input));
++	input.observed_state = conn_state[wan_unit];
++	input.previous_state = conn_state_old[wan_unit];
++	input.changed_state = conn_changed_state[wan_unit];
++	input.disconnect_count = get_disconn_count(wan_unit);
++	input.maximum_disconnect_count = max_disconn_count[wan_unit];
++	input.disconnect_case = disconn_case[wan_unit];
++	input.wan_disabled = (current_state[wan_unit] == WAN_STATE_DISABLED);
++	input.ppp_auth_failed = (disconn_case[wan_unit] == CASE_PPPFAIL &&
++		wan_sbstate == WAN_STOPPED_REASON_PPP_AUTH_FAIL);
++	input.other_configured =
++		(get_dualwan_by_unit(other_unit) != WANS_DUALWAN_IF_NONE);
++	input.other_link_up = link_wan[other_unit];
++
++#if defined(RTCONFIG_JFFS2) || defined(RTCONFIG_BRCM_NAND_JFFS2) || defined(RTCONFIG_UBIFS) || defined(RTCONFIG_JFFS_PARTITION)
++	input.data_limit_reached = (wan_sbstate == WAN_STOPPED_REASON_DATALIMIT);
++	if (input.other_configured)
++		input.other_data_limited =
++			(nvram_get_int(nvram_sbstate[other_unit]) == WAN_STOPPED_REASON_DATALIMIT);
++#endif
++
++#ifdef RTCONFIG_USB_MODEM
++	input.special_states_enabled = 1;
++#endif
++
++	if (!rust_wanduck_transition(&input, &output))
++		return 0;
++
++	conn_state_old[wan_unit] = output.previous_state;
++	conn_changed_state[wan_unit] = output.changed_state;
++	set_disconn_count(wan_unit, output.disconnect_count);
++	return 1;
++}
++#endif
++
+ int get_next_unit(int wan_unit){
+ 	int next = (wan_unit+1)%WAN_UNIT_MAX;
+@@ -4169,7 +4235,9 @@ _dprintf("wanduck(%d)(fo   conn): state %d, state_old %d, changed %d, wan_state %
+ 
+ 			wan_sbstate = nvram_get_int(nvram_sbstate[current_wan_unit]);
+ 
+-			if(conn_state[current_wan_unit] == PHY_RECONN){
++			if(apply_rust_wanduck_transition(current_wan_unit, other_wan_unit, wan_sbstate)) {
++			}
++			else if(conn_state[current_wan_unit] == PHY_RECONN){
+ 				conn_changed_state[current_wan_unit] = PHY_RECONN;
+ 
+ 				conn_state_old[current_wan_unit] = DISCONN;
+@@ -4346,7 +4414,9 @@ _dprintf("wanduck(%d) fail-back: state %d, state_old %d, changed %d, wan_state %d
+ 
+ 			wan_sbstate = nvram_get_int(nvram_sbstate[current_wan_unit]);
+ 
+-			if(conn_state[current_wan_unit] == PHY_RECONN){
++			if(apply_rust_wanduck_transition(current_wan_unit, other_wan_unit, wan_sbstate)) {
++			}
++			else if(conn_state[current_wan_unit] == PHY_RECONN){
+ 				conn_changed_state[current_wan_unit] = PHY_RECONN;
+ 
+ 				conn_state_old[current_wan_unit] = DISCONN;
+diff --git a/release/src/router/nt_center/Makefile b/release/src/router/nt_center/Makefile
+index a3180f3a0c9..47e1f631533 100644
+--- a/release/src/router/nt_center/Makefile
++++ b/release/src/router/nt_center/Makefile
+@@ -79,9 +79,32 @@ endif
+ 
+ MDIRS = lib
+ 
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_NT_EVENT_MANIFEST := $(RUST_COMPONENTS_DIR)/nt-event/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifneq ($(wildcard $(RUST_NT_EVENT_MANIFEST)),)
++RUST_NT_EVENT_BINARY := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/Notify_Event2NC
++
++.DEFAULT_GOAL := all
++
++.PHONY: $(RUST_NT_EVENT_BINARY)
++
++$(RUST_NT_EVENT_BINARY): ntdir
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS) -L native=$(CURDIR)/lib -L native=$(TOP)/sqlite/.libs" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_NT_EVENT_MANIFEST)" \
++			-p nt-event --bin Notify_Event2NC --release --target "$(RUST_TARGET)" --locked --offline
++endif
++
+ ifeq ($(wildcard $(SRCBASE)/router/nt_center/*.c),)
+-all:
++all: $(RUST_NT_EVENT_BINARY)
++ifneq ($(RUST_NT_EVENT_BINARY),)
++	cp -f "$(RUST_NT_EVENT_BINARY)" Notify_Event2NC
++else
+ 	-cp -f prebuild/$(BUILD_NAME)/Notify_Event2NC Notify_Event2NC
++endif
+ 	-cp -f prebuild/$(BUILD_NAME)/nt_center nt_center
+ 	-cp -f prebuild/$(BUILD_NAME)/nt_monitor nt_monitor
+ 	-cp -f lib/prebuild/$(BUILD_NAME)/libnt.so lib
