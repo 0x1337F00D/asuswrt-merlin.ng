@@ -140,17 +140,8 @@ index 01b2ade7412..ec7a6ead318 100644
 +
 +function regulatory_lab_apply_profile(){
 +	var regionControl = document.getElementById("regulatory_lab_country");
-+	var currentRegion = (orig_region == "") ? tcode : orig_region;
-+	if(!regionControl || regionControl.value == currentRegion){
-+		var acknowledgement = document.getElementById("regulatory_lab_ack");
-+		if(!regulatory_lab_ack_stored &&
-+		   (!acknowledgement || !acknowledgement.checked)){
-+			alert("Bitte zuerst die Testlabor-Warnung bestätigen.");
-+			return false;
-+		}
-+		if(!regulatory_lab_store_acknowledgement())
-+			return false;
-+		alert("Die Bestätigung ist dauerhaft im NVRAM gespeichert. Für ein neues Profil bitte ein anderes Land wählen.");
++	if(!regionControl){
++		alert("Die Länderauswahl konnte nicht initialisiert werden.");
 +		return false;
 +	}
 +	regulatory_lab_change_confirmed();
@@ -159,11 +150,8 @@ index 01b2ade7412..ec7a6ead318 100644
 +
 +function regulatory_lab_change_confirmed(){
 +	var regionControl = document.getElementById("regulatory_lab_country");
-+	var currentRegion = (orig_region == "") ? tcode : orig_region;
-+	var regionChanged = regionControl &&
-+		(regionControl.value != currentRegion);
-+	if(!regionChanged)
-+		return true;
++	if(!regionControl)
++		return false;
 +
 +	var acknowledgement = document.getElementById("regulatory_lab_ack");
 +	if(!acknowledgement || !acknowledgement.checked){

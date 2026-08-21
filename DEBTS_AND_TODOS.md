@@ -6,25 +6,30 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 ## Last hardware-tested candidate (promoted)
 
 - Image: `GT-AX11000_3006_102.8_4_ubi.w`
-- SHA-256: `c9cf6edc0a30f013b0697793c07443100bd6a4ce730edfe64a2b4cf06043d239`
+- SHA-256: `563b58716c1f763eabc187545378f5abd98cae278f7752a689758ad9236da687`
 - Size: 79,822,868 bytes; upstream:
   `088512a1296e361d65e5429e7d8d61ef3fdf4c86`.
 - Built and repacked entirely in `/tmp` tmpfs. All nine overlays, 99 host Rust
   tests, Clippy, formatting, ARM/EABI checks, five consumer hashes, three QEMU
   runtime paths, 25 matching 5,078-line dictionaries, 1,105 Web files and 31
   Web symlinks passed their gates.
-- A partition-1 one-shot trial passed while partition 2 remained the known
-  baseline, followed by an explicit and verified reboot back to partition 2.
+- A partition-2 one-shot trial passed while the previously hardware-tested
+  partition 1 remained the known baseline, followed by an explicit and
+  verified reboot back to partition 1.
   Services, WAN, local DNS, all three radios, malformed HTTP input,
   IPv4/IPv6 terminal DROP, kernel log, stable service PIDs, `rstats`, `infosvr`,
   notification handling, Web semantics and read-only infosvr protocol fixtures
-  all passed, followed by verified automatic rollback to partition 2.
+  all passed, followed by verified automatic rollback to partition 1.
 - Persistent promotion passed the real boot guard: early `init-start` armed
-  `BOOT_SET_PART2_IMAGE_ONCE`; after 120 seconds the complete manifest, service,
-  WAN/DNS, radio, firewall and kernel health gate selected partition 1 again.
-  A subsequent persistent health run passed. Partition 2 remains intact.
-- Runtime state after promotion: country profile `ALL`, persisted warning
-  acknowledgement `rust_regulatory_testlab_ack_v1=1`, and WPS disabled.
+  `BOOT_SET_PART1_IMAGE_ONCE`; after 120 seconds the complete manifest, service,
+  WAN/DNS, radio, firewall and kernel health gate selected partition 2 again.
+  A subsequent persistent health run passed. The older tested partition 1
+  image remains the automatic fallback.
+- Runtime state after promotion: stored selection `ALL`, persisted warning
+  acknowledgement `rust_regulatory_testlab_ack_v1=1`, and WPS disabled. The
+  inherited radio drivers still report `E0`; use the now idempotent country
+  button once to apply `ALL` atomically to all radios. Do not infer effective
+  radio country from `location_code` alone.
 
 ## Release blockers
 
