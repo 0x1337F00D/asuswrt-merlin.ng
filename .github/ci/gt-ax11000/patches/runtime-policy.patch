@@ -30,6 +30,8 @@ index 1bb1dcb959b..8bb170803ca 100644
 +	char *country;
 +	char *confirmation;
 +	char *acknowledge_only;
++	const char *driver_country;
++	const char *txpower;
 +
 +	(void)url;
 +	country = websGetVar(stream, "country", "");
@@ -53,18 +55,22 @@ index 1bb1dcb959b..8bb170803ca 100644
 +		websWrite(stream, "{\"statusCode\":\"0\",\"acknowledged\":true}");
 +		return;
 +	}
++	driver_country = !strcmp(country, "ALL") ? "#a" : country;
++	txpower = !strcmp(country, "ALL") ? "500" : "100";
 +
 +	/* This is deliberately the only HTTP mutation boundary for regulatory
 +	 * country, derived channel/DFS state, and country/board-limited power. */
 +	nvram_set("location_code", country);
 +	nvram_set("ui_location_code", country);
-+	nvram_set("wl_country_code", country);
-+	nvram_set("wl0_country_code", country);
-+	nvram_set("wl1_country_code", country);
-+	nvram_set("wl2_country_code", country);
-+	nvram_set("0:ccode", country);
-+	nvram_set("1:ccode", country);
-+	nvram_set("2:ccode", country);
++	/* Broadcom exposes #a as its world/test-lab locale.  The literal ALL is
++	 * not a driver country and silently falls back to E0 on this model. */
++	nvram_set("wl_country_code", driver_country);
++	nvram_set("wl0_country_code", driver_country);
++	nvram_set("wl1_country_code", driver_country);
++	nvram_set("wl2_country_code", driver_country);
++	nvram_set("0:ccode", driver_country);
++	nvram_set("1:ccode", driver_country);
++	nvram_set("2:ccode", driver_country);
 +	nvram_set("wl0_country_rev", "0");
 +	nvram_set("wl1_country_rev", "0");
 +	nvram_set("wl2_country_rev", "0");
@@ -85,12 +91,20 @@ index 1bb1dcb959b..8bb170803ca 100644
 +	nvram_unset("wl0_acs_excl_chans_base");
 +	nvram_unset("wl1_acs_excl_chans_base");
 +	nvram_unset("wl2_acs_excl_chans_base");
-+	/* 100 is a percentage of the selected regulatory/board-calibrated cap,
-+	 * not an independent milliwatt or PA calibration override. */
-+	nvram_set("wl_txpower", "100");
-+	nvram_set("wl0_txpower", "100");
-+	nvram_set("wl1_txpower", "100");
-+	nvram_set("wl2_txpower", "100");
++	/* ALL owns the lab-only ACS and power request as part of one atomic
++	 * country profile.  No independent channel, power, or PA-calibration
++	 * control is exposed.  500 is a driver scalar, not measured RF power;
++	 * immutable board calibration and driver limits still apply. */
++	nvram_set("acs_unii4", !strcmp(country, "ALL") ? "1" : "0");
++	nvram_set("acs_band1", !strcmp(country, "ALL") ? "1" : "0");
++	nvram_set("acs_band3", !strcmp(country, "ALL") ? "1" : "0");
++	nvram_set("acs_dfs", "1");
++	nvram_set("wl1_acs_dfs", "1");
++	nvram_set("wl2_acs_dfs", "1");
++	nvram_set("wl_txpower", txpower);
++	nvram_set("wl0_txpower", txpower);
++	nvram_set("wl1_txpower", txpower);
++	nvram_set("wl2_txpower", txpower);
 +	/* The versioned warning acknowledgement is persisted only after the
 +	 * complete Rust-authorized profile has been applied successfully. */
 +	nvram_set("rust_regulatory_testlab_ack_v1", "1");

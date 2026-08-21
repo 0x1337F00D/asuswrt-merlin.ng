@@ -76,7 +76,21 @@ require_text "$wireless_ui" 'Länderprofil anwenden'
 require_text "$wireless_ui" '(!acknowledgement || !acknowledgement.checked)'
 reject_text "$wireless_ui" 'regionControl.value == currentRegion'
 reject_text "$wireless_ui" 'Für ein neues Profil bitte ein anderes Land wählen.'
-require_text "$wireless_ui" 'aktuelle Leistungseinstellung='
+require_text "$wireless_ui" 'Treiberanforderung='
+require_text "$wireless_ui" 'regulatory_lab_country_codes = ("AD AF AG'
+require_text "$wireless_ui" 'ALL (Testlabor – Broadcom #a)'
+country_codes=$(sed -n 's/^var regulatory_lab_country_codes = ("\([A-Z ]*\)").*/\1/p' "$wireless_ui")
+country_count=$(wc -w <<<"$country_codes")
+unique_country_count=$(tr ' ' '\n' <<<"$country_codes" | sort -u | wc -l)
+if [ "$country_count" -lt 180 ] || [ "$country_count" -ne "$unique_country_count" ]; then
+	echo "regulatory test-lab country list is incomplete or contains duplicates" >&2
+	exit 1
+fi
+if grep -qw ALL <<<"$country_codes" ||
+   [ "$(grep -Fc 'new Option("ALL (Testlabor – Broadcom #a)"' "$wireless_ui")" -ne 1 ]; then
+	echo "regulatory test-lab selector must contain exactly one synthetic ALL profile" >&2
+	exit 1
+fi
 require_text "$httpd_stubs" 'websGetVar(stream, "country", "")'
 require_text "$httpd_stubs" 'websGetVar(stream, "confirmation", "")'
 require_text "$httpd_stubs" 'websGetVar(stream, "acknowledge_only", "0")'
@@ -89,10 +103,13 @@ reject_text "$httpd_stubs" 'nvram_set("0:maxp'
 require_text "$httpd_stubs" 'nvram_set("rust_regulatory_testlab_ack_v1", "1");'
 require_text "$httpd_stubs" 'nvram_commit();'
 for unit in 0 1 2; do
-	require_text "$httpd_stubs" "nvram_set(\"${unit}:ccode\", country);"
-	require_text "$httpd_stubs" "nvram_set(\"wl${unit}_txpower\", \"100\");"
+	require_text "$httpd_stubs" "nvram_set(\"${unit}:ccode\", driver_country);"
+	require_text "$httpd_stubs" "nvram_set(\"wl${unit}_txpower\", txpower);"
 	require_text "$httpd_stubs" "nvram_unset(\"wl${unit}_chlist\");"
 done
+require_text "$httpd_stubs" 'driver_country = !strcmp(country, "ALL") ? "#a" : country;'
+require_text "$httpd_stubs" 'txpower = !strcmp(country, "ALL") ? "500" : "100";'
+require_text "$httpd_stubs" 'nvram_set("acs_unii4", !strcmp(country, "ALL") ? "1" : "0");'
 for protected in 'b"0:ccode"' 'b"2:maxp5ga2"' 'b"pci/2/1/maxp2ga0"' \
 	'b"wl0_txpower"' 'b"wl2_chlist"'; do
 	require_text "$httpd_rust" "$protected"

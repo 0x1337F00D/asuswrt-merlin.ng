@@ -25,30 +25,42 @@ index 01b2ade7412..ec7a6ead318 100644
  	}
  }
  
++var regulatory_lab_country_codes = ("AD AF AG AI AL AM AN AR AS AT AU AW AZ BA BB BD BE BF BG BH BI BJ BM BO BR BS BW BY BZ CA CD CF CG CH CI CK CL CM CN CO CR CV CX CY CZ DE DK DM DO DZ EC EE EG EH ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GM GN GP GQ GR GT GU GW GY HK HN HR HT HU IE IL IM IN IO IQ IS IT JE JM JO JP KE KG KH KI KM KN KR KY KZ LA LB LC LI LK LR LS LT LU LV MA MC MD ME MF MG MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PR PT PW PY QA RE RO RS RW SA SC SE SG SI SK SL SM SN SR ST SV SZ TC TD TF TG TH TJ TL TM TN TR TT TW TZ UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW").split(" ");
++
++function regulatory_lab_country_name(code){
++	try{
++		if(window.Intl && Intl.DisplayNames){
++			var displayNames = new Intl.DisplayNames([navigator.language || "de"], {type: "region"});
++			var name = displayNames.of(code);
++			if(name && name != code)
++				return name + " (" + code + ")";
++		}
++	}
++	catch(error){}
++	return code;
++}
++
 +function regulatory_lab_prepare_controls(){
 +	var selector = document.getElementById("regulatory_lab_country");
 +	var currentRegion = (orig_region == "") ? tcode : orig_region;
 +	var hasCurrent = false;
-+	var hasAll = false;
 +	try{
 +		if(!selector)
 +			throw new Error("missing country selector");
-+		for(var i = 0; i < country_array.length; ++i){
-+			var index = country_array[i] == "NZ" ? "AU" : country_array[i];
-+			if(index == "ALL")
-+				hasAll = true;
++		while(selector.firstChild)
++			selector.removeChild(selector.firstChild);
++		for(var i = 0; i < regulatory_lab_country_codes.length; ++i){
++			var index = regulatory_lab_country_codes[i];
 +			if(index == currentRegion)
 +				hasCurrent = true;
-+			var country = country_selection_array[index];
 +			var option = document.createElement("option");
 +			option.value = index;
-+			option.textContent = country ? country.name : index;
++			option.textContent = regulatory_lab_country_name(index);
 +			selector.appendChild(option);
 +		}
-+		if(!hasAll)
-+			selector.appendChild(new Option("ALL (Testlabor)", "ALL"));
-+		if(!hasCurrent)
++		if(!hasCurrent && currentRegion != "ALL")
 +			selector.appendChild(new Option(currentRegion, currentRegion));
++		selector.appendChild(new Option("ALL (Testlabor – Broadcom #a)", "ALL"));
 +		selector.value = currentRegion;
 +	}
 +	catch(error){
@@ -75,6 +87,7 @@ index 01b2ade7412..ec7a6ead318 100644
 +		return;
 +	try{
 +		var state = httpApi.nvramGet([
++			"wl_txpower",
 +			"wl0_country_code", "wl0_chanspec", "wl0_acs_dfs", "wl0_txpower",
 +			"wl1_country_code", "wl1_chanspec", "wl1_acs_dfs", "wl1_txpower",
 +			"wl2_country_code", "wl2_chanspec", "wl2_acs_dfs", "wl2_txpower"
@@ -89,11 +102,12 @@ index 01b2ade7412..ec7a6ead318 100644
 +		for(var unit = 0; unit < 3; ++unit){
 +			var prefix = "wl" + unit + "_";
 +			var channels = Array.isArray(channelSets[unit]) ? channelSets[unit].join(", ") : String(channelSets[unit]);
-+			lines.push(labels[unit] + ": Land=" + state[prefix + "country_code"] +
++			var requestedPower = state[prefix + "txpower"] || state["wl_txpower"] || "unbekannt";
++			lines.push(labels[unit] + ": Treiberland=" + state[prefix + "country_code"] +
 +				", aktueller Kanal=" + state[prefix + "chanspec"] +
 +				", DFS=" + (state[prefix + "acs_dfs"] == "1" ? "aktiv" : "inaktiv") +
-+				", aktuelle Leistungseinstellung=" + state[prefix + "txpower"] +
-+				" % der landes- und boardkalibrierten Obergrenze" +
++				", Treiberanforderung=" + requestedPower + " %" +
++				" (keine gemessene HF-Leistung; Treiber und Boardkalibrierung können begrenzen)" +
 +				", Treiberkanäle=" + channels);
 +		}
 +		target.textContent = lines.join("\n");

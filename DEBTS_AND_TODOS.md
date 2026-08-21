@@ -26,10 +26,12 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   A subsequent persistent health run passed. The older tested partition 1
   image remains the automatic fallback.
 - Runtime state after promotion: stored selection `ALL`, persisted warning
-  acknowledgement `rust_regulatory_testlab_ack_v1=1`, and WPS disabled. The
-  inherited radio drivers still report `E0`; use the now idempotent country
-  button once to apply `ALL` atomically to all radios. Do not infer effective
-  radio country from `location_code` alone.
+  acknowledgement `rust_regulatory_testlab_ack_v1=1`, and WPS disabled. This
+  promoted image has a known test-lab defect: the vendor region hook collapses
+  the selector to `ALL`, the endpoint writes the unsupported literal `ALL`,
+  and Broadcom consequently falls back to `E0` with a 100% request. The fix is
+  present only in the unpromoted candidate below; do not infer effective radio
+  country from `location_code` alone.
 
 ## Release blockers
 
@@ -73,9 +75,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   Rust inspection of the effective saved ruleset.
 - [x] Rebuild the affected `rc`, `libovpn`, `hostapd` and `wpa_supplicant`
   targets and verify the intended ARM symbols and hardening markers.
+- [x] Replace the territory-dependent test-lab dropdown with the 212 country
+  codes reported as common to all three GT-AX11000 Broadcom radios, plus
+  exactly one synthetic `ALL`. Map `ALL` to the driver's real world locale
+  `#a` and bind the lab-only 500% driver request and ACS/DFS flags atomically
+  to that profile. The value is not measured RF output and may be clamped by
+  immutable board calibration and driver limits.
 - [x] Build and manifest-check a complete firmware containing the new
   eleven-patch series in tmpfs. Candidate SHA-256:
-  `bca665e49f63138eaccc9fea4217e2e0a9d2e511dd9cacba3cb0a6aabb12251a`.
+  `30d6f62c373d5949216b0dab81df265de8939b6dc23e2fed8ce70ea213403db3`.
   The five Rust consumers, 1,105 Web files, 31 Web symlinks and 25 matching
   5,078-entry dictionaries passed their final image gates.
 - [ ] One-shot-test that eleven-patch candidate on the fallback-protected
@@ -124,9 +132,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Make country selection—including explicit `ALL`—the only test-lab
   mutation. Direct per-radio country, channel-list, DFS, TX percentage,
   `maxp*`, `ccode`, and `regrev` apply keys are read-only.
-- [x] Apply the selected country profile and 100% of its driver/board-calibrated
-  cap consistently to all three radios, without writing raw `maxp*` values;
-  clear legacy channel/exclusion overrides so they cannot outlive the profile.
+- [x] Apply normal countries with a 100% request and the synthetic `ALL`
+  profile with a 500% driver request consistently to all three radios, without
+  writing raw `maxp*` values. Clear legacy channel/exclusion overrides so they
+  cannot outlive the profile. Treat either percentage as a requested scalar,
+  never as measured or guaranteed RF output.
 - [ ] Verify on GT-AX11000 hardware that each radio reports the selected
   country, expected channel set, DFS state, and calibrated power after reboot.
 - [x] Add a UI read-back panel that shows effective driver country, channel
