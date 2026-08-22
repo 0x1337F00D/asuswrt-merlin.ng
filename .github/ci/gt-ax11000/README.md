@@ -6,7 +6,9 @@ the exact upstream and toolchain commits recorded in `inputs.lock`, applies the
 canonical `patches/series` only in the ephemeral runner workspace, verifies the
 actual binary Git diff against its locked SHA-256, and uploads the firmware plus
 build metadata and log as a short-lived artifact. Moving `main` or `master`
-heads are never release inputs.
+heads are never release inputs. The diff is staged in a temporary index and
+uses full object IDs, so its hash is independent of the clone's object count
+and local `core.abbrev` setting.
 
 The scheduled upstream workflow never changes `main`. It merges a new
 `RMerl/main` into `upstream-sync/<sha>`, recomputes the locked patched-source

@@ -143,6 +143,8 @@ jobs:
             git -C source apply --recount "$patch_root/$patch_name"
           done < "$patch_root/series"
           actual_diff=$(python3 "$tool" diff-hash --source source)
+          printf 'patched_diff_expected=%s\npatched_diff_actual=%s\n' \
+            "$expected_diff" "$actual_diff"
           test "$actual_diff" = "$expected_diff"
           mkdir -p source/release/src/router/rust-components
           cp -a "$root/rust/." source/release/src/router/rust-components/
