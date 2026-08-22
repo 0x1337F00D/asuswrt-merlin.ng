@@ -160,6 +160,14 @@ class InputLockTests(unittest.TestCase):
         git(source, "config", "core.abbrev", "40")
         self.assertEqual(short_hash, input_lock.patched_diff_hash(source))
 
+    def test_build_writes_lock_state_outside_the_source_tree(self) -> None:
+        build = Path(__file__).resolve().parent.parent / "build.sh"
+        text = build.read_text(encoding="utf-8")
+        self.assertIn(
+            'INPUT_LOCK_STATE_FILE="$OUTPUT_DIR/.asuswrt-input-lock-state"', text
+        )
+        self.assertNotIn('INPUT_LOCK_STATE_FILE="$ROOT/', text)
+
 
 if __name__ == "__main__":
     unittest.main()

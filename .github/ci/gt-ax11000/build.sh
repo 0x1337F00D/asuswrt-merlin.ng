@@ -111,7 +111,7 @@ OUTER_USER="$(id -un)"
 BUILD_STARTED_EPOCH="${ASUSWRT_BUILD_STARTED_EPOCH:-$(date +%s)}"
 WORKTREE_PREP_SECONDS="${ASUSWRT_WORKTREE_PREP_SECONDS:-0}"
 ENFORCE_INPUT_LOCK="${ASUSWRT_ENFORCE_INPUT_LOCK:-0}"
-INPUT_LOCK_STATE_FILE="$ROOT/.asuswrt-input-lock-state"
+INPUT_LOCK_STATE_FILE="$OUTPUT_DIR/.asuswrt-input-lock-state"
 
 require_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -146,6 +146,7 @@ require_tmpfs_path() {
 }
 
 verify_locked_inputs() {
+	mkdir -p "$OUTPUT_DIR"
 	if [ "$ENFORCE_INPUT_LOCK" != "1" ]; then
 		printf '%s\n' \
 			"input_lock_status=not-enforced" \
