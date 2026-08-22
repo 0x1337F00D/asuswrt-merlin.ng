@@ -1,0 +1,95 @@
+diff --git a/release/src-rt/Makefile b/release/src-rt/Makefile
+--- a/release/src-rt/Makefile
++++ b/release/src-rt/Makefile
+@@ -7047,8 +7047,10 @@ ifeq ($(HND_ROUTER),y)
+ ifneq ($(or $(HND_ROUTER_AX_675X),$(HND_ROUTER_AX_6710),$(BCM_502L07P2)),y)
+ 	@rm -f $(PROFILE_FILE_PUB) && ln -sf $(PROFILE_FILE) $(PROFILE_FILE_PUB)
+ endif
++ifneq ($(ASUSWRT_KERNEL_REUSE),1)
+ 	@rm -f $(SRCBASE)/.config && ln -sf $(HND_SRC)/.config $(SRCBASE)/.config
+ 	@rm -f $(LINUXDIR)/.config
++endif
+ 	@echo '#define BBOARD_ID $(BOARD_ID)' > router/shared/bbid.h
+ endif
+ 	@cp router/config_base router/config_$(lowercase_B)
+@@ -7361,10 +7363,12 @@ endif
+ 
+ 	@cd $(LINUXDIR) ; \
+ 		rm -f config_current ; \
+ 		ln -s config_$(lowercase_B) config_current ; \
+-		cp -f config_current .config
++	if [ "$(ASUSWRT_KERNEL_REUSE)" != "1" ]; then \
++		cp -f config_current .config; \
++	fi
+ 
+ 	@cd $(BUSYBOX_DIR) ; \
+ 		rm -f config_current ; \
+@@ -7438,7 +7444,9 @@ endif
+ # TODO: move to MTK's platformRouterOptions
+ 
+ ifeq ($(HND_ROUTER),y)
++ifneq ($(ASUSWRT_KERNEL_REUSE),1)
+ 	CURRENT_ARCH=$(KERNEL_ARCH) TOOLCHAIN_TOP= $(MAKE) prek
++endif
+ endif
+ 	$(MAKE) -C router oldconfig
+diff --git a/release/src-rt-5.02axhnd/make.hndrt b/release/src-rt-5.02axhnd/make.hndrt
+--- a/release/src-rt-5.02axhnd/make.hndrt
++++ b/release/src-rt-5.02axhnd/make.hndrt
+@@ -430,7 +430,13 @@ clean_bcmdrivers_autogen: kernel_clean
+ 
+ .PHONY: bcmdrivers_autogen kernellinks
+ 
++ifeq ($(ASUSWRT_KERNEL_REUSE),1)
++pre_kernelbuild:
++	@test -s $(KERNEL_DIR)/vmlinux
++	@test -s $(KERNEL_DIR)/Module.symvers
++else
+ pre_kernelbuild: $(KERNEL_DIR)/.pre_kernelbuild;
++endif
+ 
+ define kernel_cfg_rm_bcm_kf
+ 	sed -i.bak -e "/^CONFIG_BCM_.*=[my]/d" $(KERNEL_DIR)/.config && \
+@@ -477,7 +483,12 @@ inner_kernelbuild: pre_kernelbuild hnd_dongle
+ else
+ inner_kernelbuild: pre_kernelbuild
+ endif
++
++ifeq ($(ASUSWRT_KERNEL_REUSE),1)
++	@echo "Reusing contract-verified kernel image and modules"
++else
+ 	$(MAKE) $(PARALLEL_BUILD) -C $(KERNEL_DIR)
++endif
+ 
+ linux_tools: linux_tools_perf
+ 
+@@ -506,8 +517,13 @@ dtbs:
+ inner_dtbs:bcmdrivers_autogen
+ 	echo "Build dts for chip $(BRCM_CHIP)... "
+ 	@echo "$(MAKE) -C $(KERNEL_DIR) boot=$(DTS_DIR)  dtbs"
++ifeq ($(ASUSWRT_KERNEL_REUSE),1)
++	@test -s $(DTS_DIR)/dts/$(BRCM_CHIP)/94908.dtb
++	@test -s $(DTS_DIR)/dts/$(BRCM_CHIP)/94908REF.dtb
++else
+ 	$(call pre_kernelbuild)
+ 	$(MAKE) -C $(KERNEL_DIR) boot=$(DTS_DIR)  dtbs
++endif
+ DTBS := dtbs
+ 
+ .PHONY:dtbs_clean
+@@ -544,10 +560,15 @@ export PREBUILT_BCMBIN
+ export PRBM_DIR=prebuilt
+ 
+ inner_modbuild:
++ifeq ($(ASUSWRT_KERNEL_REUSE),1)
++	@echo "Reusing contract-verified installed kernel modules"
++	@test -n "$$(find $(HND_SRC)/targets/$(PROFILE)/modules -type f -name '*.ko' -print -quit)"
++else
+ 	@echo "******************** Starting modbuild ********************";
+ 	rm -rf $(HND_SRC)/targets/$(PROFILE)/modules
+ 	cd $(KERNEL_DIR); $(MAKE) $(PARALLEL_BUILD) modules && $(MAKE) modules_install
+ 	@echo "******************** DONE modbuild ********************";
++endif
+ 
+ mocamodbuild:
+ 	cd $(KERNEL_DIR); $(MAKE) M=$(INC_MOCACFGDRV_PATH) modules 

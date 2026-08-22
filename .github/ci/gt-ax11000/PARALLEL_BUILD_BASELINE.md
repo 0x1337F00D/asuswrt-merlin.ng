@@ -39,10 +39,26 @@ ROOTFS-MODES.manifest  920a950f53ff4950527ab4b1ab0d6ed1a436c4afac229c2a5f2a653ec
 ROOTFS-SYMLINKS        9d0e8e4f2d706ab8f1b2fb526db0dd26f5d1b27328fb2cb5be9a25c0bf4efe9a
 ```
 
-## Bounded next experiment
+## Four-token kernel-reuse validation
 
-First add phase timing and a full-contract-bound kernel artifact fingerprint.
-Then run only `ROUTER_PACKAGE_JOBS=2`, `4` and `8` against this reference,
-stopping as soon as elapsed time stops improving. Any candidate must pass the
-same path, symlink, mode and normalized-content comparison before it can become
-the default.
+The hosted-runner candidate uses four shared router tokens and an exact kernel
+cache. A local no-ccache seed build completed in 17:30; the identical
+contract-verified reuse build completed in 9:28, a 46% wall-time reduction.
+The cache restores the complete SDK kernel directory and the installed
+`94908HND` modules. It is accepted only with an exact successful-build state
+file and explicit image, config, DTB and module checks. There are no prefix or
+partial restore keys.
+
+Both extracted root filesystems contain 2,812 files and 546 links, with
+identical paths, link targets and modes. Kernel modules are byte-identical.
+Only five generated outputs differ: the BusyBox and `libshared` embedded build
+times, `motd`, `image_version`, and ordering in `modules.dep`.
+
+The four-token run also exposed and fixed a real hidden edge: `openssl`
+already invokes `$(OPENSSL)`, so listing both as parallel foundation targets
+could compile `openssl-1.1` twice and race on `.d.tmp` files. The foundation
+now contains only the public `openssl` target.
+
+The remaining gate is a hosted GitHub Actions cold run followed by an exact
+cache-hit run. CI metadata records runner CPU count, router tokens and both
+cache-hit states so the hosted wall-time result is auditable.

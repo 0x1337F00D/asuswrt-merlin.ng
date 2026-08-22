@@ -37,13 +37,23 @@ share one GNU jobserver. StrongSwan and Samba no longer start private eight-job
 pools. A 16-token reference run completed and produced the same rootfs graph as
 the serial reference, but took 719 instead of 682 seconds on the local
 16-thread host. It therefore proves the DAG rather than justifying 16 as a
-default; GitHub Actions remains at one until lower token counts are measured.
+default. The hosted 4-vCPU Firmware job uses four tokens; local builds retain
+the conservative one-token default. The lower-token validation also removed a
+duplicate `openssl`/`openssl-1.1` DAG node that could race on OpenSSL dependency
+files.
 The durable comparison is recorded in `PARALLEL_BUILD_BASELINE.md`.
 
 CI prepares independent Autotools packages with up to four workers and keeps a
 2 GiB `ccache` for the HND cross-compilers. The cache is keyed by toolchain,
-upstream source, and overlay revisions; the multi-gigabyte build tree itself is
-never cached.
+upstream source, and overlay revisions. It also keeps one exact kernel cache,
+containing the complete kernel tree and installed profile modules. Reuse has no
+fallback key: the successful-build state file must match the upstream, full
+patch/preparation state, profile, toolchain and pinned GNU Make contract, and
+the expected kernel image, configs, DTBs and modules must all exist. A mismatch
+fails closed. Locally, this reduced the same no-ccache four-token build from
+17:30 to 9:28 (46%); the extracted filesystems retained all 2,812 files, 546
+links and modes, with only embedded build time, generated image version and
+unordered `modules.dep` differences.
 
 ## Fast Rust iteration
 
