@@ -39,9 +39,9 @@ def create_repository(path: Path, filename: str = "file.txt") -> str:
 
 def lock_text(upstream: str, toolchains: str, diff: str) -> str:
     return f'''format = 1
-upstream_repo = "https://example.invalid/upstream.git"
+upstream_repo = "https://github.com/RMerl/asuswrt-merlin.ng.git"
 upstream_sha = "{upstream}"
-toolchains_repo = "https://example.invalid/toolchains.git"
+toolchains_repo = "https://github.com/RMerl/am-toolchains.git"
 toolchains_sha = "{toolchains}"
 rust_toolchain = "1.85.1"
 rust_target = "armv7-unknown-linux-gnueabi"
@@ -103,6 +103,25 @@ class InputLockTests(unittest.TestCase):
         del source, toolchains
         lock.write_text(lock.read_text() + 'moving_branch = "main"\n', encoding="utf-8")
         with self.assertRaisesRegex(input_lock.LockError, "keys mismatch"):
+            input_lock.load_lock(lock)
+
+    def test_lock_rejects_redirected_repositories_and_moving_rust(self) -> None:
+        _source, _toolchains, _patch_root, _series, lock = self.fixture()
+        original = lock.read_text(encoding="utf-8")
+        lock.write_text(
+            original.replace(
+                "https://github.com/RMerl/asuswrt-merlin.ng.git",
+                "https://attacker.invalid/upstream.git",
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(input_lock.LockError, "unexpected upstream_repo"):
+            input_lock.load_lock(lock)
+        lock.write_text(
+            original.replace('rust_toolchain = "1.85.1"', 'rust_toolchain = "stable"'),
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(input_lock.LockError, "unexpected Rust toolchain"):
             input_lock.load_lock(lock)
 
     def test_series_rejects_traversal_duplicates_and_unlisted_patches(self) -> None:

@@ -16,6 +16,10 @@ from pathlib import Path
 
 SHA1 = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+EXPECTED_REPOSITORIES = {
+    "upstream_repo": "https://github.com/RMerl/asuswrt-merlin.ng.git",
+    "toolchains_repo": "https://github.com/RMerl/am-toolchains.git",
+}
 REQUIRED = {
     "format": int,
     "upstream_repo": str,
@@ -50,8 +54,13 @@ def load_lock(path: Path) -> dict[str, object]:
     for key in ("upstream_sha", "toolchains_sha"):
         if not SHA1.fullmatch(str(data[key])):
             raise LockError(f"invalid {key}")
+    for key, expected in EXPECTED_REPOSITORIES.items():
+        if data[key] != expected:
+            raise LockError(f"unexpected {key}")
     if not SHA256.fullmatch(str(data["patched_diff_sha256"])):
         raise LockError("invalid patched_diff_sha256")
+    if data["rust_toolchain"] != "1.85.1":
+        raise LockError("unexpected Rust toolchain")
     if data["rust_target"] != "armv7-unknown-linux-gnueabi":
         raise LockError("unexpected Rust target")
     if data["rust_target_cpu"] != "cortex-a9":
