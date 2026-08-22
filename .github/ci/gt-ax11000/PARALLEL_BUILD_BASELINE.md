@@ -85,3 +85,12 @@ whitelist rather than treating the full vendor list as a DAG.
 The remaining gate is a hosted GitHub Actions serial cold run followed by an exact
 cache-hit run. CI metadata records runner CPU count, router tokens and both
 cache-hit states so the hosted wall-time result is auditable.
+
+The hosted serial cold run completed successfully with every firmware and
+runtime gate green and saved a 528 MiB exact kernel archive. Its first reuse
+attempt restored and contract-validated that archive, then exposed a redundant
+verification mismatch: restored tracked kernel outputs necessarily change the
+Git diff after the overlay had already been verified. CI now keeps the
+authoritative pre-restore lock attestation and skips only that duplicate
+full-tree diff on an exact hit; kernel contract and artifact validation remain
+mandatory.

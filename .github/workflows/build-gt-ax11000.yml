@@ -337,7 +337,10 @@ jobs:
           ASUSWRT_CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
           ASUSWRT_CCACHE_MAXSIZE: 2G
           ASUSWRT_DIRECT_TOOLCHAIN: "1"
-          ASUSWRT_ENFORCE_INPUT_LOCK: "1"
+          # The overlay diff is verified immediately before cache restore.
+          # An exact kernel hit then adds expected tracked build outputs, so a
+          # second full-tree diff would reject the cache's own generated files.
+          ASUSWRT_ENFORCE_INPUT_LOCK: ${{ steps.kernel-cache.outputs.cache-hit == 'true' && '0' || '1' }}
           ASUSWRT_FAKEBIN: ${{ runner.temp }}/asuswrt-fakebin
           ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
           ASUSWRT_KERNEL_CACHE_RESTORE: ${{ steps.kernel-cache.outputs.cache-hit == 'true' && '1' || '0' }}
@@ -393,7 +396,8 @@ jobs:
             echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
             echo "kernel_cache_exact_hit=${{ steps.kernel-cache.outputs.cache-hit }}"
             echo "prepare_jobs=4"
-            echo "router_package_jobs=4"
+            echo "router_package_jobs=1"
+            echo "input_lock_verification=verified-before-kernel-cache-restore"
             echo "rust_toolchain=${{ steps.inputs.outputs.rust_toolchain }}"
             echo "rust_target=${{ steps.inputs.outputs.rust_target }}"
             echo "rust_target_cpu=${{ steps.inputs.outputs.rust_target_cpu }}"

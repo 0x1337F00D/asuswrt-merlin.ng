@@ -54,6 +54,11 @@ fails closed. Locally, this reduced the same no-ccache four-token build from
 17:30 to 9:28 (46%); the extracted filesystems retained all 2,812 files, 546
 links and modes, with only embedded build time, generated image version and
 unordered `modules.dep` differences.
+CI verifies the complete patched-source diff immediately before restoring the
+kernel archive. On an exact hit the redundant in-script full-tree diff is
+disabled because the restored tracked kernel build outputs are expected to
+change that diff; the cache contract and explicit artifact checks still fail
+closed, and the pre-restore lock attestation is embedded in build metadata.
 
 ## Fast Rust iteration
 
