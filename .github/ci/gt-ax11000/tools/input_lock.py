@@ -133,6 +133,7 @@ def patched_diff_hash(source: Path) -> str:
             "diff",
             "--cached",
             "--binary",
+            "--full-index",
             "--no-ext-diff",
             "--src-prefix=a/",
             "--dst-prefix=b/",

@@ -153,6 +153,13 @@ class InputLockTests(unittest.TestCase):
         with self.assertRaisesRegex(input_lock.LockError, "diff is empty"):
             input_lock.patched_diff_hash(source)
 
+    def test_diff_hash_is_independent_of_git_abbreviation_config(self) -> None:
+        source, _toolchains, _patch_root, _series, _lock = self.fixture()
+        git(source, "config", "core.abbrev", "7")
+        short_hash = input_lock.patched_diff_hash(source)
+        git(source, "config", "core.abbrev", "40")
+        self.assertEqual(short_hash, input_lock.patched_diff_hash(source))
+
 
 if __name__ == "__main__":
     unittest.main()
