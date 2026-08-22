@@ -1,0 +1,15 @@
+# Ordered GT-AX11000 overlay. Keep this as the single patch-order authority for
+# local builds, GitHub Actions and upstream-sync verification.
+local-features.patch
+gt-ax11000-wsl.patch
+fast-parallel-build.patch
+rust-components.patch
+security-hardening.patch
+wps-shell-hardening.patch
+wireless-policy-ui.patch
+runtime-policy.patch
+regulatory-profile-boot.patch
+wireless-service-testlab-stability.patch
+network-hardening.patch
+runtime-hardening-2026.patch
+wifi-upstream-security.patch
