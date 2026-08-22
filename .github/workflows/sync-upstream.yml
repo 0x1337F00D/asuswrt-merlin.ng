@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: sync-upstream-main
@@ -14,14 +15,51 @@ concurrency:
 
 jobs:
   sync:
+    name: Open upstream sync PR
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - name: Merge RMerl/main into fork main
+      - name: Create or update an upstream-sync branch and PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/merge-upstream" \
-            -f branch=main
+          set -euo pipefail
+          gh repo clone "$GITHUB_REPOSITORY" repo -- \
+            --filter=blob:none --no-checkout
+          git -C repo sparse-checkout init --cone
+          git -C repo sparse-checkout set .github
+          git -C repo checkout main
+          git -C repo config user.name github-actions[bot]
+          git -C repo config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
+          git -C repo remote add upstream https://github.com/RMerl/asuswrt-merlin.ng.git
+          git -C repo fetch --no-tags upstream main
+          upstream_sha=$(git -C repo rev-parse upstream/main)
+          if git -C repo merge-base --is-ancestor "$upstream_sha" origin/main; then
+            echo "Fork already contains upstream $upstream_sha"
+            exit 0
+          fi
+
+          short_sha=${upstream_sha:0:12}
+          branch="upstream-sync/$short_sha"
+          git -C repo checkout -B "$branch" origin/main
+          git -C repo merge --no-edit --no-ff "$upstream_sha"
+          test "$(git -C repo rev-parse HEAD:release)" = \
+            "$(git -C repo rev-parse "$upstream_sha:release")"
+          git -C repo push --force-with-lease origin "$branch"
+
+          title="Sync RMerl/main to $short_sha"
+          body=$(printf '%s\n\n%s\n%s\n' \
+            'Automated upstream synchronization. This PR is never merged automatically.' \
+            "- Upstream: \`$upstream_sha\`" \
+            '- Required GT-AX11000 firmware checks must pass before review.')
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main \
+            --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$GITHUB_REPOSITORY" \
+              --title "$title" --body "$body"
+            gh pr view "$existing" --repo "$GITHUB_REPOSITORY" --json url --jq .url
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$branch" \
+              --title "$title" --body "$body" --draft
+          fi
