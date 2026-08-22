@@ -1,0 +1,11 @@
+# Default owner for every change.
+* @0x1337F00D
+
+# Release trust, build inputs and privileged integration boundaries.
+/.github/workflows/ @0x1337F00D
+/.github/ci/gt-ax11000/inputs.lock @0x1337F00D
+/.github/ci/gt-ax11000/patches/ @0x1337F00D
+/.github/ci/gt-ax11000/tools/ @0x1337F00D
+/.github/ci/gt-ax11000/rust/ @0x1337F00D
+/.github/ci/gt-ax11000/trial/ @0x1337F00D
+/SECURITY.md @0x1337F00D
