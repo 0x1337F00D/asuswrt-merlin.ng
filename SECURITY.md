@@ -2,9 +2,10 @@
 
 ## Supported code
 
-Security fixes target the protected `main` branch and the most recent signed
-GT-AX11000 release derived from it. Development branches and unsigned test
-images are not supported releases.
+Security fixes target the protected `main` branch and the most recent explicitly
+published GT-AX11000 release derived from it. Development branches and test
+images are not supported releases. Firmware signing is tracked separately and
+must not be implied until that trust chain is implemented and verified.
 
 ## Reporting a vulnerability
 
