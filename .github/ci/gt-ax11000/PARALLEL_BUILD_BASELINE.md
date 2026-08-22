@@ -74,6 +74,14 @@ Every top-level package target now preserves its declared prerequisite order;
 independent package targets still run concurrently. This generalizes the fix
 without serializing the large package remainder.
 
-The remaining gate is a hosted GitHub Actions cold run followed by an exact
+A third hosted run then reached `hub-ctrl`, whose top-level target has no
+declared edge to its required `libusb10` producer. Together these independent
+failures prove that the vendor `obj-y` sequence itself carries undocumented
+ordering. Since the local four-token candidate was also slower than the serial
+reference, required hosted CI now uses `ROUTER_PACKAGE_JOBS=1`. Parallel mode
+remains an opt-in research path; a future version must use a positive safe
+whitelist rather than treating the full vendor list as a DAG.
+
+The remaining gate is a hosted GitHub Actions serial cold run followed by an exact
 cache-hit run. CI metadata records runner CPU count, router tokens and both
 cache-hit states so the hosted wall-time result is auditable.

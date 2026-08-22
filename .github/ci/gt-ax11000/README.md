@@ -36,15 +36,15 @@ When `N` is greater than one, `PARALLEL_BUILD` is cleared so recursive packages
 share one GNU jobserver. StrongSwan and Samba no longer start private eight-job
 pools. A 16-token reference run completed and produced the same rootfs graph as
 the serial reference, but took 719 instead of 682 seconds on the local
-16-thread host. It therefore proves the DAG rather than justifying 16 as a
-default. The hosted 4-vCPU Firmware job uses four tokens; local builds retain
-the conservative one-token default. The lower-token validation also removed a
-duplicate `openssl`/`openssl-1.1` DAG node that could race on OpenSSL dependency
-files.
+16-thread host. Three genuinely clean hosted four-token runs then exposed
+different implicit-order failures in Netfilter, `lldpd`, and `hub-ctrl`/libusb.
+Required CI therefore remains at the faster stable serial default. Full-DAG
+parallelism stays available only as a manual experiment until a positive safe
+package whitelist passes repeated clean-build and extracted-rootfs equivalence
+gates. The exact kernel cache is the supported CI speedup.
 The durable comparison is recorded in `PARALLEL_BUILD_BASELINE.md`.
 
-CI prepares independent Autotools packages with up to four workers and keeps a
-2 GiB `ccache` for the HND cross-compilers. The cache is keyed by toolchain,
+CI keeps a 2 GiB `ccache` for the HND cross-compilers. The cache is keyed by toolchain,
 upstream source, and overlay revisions. It also keeps one exact kernel cache,
 containing the complete kernel tree and installed profile modules. Reuse has no
 fallback key: the successful-build state file must match the upstream, full

@@ -348,7 +348,10 @@ jobs:
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
           ASUSWRT_TOOLCHAIN_VIEW: ${{ runner.temp }}/asuswrt-toolchain-view/brcm-arm-hnd
           ASUSWRT_TOOLCHAINS_STATE: ${{ steps.revisions.outputs.toolchains_sha }}
-          ROUTER_PACKAGE_JOBS: "4"
+          # The vendor obj-y list encodes undocumented serial ordering. Keep
+          # full-DAG parallelism out of required CI until a safe whitelist is
+          # proven; the exact kernel cache supplies the reliable speedup.
+          ROUTER_PACKAGE_JOBS: "1"
           RUST_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
         run: |
           set -euo pipefail
