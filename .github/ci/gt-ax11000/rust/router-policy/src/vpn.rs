@@ -389,6 +389,52 @@ pub fn openvpn_import_directive_allowed(name: &str, args: &[&str]) -> bool {
     OpenVpnImportDirective::parse(name, args).is_ok()
 }
 
+/// Validate the complete free-form OpenVPN custom configuration before it is
+/// appended to a generated router configuration.  The custom field is an
+/// administrative escape hatch in the vendor UI, so accepting a single
+/// script, plugin, management, route, compression, or downgrade directive
+/// would bypass the typed import policy above.
+///
+/// Deliberately support only plain ASCII tokens. Quoting and backslash
+/// escaping are unnecessary for the bounded allowlist and are rejected to
+/// keep the C-to-Rust policy boundary unambiguous.
+pub fn openvpn_custom_config_allowed(input: &str) -> bool {
+    const MAX_CUSTOM_BYTES: usize = 8 * 1024;
+    const MAX_CUSTOM_LINES: usize = 128;
+
+    if input.len() > MAX_CUSTOM_BYTES || !input.is_ascii() {
+        return false;
+    }
+
+    let mut directives = 0usize;
+    for raw_line in input.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.len() > 256
+            || line
+                .bytes()
+                .any(|byte| matches!(byte, b'\'' | b'"' | b'\\' | 0))
+        {
+            return false;
+        }
+
+        directives += 1;
+        if directives > MAX_CUSTOM_LINES {
+            return false;
+        }
+        let words = line.split_ascii_whitespace().collect::<Vec<_>>();
+        let Some((name, args)) = words.split_first() else {
+            continue;
+        };
+        if OpenVpnImportDirective::parse(name, args).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
 impl OpenVpnProfile {
     pub fn parse(input: &str) -> Result<Self, PolicyError> {
         const FIELDS: [&str; 6] = [
@@ -766,6 +812,35 @@ mod tests {
                 "accepted {name} {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn complete_openvpn_custom_config_is_fail_closed() {
+        assert!(openvpn_custom_config_allowed(
+            "# bounded tuning only\nauth-nocache\ntls-version-min 1.2\ndata-ciphers AES-256-GCM:AES-128-GCM\nkeepalive 10 60\n"
+        ));
+        assert!(openvpn_custom_config_allowed("\n; empty comment\n"));
+
+        for unsafe_config in [
+            "script-security 3\nup /jffs/evil.sh\n",
+            "plugin /tmp/evil.so\n",
+            "management 0.0.0.0 7505\n",
+            "route-up reboot\n",
+            "pull-filter ignore redirect-gateway\n",
+            "compress lz4\n",
+            "data-ciphers AES-256-GCM:AES-256-CBC\n",
+            "tls-version-min 1.0\n",
+            "auth SHA1\n",
+            "keepalive '10' 60\n",
+            "keepalive 10\\ 60\n",
+        ] {
+            assert!(
+                !openvpn_custom_config_allowed(unsafe_config),
+                "accepted unsafe custom configuration: {unsafe_config:?}"
+            );
+        }
+        assert!(!openvpn_custom_config_allowed(&"ping 10\n".repeat(129)));
+        assert!(!openvpn_custom_config_allowed(&"#".repeat(8 * 1024 + 1)));
     }
 
     #[test]

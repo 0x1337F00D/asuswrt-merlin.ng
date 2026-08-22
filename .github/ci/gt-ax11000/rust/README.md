@@ -96,6 +96,30 @@ cargo clippy --workspace --all-targets -- -D warnings
 bash ../tests/security-overlay-check.sh /path/to/patched/source
 ```
 
+The dependency-free structured fuzz runner covers the HTTP query/URL and
+multipart boundaries, NVRAM-facing WLAN/test-lab policy, OpenVPN/IPsec/
+WireGuard parsers, infosvr PDUs, rstats codecs and the wanduck transition
+machine. It is deterministic and keeps Cargo state and artifacts in tmpfs:
+
+```sh
+ASUSWRT_REQUIRE_TMPFS=1 \
+RUST_FUZZ_ITERATIONS=250000 \
+bash ../tests/rust-fuzz-smoke.sh
+```
+
+Three fixed seeds are always run, along with explicit maximum-length,
+pair-count, encoded-NUL, codec-record and protocol-opcode boundary cases.
+
+The C ABI smoke suite compiles strict C11 fixtures against the release Rust
+archives and executes the same entry points used by `httpd`, `rc` and
+`wanduck`. This catches layout, symbol, ownership and non-mutation regressions
+without claiming to replace full firmware-consumer or hardware tests:
+
+```sh
+ASUSWRT_REQUIRE_TMPFS=1 \
+bash ../tests/c-abi-smoke.sh
+```
+
 The CI additionally checks the ARM target and exhaustively verifies that all
 unimplemented 16-bit opcodes are rejected.
 

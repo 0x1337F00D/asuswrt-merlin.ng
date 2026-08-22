@@ -1,0 +1,210 @@
+diff --git a/release/src/router/httpd/httpd_compat_stubs.c b/release/src/router/httpd/httpd_compat_stubs.c
+--- a/release/src/router/httpd/httpd_compat_stubs.c
++++ b/release/src/router/httpd/httpd_compat_stubs.c
+@@ -96,8 +96,6 @@ void do_set_regulatory_testlab_cgi(char *url, FILE *stream)
+ 	char *country;
+ 	char *confirmation;
+ 	char *acknowledge_only;
+-	const char *driver_country;
+-	const char *txpower;
+ 
+ 	(void)url;
+ 	country = websGetVar(stream, "country", "");
+@@ -121,61 +119,14 @@ void do_set_regulatory_testlab_cgi(char *url, FILE *stream)
+ 		websWrite(stream, "{\"statusCode\":\"0\",\"acknowledged\":true}");
+ 		return;
+ 	}
+-	driver_country = !strcmp(country, "ALL") ? "#a" : country;
+-	txpower = !strcmp(country, "ALL") ? "500" : "100";
+-
+-	/* This is deliberately the only HTTP mutation boundary for regulatory
+-	 * country, derived channel/DFS state, and country/board-limited power. */
++	/* HTTP persists only the Rust-authorized country and acknowledgement.
++	 * The rc wireless-start path is the sole owner of all derived driver
++	 * country, DFS/ACS and power-request values. */
+ 	nvram_set("location_code", country);
+ 	nvram_set("ui_location_code", country);
+-	/* Broadcom exposes #a as its world/test-lab locale.  The literal ALL is
+-	 * not a driver country and silently falls back to E0 on this model. */
+-	nvram_set("wl_country_code", driver_country);
+-	nvram_set("wl0_country_code", driver_country);
+-	nvram_set("wl1_country_code", driver_country);
+-	nvram_set("wl2_country_code", driver_country);
+-	nvram_set("0:ccode", driver_country);
+-	nvram_set("1:ccode", driver_country);
+-	nvram_set("2:ccode", driver_country);
+-	nvram_set("wl0_country_rev", "0");
+-	nvram_set("wl1_country_rev", "0");
+-	nvram_set("wl2_country_rev", "0");
+-	nvram_set("0:regrev", "0");
+-	nvram_set("1:regrev", "0");
+-	nvram_set("2:regrev", "0");
+-	/* Clear legacy per-radio overrides so the selected country profile is
+-	 * the sole source for driver channel availability and DFS behavior. */
+-	nvram_unset("wl_chlist");
+-	nvram_unset("wl0_chlist");
+-	nvram_unset("wl1_chlist");
+-	nvram_unset("wl2_chlist");
+-	nvram_unset("wl_acs_excl_chans");
+-	nvram_unset("wl_acs_excl_chans_dfs");
+-	nvram_unset("wl0_acs_excl_chans");
+-	nvram_unset("wl1_acs_excl_chans");
+-	nvram_unset("wl2_acs_excl_chans");
+-	nvram_unset("wl0_acs_excl_chans_base");
+-	nvram_unset("wl1_acs_excl_chans_base");
+-	nvram_unset("wl2_acs_excl_chans_base");
+-	/* ALL owns the lab-only ACS and power request as part of one atomic
+-	 * country profile.  No independent channel, power, or PA-calibration
+-	 * control is exposed.  500 is a driver scalar, not measured RF power;
+-	 * immutable board calibration and driver limits still apply. */
+-	nvram_set("acs_unii4", !strcmp(country, "ALL") ? "1" : "0");
+-	nvram_set("acs_band1", !strcmp(country, "ALL") ? "1" : "0");
+-	nvram_set("acs_band3", !strcmp(country, "ALL") ? "1" : "0");
+-	nvram_set("acs_dfs", "1");
+-	nvram_set("wl1_acs_dfs", "1");
+-	nvram_set("wl2_acs_dfs", "1");
+-	nvram_set("wl_txpower", txpower);
+-	nvram_set("wl0_txpower", txpower);
+-	nvram_set("wl1_txpower", txpower);
+-	nvram_set("wl2_txpower", txpower);
+-	/* The versioned warning acknowledgement is persisted only after the
+-	 * complete Rust-authorized profile has been applied successfully. */
+ 	nvram_set("rust_regulatory_testlab_ack_v1", "1");
+ 	nvram_commit();
+-	syslog(LOG_NOTICE, "authenticated regulatory country profile applied: %.3s", country);
++	syslog(LOG_NOTICE, "authenticated regulatory country profile queued: %.3s", country);
+ 	notify_rc("restart_wireless");
+ 	websWrite(stream, "{\"statusCode\":\"0\",\"applied\":true}");
+ }
+diff --git a/release/src/router/rc/lan.c b/release/src/router/rc/lan.c
+--- a/release/src/router/rc/lan.c
++++ b/release/src/router/rc/lan.c
+@@ -6612,6 +6612,89 @@ void start_fbwifi_config()
+ }
+ #endif
+ 
++#if defined(GTAX11000)
++extern int rust_regulatory_profile_kind(const char *country);
++
++static void regulatory_profile_set(const char *name, const char *value, int *changed)
++{
++	const char *current = nvram_get(name);
++
++	if (!current || strcmp(current, value)) {
++		nvram_set(name, value);
++		*changed = 1;
++	}
++}
++
++static void regulatory_profile_unset(const char *name, int *changed)
++{
++	if (nvram_get(name)) {
++		nvram_unset(name);
++		*changed = 1;
++	}
++}
++
++int apply_regulatory_testlab_profile(void)
++{
++	static const char *country_keys[] = {
++		"wl_country_code", "wl0_country_code", "wl1_country_code", "wl2_country_code",
++		"0:ccode", "1:ccode", "2:ccode"
++	};
++	static const char *revision_keys[] = {
++		"wl0_country_rev", "wl1_country_rev", "wl2_country_rev",
++		"0:regrev", "1:regrev", "2:regrev"
++	};
++	static const char *legacy_override_keys[] = {
++		"wl_chlist", "wl0_chlist", "wl1_chlist", "wl2_chlist",
++		"wl_acs_excl_chans", "wl_acs_excl_chans_dfs",
++		"wl0_acs_excl_chans", "wl1_acs_excl_chans", "wl2_acs_excl_chans",
++		"wl0_acs_excl_chans_base", "wl1_acs_excl_chans_base",
++		"wl2_acs_excl_chans_base"
++	};
++	char country[4];
++	const char *driver_country;
++	const char *txpower;
++	int changed = 0;
++	int kind;
++	unsigned int index;
++
++	if (!nvram_match("rust_regulatory_testlab_ack_v1", "1"))
++		return 0;
++	strlcpy(country, nvram_safe_get("location_code"), sizeof(country));
++	kind = rust_regulatory_profile_kind(country);
++	if (kind != 1 && kind != 2) {
++		logmessage("wireless", "rejected invalid persisted regulatory country profile");
++		return -1;
++	}
++	driver_country = kind == 2 ? "#a" : country;
++	txpower = kind == 2 ? "500" : "100";
++
++	regulatory_profile_set("ui_location_code", country, &changed);
++	for (index = 0; index < sizeof(country_keys) / sizeof(country_keys[0]); ++index)
++		regulatory_profile_set(country_keys[index], driver_country, &changed);
++	for (index = 0; index < sizeof(revision_keys) / sizeof(revision_keys[0]); ++index)
++		regulatory_profile_set(revision_keys[index], "0", &changed);
++	for (index = 0; index < sizeof(legacy_override_keys) / sizeof(legacy_override_keys[0]); ++index)
++		regulatory_profile_unset(legacy_override_keys[index], &changed);
++
++	regulatory_profile_set("acs_unii4", kind == 2 ? "1" : "0", &changed);
++	regulatory_profile_set("acs_band1", kind == 2 ? "1" : "0", &changed);
++	regulatory_profile_set("acs_band3", kind == 2 ? "1" : "0", &changed);
++	regulatory_profile_set("acs_dfs", "1", &changed);
++	regulatory_profile_set("wl1_acs_dfs", "1", &changed);
++	regulatory_profile_set("wl2_acs_dfs", "1", &changed);
++	regulatory_profile_set("wl_txpower", txpower, &changed);
++	regulatory_profile_set("wl0_txpower", txpower, &changed);
++	regulatory_profile_set("wl1_txpower", txpower, &changed);
++	regulatory_profile_set("wl2_txpower", txpower, &changed);
++
++	if (changed) {
++		nvram_commit();
++		logmessage("wireless", "applied persisted regulatory country profile %.3s", country);
++	}
++	return changed;
++}
++#endif
++
+ void restart_wireless(void)
+ {
+ #ifdef RTCONFIG_WIRELESSREPEATER
+@@ -6818,6 +6905,10 @@ void restart_wireless(void)
+ #ifdef RTCONFIG_PORT_BASED_VLAN
+ 	set_port_based_vlan_config(NULL);
+ #endif
++#if defined(GTAX11000)
++	/* wl_defaults() above may restore ASUS' territory-derived E0 values. */
++	apply_regulatory_testlab_profile();
++#endif
+ 	start_lan_wl();
+ #if defined(CONFIG_BCMWL5) && defined(RTCONFIG_DHDAP)
+ 	restart_wl();
+diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
+--- a/release/src/router/rc/rc.h
++++ b/release/src/router/rc/rc.h
+@@ -1710,5 +1710,8 @@ extern void stop_fbwifi_config();
+ #endif
+ extern void restart_wireless(void);
++#if defined(GTAX11000)
++extern int apply_regulatory_testlab_profile(void);
++#endif
+ #ifdef RTCONFIG_BCM_7114
+ extern void stop_wl_bcm(void);
+ #endif
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -27009,6 +27009,12 @@ int init_main(int argc, char *argv[])
+ 			update_11ax_config();
+ #endif
+ 
++#if defined(GTAX11000)
++			/* Re-derive every driver-facing country/DFS/power value from the
++			 * single persisted country before the wireless interfaces start. */
++			apply_regulatory_testlab_profile();
++#endif
++
+ 			start_lan();
+ #if defined(CONFIG_BCMWL5) && defined(RTCONFIG_DHDAP)
+ 			if (!restore_defaults_g) {

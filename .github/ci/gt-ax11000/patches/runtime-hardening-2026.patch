@@ -1,0 +1,323 @@
+diff --git a/release/src/router/libovpn/openvpn_setup.c b/release/src/router/libovpn/openvpn_setup.c
+index 048e284aaeb..ef1cc5b5717 100644
+--- a/release/src/router/libovpn/openvpn_setup.c
++++ b/release/src/router/libovpn/openvpn_setup.c
+@@ -60,6 +60,40 @@
+ #include "openvpn_setup.h"
+ #include "openvpn_control.h"
+ 
++#define OVPN_HARDENED_DATA_CIPHERS \
++	"CHACHA20-POLY1305:AES-256-GCM:AES-128-GCM"
++
++extern int rust_openvpn_import_option_allowed(const char *name,
++	const char *arg1, const char *arg2, const char *arg3) __attribute__((weak));
++extern int rust_openvpn_custom_config_allowed(const char *config)
++	__attribute__((weak));
++
++static const char *ovpn_hardened_data_ciphers(const char *configured)
++{
++	if (configured && configured[0] && rust_openvpn_import_option_allowed &&
++	    rust_openvpn_import_option_allowed("data-ciphers", configured,
++		NULL, NULL))
++		return configured;
++	return OVPN_HARDENED_DATA_CIPHERS;
++}
++
++static const char *ovpn_hardened_digest(const char *configured)
++{
++	if (configured && configured[0] && strcmp(configured, "default") &&
++	    rust_openvpn_import_option_allowed &&
++	    rust_openvpn_import_option_allowed("auth", configured, NULL, NULL))
++		return configured;
++	return "SHA256";
++}
++
++static int ovpn_custom_config_allowed(const char *custom)
++{
++	if (!custom || !custom[0])
++		return 1;
++	return rust_openvpn_custom_config_allowed &&
++		rust_openvpn_custom_config_allowed(custom);
++}
++
+ void write_ovpn_resolv_dnsmasq(FILE* dnsmasq_conf) {
+ 	int unit;
+ 	char filename[40], prefix[16];
+@@ -297,6 +331,11 @@ int ovpn_write_server_config(ovpn_sconf_t *sconf, int unit) {
+ 	struct in6_addr addr6;
+ #endif
+ 
++	if (!ovpn_custom_config_allowed(sconf->custom)) {
++		logmessage("openvpn", "Rejected unsafe custom configuration for server %d", unit);
++		return -1;
++	}
++
+ 	sprintf(buffer, "/etc/openvpn/server%d/config.ovpn", unit);
+ 	fp = fopen(buffer, "w");
+ 	chmod(buffer, S_IRUSR|S_IWUSR);
+@@ -355,17 +394,11 @@ int ovpn_write_server_config(ovpn_sconf_t *sconf, int unit) {
+ 	fprintf(fp, "dev %s\n", sconf->if_name);
+ 	fprintf(fp, "txqueuelen 1000\n");
+ 
+-	// cipher
+-	if (*sconf->ncp_ciphers) {
+-		fprintf(fp, "data-ciphers %s\n", sconf->ncp_ciphers);
+-	}
+-	// Fallback to silence logged warning
+-	fprintf(fp, "data-ciphers-fallback AES-128-CBC\n");
+-
+-	// Digest
+-	if (strcmp(sconf->digest, "default")) {
+-		fprintf(fp, "auth %s\n", sconf->digest);
+-	}
++	/* Never inherit legacy CBC/fallback settings from retained NVRAM. */
++	fprintf(fp, "data-ciphers %s\n", ovpn_hardened_data_ciphers(sconf->ncp_ciphers));
++	fprintf(fp, "auth %s\n", ovpn_hardened_digest(sconf->digest));
++	fprintf(fp, "tls-version-min 1.2\n");
++	fprintf(fp, "allow-compression no\n");
+ 
+ 	fprintf(fp, "keepalive 15 60\n");
+ 
+@@ -549,6 +582,11 @@ int ovpn_write_client_config(ovpn_cconf_t *cconf, int unit) {
+ 	char buffer[256];
+ 	FILE *fp;
+ 
++	if (!ovpn_custom_config_allowed(cconf->custom)) {
++		logmessage("openvpn", "Rejected unsafe custom configuration for client %d", unit);
++		return -1;
++	}
++
+ 	sprintf(buffer, "/etc/openvpn/client%d/config.ovpn", unit);
+ 	fp = fopen(buffer, "w");
+ 
+@@ -569,26 +607,12 @@ int ovpn_write_client_config(ovpn_cconf_t *cconf, int unit) {
+ 	fprintf(fp, "nobind\n");
+ 	fprintf(fp, "persist-tun\n");
+ 
+-	if (strcmp(cconf->comp, "-1")) {
+-		if (!strncmp(cconf->comp, "lz4", 3)) {
+-			fprintf(fp, "compress %s\n", cconf->comp);
+-		} else if (!strcmp(cconf->comp, "yes")) {
+-			fprintf(fp, "compress lzo\n");
+-		} else if (!strcmp(cconf->comp, "adaptive")) {
+-			fprintf(fp, "comp-lzo adaptive\n");
+-		} else if (!strcmp(cconf->comp, "no")) {
+-			fprintf(fp, "compress\n");      // Disable, but can be overriden
+-		} else if (!strncmp(cconf->comp, "stub", 4)) {
+-			fprintf(fp, "compress %s\n", cconf->comp);
+-		}
+-	}
+-
+-	// cipher
+-	if (*cconf->ncp_ciphers)
+-		fprintf(fp, "data-ciphers %s\n", cconf->ncp_ciphers);
+-
+-	if (strcmp(cconf->digest, "default"))
+-		fprintf(fp, "auth %s\n", cconf->digest);
++	/* Compression and legacy CBC are prohibited even in retained profiles. */
++	fprintf(fp, "allow-compression no\n");
++	fprintf(fp, "data-ciphers %s\n", ovpn_hardened_data_ciphers(cconf->ncp_ciphers));
++	fprintf(fp, "auth %s\n", ovpn_hardened_digest(cconf->digest));
++	fprintf(fp, "tls-version-min 1.2\n");
++	fprintf(fp, "remote-cert-tls server\n");
+ 
+ 	if (cconf->redirect_gateway == OVPN_RGW_ALL) {
+ 		if ((cconf->if_type == OVPN_IF_TAP) && *cconf->gateway )
+@@ -642,8 +666,10 @@ int ovpn_write_client_config(ovpn_cconf_t *cconf, int unit) {
+ 				break;
+ 		}
+ 	}
+-	if (cconf->userauth)
++	if (cconf->userauth) {
+ 		fprintf(fp, "auth-user-pass auth\n");
++		fprintf(fp, "auth-nocache\n");
++	}
+ 
+ 	if (ovpn_key_exists(OVPN_TYPE_CLIENT, unit, OVPN_CLIENT_CRL))
+ 		fprintf(fp, "crl-verify crl.pem\n");
+@@ -830,7 +856,7 @@ void ovpn_write_server_client_config(ovpn_sconf_t *sconf, int unit) {
+ 	if (sconf->tlscrypt == OVPN_TLS_CRYPT_V2)
+ 		min_version = "2.5.0";
+ 	else
+-		min_version = "2.4.0";
++		min_version = "2.5.0";
+ 
+ 	fprintf(fp_client, "# Config generated by Asuswrt-Merlin %s, requires OpenVPN %s or newer.\n\n", nvram_safe_get("buildno"), min_version);
+ 
+@@ -868,18 +894,18 @@ void ovpn_write_server_client_config(ovpn_sconf_t *sconf, int unit) {
+ 	fprintf(fp_client, "nobind\n");
+ 	fprintf(fp_client, "float\n");
+ 
+-	// cipher
+-	if (*sconf->ncp_ciphers)
+-		fprintf(fp_client, "ncp-ciphers %s\n", sconf->ncp_ciphers);
+-
+-	// Digest
+-	if (strcmp(sconf->digest, "default"))
+-		fprintf(fp_client, "auth %s\n", sconf->digest);
++	/* Export the same policy the server enforces. */
++	fprintf(fp_client, "data-ciphers %s\n", ovpn_hardened_data_ciphers(sconf->ncp_ciphers));
++	fprintf(fp_client, "auth %s\n", ovpn_hardened_digest(sconf->digest));
++	fprintf(fp_client, "tls-version-min 1.2\n");
++	fprintf(fp_client, "allow-compression no\n");
+ 
+ 	fprintf(fp_client, "keepalive 15 60\n");
+ 
+-	if (sconf->userauth)
++	if (sconf->userauth) {
+ 		fprintf(fp_client, "auth-user-pass\n");
++		fprintf(fp_client, "auth-nocache\n");
++	}
+ 
+ 	fprintf(fp_client, "remote-cert-tls server\n");
+ 
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index 9db1af22d0a..d54e37bb5f8 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -81,9 +81,105 @@
+ 
+ static int firewall_apply_failed;
+ static char firewall_fail_wan_if[IFNAMSIZ + 1];
++static char firewall_admin_ports[64];
+ 
+ extern int rust_validate_effective_firewall_files(const char *ipv4_path,
+ 	const char *ipv6_path, int require_ipv6);
++extern int rust_validate_effective_firewall_policy_files(const char *ipv4_path,
++	const char *ipv6_path, int require_ipv6, const char *wan_ipv4_interface,
++	const char *wan_ipv6_interface, const char *admin_ports);
++
++#define CODEX_WAN_GUARD "CODEX_WAN_GUARD"
++
++static int add_unique_admin_port(char ports[][6], unsigned int *count, int port)
++{
++	unsigned int i;
++
++	if (port < 1 || port > 65535 || *count >= 8)
++		return 0;
++	for (i = 0; i < *count; ++i) {
++		if (atoi(ports[i]) == port)
++			return 1;
++	}
++	snprintf(ports[*count], sizeof(ports[*count]), "%d", port);
++	++*count;
++	return 1;
++}
++
++static int install_wan_admin_guard_family(const char *tool, const char *wan_if,
++	char ports[][6], unsigned int count)
++{
++	unsigned int i;
++
++	if (!wan_if || !wan_if[0])
++		return 0;
++	/* Cleanup failures are harmless; creation and every active rule are checked. */
++	eval(tool, "-t", "filter", "-D", "INPUT", "-i", wan_if,
++		"-j", CODEX_WAN_GUARD);
++	eval(tool, "-t", "filter", "-F", CODEX_WAN_GUARD);
++	eval(tool, "-t", "filter", "-X", CODEX_WAN_GUARD);
++	if (eval(tool, "-t", "filter", "-N", CODEX_WAN_GUARD) != 0)
++		return 0;
++	for (i = 0; i < count; ++i) {
++		if (eval(tool, "-t", "filter", "-A", CODEX_WAN_GUARD,
++		    "-p", "tcp", "-m", "tcp", "--dport", ports[i],
++		    "-j", "DROP") != 0)
++			return 0;
++	}
++	if (eval(tool, "-t", "filter", "-A", CODEX_WAN_GUARD,
++	    "-j", "RETURN") != 0)
++		return 0;
++	return eval(tool, "-t", "filter", "-I", "INPUT", "1",
++		"-i", wan_if, "-j", CODEX_WAN_GUARD) == 0;
++}
++
++static int install_wan_admin_guard(const char *wan_if)
++{
++	char ports[8][6];
++	unsigned int count = 0, i;
++	size_t used = 0;
++
++	memset(ports, 0, sizeof(ports));
++	/* Telnet is deliberately never reachable through WAN on this hardened build. */
++	if (!add_unique_admin_port(ports, &count, 23))
++		return 0;
++	if (!nvram_get_int("misc_http_x")) {
++		if (!add_unique_admin_port(ports, &count, 80) ||
++		    !add_unique_admin_port(ports, &count, 443) ||
++		    !add_unique_admin_port(ports, &count,
++			nvram_get_int("http_lanport") ? : 80) ||
++		    !add_unique_admin_port(ports, &count,
++			nvram_get_int("https_lanport") ? : 443) ||
++		    !add_unique_admin_port(ports, &count,
++			nvram_get_int("misc_httpport_x") ? : 8080) ||
++		    !add_unique_admin_port(ports, &count,
++			nvram_get_int("misc_httpsport_x") ? : 8443))
++			return 0;
++	}
++	if (nvram_get_int("sshd_enable") != 1 &&
++	    !add_unique_admin_port(ports, &count,
++		nvram_get_int("sshd_port") ? : 22))
++		return 0;
++
++	firewall_admin_ports[0] = '\0';
++	for (i = 0; i < count; ++i) {
++		int written = snprintf(firewall_admin_ports + used,
++			sizeof(firewall_admin_ports) - used, "%s%s",
++			i ? "," : "", ports[i]);
++		if (written < 0 || (size_t)written >= sizeof(firewall_admin_ports) - used)
++			return 0;
++		used += written;
++	}
++
++	if (!install_wan_admin_guard_family("iptables", wan_if, ports, count))
++		return 0;
++#ifdef RTCONFIG_IPV6
++	if (ipv6_enabled() &&
++	    !install_wan_admin_guard_family("ip6tables", get_wan6face(), ports, count))
++		return 0;
++#endif
++	return 1;
++}
+ 
+ static int validate_effective_firewall_policy(void)
+ {
+@@ -112,10 +208,13 @@ static int validate_effective_firewall_policy(void)
+ 	    (_eval(ipv6_argv, ">/tmp/firewall-effective-v6.rules", 0, NULL) != 0 ||
+ 	     chmod(ipv6_path, 0600) != 0))
+ 		goto out;
+-	valid = rust_validate_effective_firewall_files(ipv4_path,
+-		require_ipv6 ? ipv6_path : NULL, require_ipv6);
++	valid = rust_validate_effective_firewall_policy_files(ipv4_path,
++		require_ipv6 ? ipv6_path : NULL, require_ipv6,
++		firewall_fail_wan_if, require_ipv6 ? get_wan6face() : NULL,
++		firewall_admin_ports);
+ #else
+-	valid = rust_validate_effective_firewall_files(ipv4_path, NULL, 0);
++	valid = rust_validate_effective_firewall_policy_files(ipv4_path, NULL, 0,
++		firewall_fail_wan_if, NULL, firewall_admin_ports);
+ #endif
+ 
+ out:
+@@ -8974,6 +9073,7 @@ int start_firewall(int wanunit, int lanunit)
+ 	lock = file_lock("firewall");
+ 	firewall_apply_failed = 0;
+ 	firewall_fail_wan_if[0] = '\0';
++	firewall_admin_ports[0] = '\0';
+ 
+ 	snprintf(prefix, sizeof(prefix), "wan%d_", wanunit);
+ 
+@@ -9415,9 +9515,13 @@ leave:
+ 
+ 	if (!firewall_apply_failed)
+ 		run_custom_script("firewall-start", 0, wan_if, NULL);
++	if (!firewall_apply_failed && !install_wan_admin_guard(wan_if)) {
++		firewall_apply_failed = 1;
++		logmessage("firewall", "failed to install WAN administration guard");
++	}
+ 	if (!firewall_apply_failed && !validate_effective_firewall_policy()) {
+ 		firewall_apply_failed = 1;
+-		logmessage("firewall", "effective INPUT/FORWARD terminal DROP invariant failed");
++		logmessage("firewall", "effective firewall policy invariant failed");
+ 	}
+ 	if (firewall_apply_failed)
+ 		firewall_enter_fail_closed();
