@@ -5,8 +5,8 @@ diff --git a/release/src-rt/Makefile b/release/src-rt/Makefile
  ifneq ($(or $(HND_ROUTER_AX_675X),$(HND_ROUTER_AX_6710),$(BCM_502L07P2)),y)
  	@rm -f $(PROFILE_FILE_PUB) && ln -sf $(PROFILE_FILE) $(PROFILE_FILE_PUB)
  endif
-+ifneq ($(ASUSWRT_KERNEL_REUSE),1)
  	@rm -f $(SRCBASE)/.config && ln -sf $(HND_SRC)/.config $(SRCBASE)/.config
++ifneq ($(ASUSWRT_KERNEL_REUSE),1)
  	@rm -f $(LINUXDIR)/.config
 +endif
  	@echo '#define BBOARD_ID $(BOARD_ID)' > router/shared/bbid.h

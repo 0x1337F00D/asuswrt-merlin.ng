@@ -94,3 +94,10 @@ Git diff after the overlay had already been verified. CI now keeps the
 authoritative pre-restore lock attestation and skips only that duplicate
 full-tree diff on an exact hit; kernel contract and artifact validation remain
 mandatory.
+
+The subsequent reuse build exposed one missing distinction in the vendor
+patch: protecting `kernel/.config` had also suppressed recreation of the
+Broadcom `SRCBASE/.config` profile symlink. That symlink is not a reusable
+kernel output and is now rebuilt on every invocation; only the actual kernel
+configuration remains protected. The changed patch contract intentionally
+uses a new exact cache key.
