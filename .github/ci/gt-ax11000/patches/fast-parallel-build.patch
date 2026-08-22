@@ -1,34 +1,95 @@
 diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
-@@ -2101,7 +2101,21 @@
+@@ -2101,7 +2101,35 @@
  ifeq ($(HND_ROUTER),y)
 -all: clean-build kernel_header version fsbuild $(obj-y)
 +ROUTER_PACKAGE_JOBS ?= 1
-+.PHONY: router-packages
++.PHONY: router-foundation router-packages
 +
 +all:
 +	+$(MAKE) clean-build
-+	+$(MAKE) kernel_header version fsbuild openssl \
-+		libnfnetlink-$(NETLINK_LIB_VER) libmnl-1.0.4 \
-+		libnetfilter_conntrack-1.0.7 libnetfilter_cttimeout-1.0.0
++	+$(MAKE) kernel_header version fsbuild
 +ifeq ($(ROUTER_PACKAGE_JOBS),1)
 +	+$(MAKE) router-packages
 +else
-+	+$(MAKE) -j$(ROUTER_PACKAGE_JOBS) PARALLEL_BUILD= router-packages
++	+$(MAKE) -j$(ROUTER_PACKAGE_JOBS) --output-sync=target \
++		PARALLEL_BUILD= router-packages
 +endif
 +
-+router-packages: $(obj-y)
++# These libraries form the shared staging foundation for most HND userspace.
++# Their explicit prerequisites replace ordering that the vendor graph previously
++# obtained only from obj-y's serial list order.  A parallel invocation therefore
++# shares one GNU Make jobserver without allowing a consumer to outrun its staged
++# producer.
++libnetfilter_cttimeout-1.0.0: libmnl-1.0.4
++libdisk: shared nvram$(BCMEX)$(EX7)
++
++ROUTER_FOUNDATION_TARGETS := openssl $(OPENSSL) shared nvram$(BCMEX)$(EX7) \
++	libdisk libnfnetlink-$(NETLINK_LIB_VER) libmnl-1.0.4 \
++	libnetfilter_conntrack-1.0.7 libnetfilter_cttimeout-1.0.0
++ROUTER_PACKAGE_TARGETS := $(filter-out $(ROUTER_FOUNDATION_TARGETS),$(obj-y))
++
++router-foundation: $(ROUTER_FOUNDATION_TARGETS)
++router-packages: router-foundation .WAIT $(ROUTER_PACKAGE_TARGETS)
  else ifeq ($(RTCONFIG_ARM),y)
  all: clean-build kernel_header libc version obj_prelibs kernel $(obj-postlibs)
  else
  all: clean-build kernel_header libc version obj_prelibs kernel $(obj-y)
  endif
-@@ -8079,5 +8093,5 @@
- strongswan: openssl strongswan/Makefile
- 	@$(SEP)
--	$(MAKE) -j 8 -C strongswan
-+	+$(MAKE) $(PARALLEL_BUILD) -C strongswan
- ifneq (,$(filter $(ASUSWRT_BRCM_SDK_VERSION),WIFI7_SDK_20250506 WIFI8_SDK_20251126))
- 	@-patchelf --force-rpath --set-rpath /usr/lib/ipsec strongswan/src/libipsec/.libs/libipsec.so
- 	@-sed -i '/relink_command/d' strongswan/src/libipsec/libipsec.la
+diff --git a/release/src/router/libdisk/Makefile b/release/src/router/libdisk/Makefile
+--- a/release/src/router/libdisk/Makefile
++++ b/release/src/router/libdisk/Makefile
+@@ -89,7 +89,7 @@ test_disk1: test_disk1.o libdisk.so
+ 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+ 
+-test_disk2: test_disk2.o
++test_disk2: test_disk2.o libdisk.so
+ 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+ 
+ ifeq ($(SHARE_STATIC),y)
+diff --git a/release/src/router/calc_nvram/Makefile b/release/src/router/calc_nvram/Makefile
+--- a/release/src/router/calc_nvram/Makefile
++++ b/release/src/router/calc_nvram/Makefile
+@@ -6,6 +6,7 @@ ifeq ($(RTCONFIG_JFFS_NVRAM),y)
+ CACL_FLAGS += -DRTCONFIG_JFFS_NVRAM
+ endif
+ 
++.NOTPARALLEL: all
+ all: clean run_python calc_nvram
+ 
+ calc_nvram: calc_nvram.o
+diff --git a/release/src/router/libwebapi/Makefile b/release/src/router/libwebapi/Makefile
+--- a/release/src/router/libwebapi/Makefile
++++ b/release/src/router/libwebapi/Makefile
+@@ -104,6 +104,7 @@ else
+ endif
+ CFLAGS  += -D$(TARGET_MODEL)
+ 
++.NOTPARALLEL: all
+ all: clean libwebapi.so
+ 
+ # handle prebuilt object here
+diff --git a/release/src/router/mapd/source/Makefile b/release/src/router/mapd/source/Makefile
+--- a/release/src/router/mapd/source/Makefile
++++ b/release/src/router/mapd/source/Makefile
+@@ -169,6 +169,7 @@ else
+ OBJS_MAPD_STEER_LIB += ./mapd_lib/dummy_steer_lib.o
+ endif
+ 
++.NOTPARALLEL: all
+ ifeq ($(CONFIG_MULTIAP),y)
+ all: clean version mapd mapd_cli standalone_bs mapd_user_iface
+ else
+diff --git a/release/src/router/traceroute-2.1.0/Make.rules b/release/src/router/traceroute-2.1.0/Make.rules
+--- a/release/src/router/traceroute-2.1.0/Make.rules
++++ b/release/src/router/traceroute-2.1.0/Make.rules
+@@ -149,7 +149,7 @@ else
+ override LIBS += $(patsubst %,-L%,$(libraries))
+ endif
+ 
+-LIBDEPS = $(filter-out -L%,$(LIBS))
++LIBDEPS = $(filter-out -L% -l%,$(LIBS))
+ 
+ ## Carlos 2016/10/27
+ ifneq ($(HND_ROUTER),y)

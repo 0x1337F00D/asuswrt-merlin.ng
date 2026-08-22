@@ -204,7 +204,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   update probe was rejected with HTTP 422 for both the missing checks and the
   missing PR.
 - [ ] Fix the fast-resume path so unchanged kernel configuration does not force
-  repeated kernel rebuilds.
+  repeated kernel rebuilds. The vendor `bin`/`setprofile` path currently
+  deletes or retimestamps `.config`, and `prek` runs `oldnoconfig`, which
+  retimestamps generated headers. Reuse must be gated by a successful full
+  contract and a kernel-artifact fingerprint; preserving `.config` alone was
+  tested and is insufficient.
 - [x] Record worktree preparation, source adaptation, vendor build and
   post-build gate timings separately in `BUILD-STATE.txt`, in addition to the
   end-to-end duration.
@@ -213,9 +217,13 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   staging duplicates, and repacks without rebuilding kernel or drivers.
 - [ ] Make local ccache optional without a failed pilot attempt, or provision a
   checksummed RAM-local ccache binary. Never write the cache to SSD.
-- [ ] Keep top-level orchestration at `-j1`; only enable package-graph `-j2`
-  after repeated reproducible clean builds. Recursive jobs must share the GNU
-  jobserver instead of spawning independent pools.
+- [x] Keep top-level orchestration at `-j1` and provide an opt-in GNU Make 4.4
+  package DAG with one shared jobserver, an explicit serial foundation and a
+  transitive `.WAIT` barrier. A 16-token build completed with a reference-
+  equivalent rootfs, but was 5.4% slower overall, so the default remains one.
+- [ ] Add phase-local timing around kernel, package foundation, parallel package
+  remainder and image assembly; then benchmark only a small `2/4/8` token
+  sweep. Do not spend full builds testing every package combination.
 - [x] Make one code path own patch application. CI applies the canonical
   `patches/series` exactly once to its prepared source tree; `build.sh` then
   verifies the complete actual source diff (including added files) against

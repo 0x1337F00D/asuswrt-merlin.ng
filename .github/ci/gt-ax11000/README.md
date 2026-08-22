@@ -24,17 +24,21 @@ budget of the standard hosted runner; no self-hosted runner is required.
 
 The SDK top-level build stays at `-j1`. For HND routers, an ephemeral patch
 orders the unsafe router prerequisites into three phases: `clean-build`, then
-the headers/filesystem plus foundational OpenSSL and Netfilter libraries, then
-the package graph. The package graph defaults to one top-level job and retains
-the proven package-internal `PARALLEL_BUILD`; pilots with two top-level jobs
-found undeclared OpenSSL, Netfilter and `libdisk` staging dependencies.
+the headers/filesystem, then a package DAG. The package DAG has a serial
+foundation for OpenSSL, `shared`, NVRAM, `libdisk` and Netfilter staging, a GNU
+Make 4.4 `.WAIT` barrier and a parallel remainder. Explicit edges and local
+serialization cover the races found in `libdisk`, `calc_nvram`, `libwebapi`
+and `mapd`; the traceroute dependency list is also compatible with GNU Make
+4.4.1. The build bootstraps that checksum-pinned Make release into RAM.
 
-`ROUTER_PACKAGE_JOBS=2` remains an explicit experimental mode. In that mode
-`PARALLEL_BUILD` is cleared so recursive packages share the two-job GNU Make
-jobserver rather than creating nested worker pools. It is intentionally not
-enabled in GitHub Actions until the upstream graph has complete dependencies.
-StrongSwan now follows the selected strategy instead of always starting a
-private eight-job pool.
+`ROUTER_PACKAGE_JOBS=N` is an explicit experimental mode and defaults to one.
+When `N` is greater than one, `PARALLEL_BUILD` is cleared so recursive packages
+share one GNU jobserver. StrongSwan and Samba no longer start private eight-job
+pools. A 16-token reference run completed and produced the same rootfs graph as
+the serial reference, but took 719 instead of 682 seconds on the local
+16-thread host. It therefore proves the DAG rather than justifying 16 as a
+default; GitHub Actions remains at one until lower token counts are measured.
+The durable comparison is recorded in `PARALLEL_BUILD_BASELINE.md`.
 
 CI prepares independent Autotools packages with up to four workers and keeps a
 2 GiB `ccache` for the HND cross-compilers. The cache is keyed by toolchain,

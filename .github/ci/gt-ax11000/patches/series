@@ -3,6 +3,7 @@
 local-features.patch
 gt-ax11000-wsl.patch
 fast-parallel-build.patch
+jobserver-recursive-makes.patch
 rust-components.patch
 security-hardening.patch
 wps-shell-hardening.patch

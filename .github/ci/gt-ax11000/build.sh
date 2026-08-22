@@ -32,8 +32,9 @@ Environment overrides:
   ASUSWRT_BUILD_MODE=clean|fast|rust-fast     default: clean
   ASUSWRT_FORCE_PROFILE=0|1                    default: 0; use 1 only after profile changes
   ASUSWRT_HOSTTOOLS=/tmp/path                 default: /tmp/asuswrt-hosttools
+  ASUSWRT_GNU_MAKE_ROOT=/tmp/path             default: /tmp/asuswrt-host-make-4.4.1
   ASUSWRT_MAKE_JOBS=1                         safety-enforced top-level orchestration
-  ROUTER_PACKAGE_JOBS=1                       safe package graph; >1 is experimental
+  ROUTER_PACKAGE_JOBS=N                       shared package-DAG job tokens; default: 1
   ASUSWRT_PREPARE_JOBS=N                      parallel Autotools preparation, default: 4
   ASUSWRT_CCACHE=0|1                          cache HND cross-compiler output, default: 0
   ASUSWRT_CCACHE_DIR=/path                    default: /tmp/asuswrt-ccache
@@ -72,6 +73,12 @@ esac
 TOOLCHAINS="${AM_TOOLCHAINS:-$HOME/am-toolchains}"
 TOOLCHAIN_SRC="$TOOLCHAINS/$TOOLCHAIN_GROUP"
 HOSTTOOLS="${ASUSWRT_HOSTTOOLS:-/tmp/asuswrt-hosttools}"
+GNU_MAKE_VERSION=4.4.1
+GNU_MAKE_SHA256=dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3
+GNU_MAKE_URL="https://ftp.gnu.org/gnu/make/make-$GNU_MAKE_VERSION.tar.gz"
+GNU_MAKE_ROOT="${ASUSWRT_GNU_MAKE_ROOT:-/tmp/asuswrt-host-make-$GNU_MAKE_VERSION}"
+GNU_MAKE_BINDIR="$GNU_MAKE_ROOT/bin"
+GNU_MAKE_BIN="$GNU_MAKE_BINDIR/make"
 APT_CACHE="${ASUSWRT_APT_CACHE:-/tmp/asuswrt-apt}"
 FAKEBIN="${ASUSWRT_FAKEBIN:-/tmp/asuswrt-fakebin}"
 PATCH_FILES=()
@@ -177,6 +184,7 @@ verify_ram_only_paths() {
 	require_tmpfs_path "temporary files" "${TMPDIR:-/tmp}"
 	require_tmpfs_path "Cargo home" "${CARGO_HOME:-$HOME/.cargo}"
 	require_tmpfs_path "host tools" "$HOSTTOOLS"
+	require_tmpfs_path "GNU Make host tool" "$GNU_MAKE_ROOT"
 	require_tmpfs_path "APT cache" "$APT_CACHE"
 	require_tmpfs_path "generated helper bin" "$FAKEBIN"
 	if [ -n "${RUST_TARGET_DIR:-}" ]; then
@@ -186,6 +194,52 @@ verify_ram_only_paths() {
 		require_tmpfs_path "ccache" "$CCACHE_DIR"
 		require_tmpfs_path "ccache toolchain view" "$TOOLCHAIN_VIEW"
 	fi
+}
+
+ensure_gnu_make() {
+	local archive="${TMPDIR:-/tmp}/make-$GNU_MAKE_VERSION.tar.gz"
+	local build_root
+	local source_root
+	local actual_sha256
+
+	if [ -x "$GNU_MAKE_BIN" ] &&
+		[ "$($GNU_MAKE_BIN --version | sed -n '1s/^GNU Make //p')" = "$GNU_MAKE_VERSION" ]; then
+		echo "Reusing GNU Make $GNU_MAKE_VERSION from $GNU_MAKE_BIN"
+		return
+	fi
+	if [ -e "$GNU_MAKE_ROOT" ]; then
+		echo "Existing GNU Make root is incomplete or has the wrong version: $GNU_MAKE_ROOT" >&2
+		exit 1
+	fi
+
+	require_cmd curl
+	require_cmd tar
+	if [ ! -f "$archive" ]; then
+		curl --fail --location --silent --show-error "$GNU_MAKE_URL" --output "$archive"
+	fi
+	actual_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+	if [ "$actual_sha256" != "$GNU_MAKE_SHA256" ]; then
+		echo "GNU Make archive checksum mismatch: $actual_sha256" >&2
+		exit 1
+	fi
+
+	build_root="$(mktemp -d --tmpdir asuswrt-make-build.XXXXXX)"
+	source_root="$build_root/source"
+	mkdir -p "$source_root"
+	tar -xzf "$archive" -C "$source_root" --strip-components=1
+	(
+		cd "$source_root"
+		./configure --prefix="$build_root/install" \
+			--disable-dependency-tracking --without-guile >/dev/null
+		/usr/bin/make -j"$(nproc)" >/dev/null
+		/usr/bin/make install >/dev/null
+	)
+	mv "$build_root/install" "$GNU_MAKE_ROOT"
+	if [ "$($GNU_MAKE_BIN --version | sed -n '1s/^GNU Make //p')" != "$GNU_MAKE_VERSION" ]; then
+		echo "Built GNU Make failed its version check" >&2
+		exit 1
+	fi
+	echo "Built checksum-verified GNU Make $GNU_MAKE_VERSION in RAM"
 }
 
 prepare_ccache_toolchain_view() {
@@ -644,9 +698,18 @@ if [ "$MAKE_JOBS" -ne 1 ]; then
 	exit 2
 fi
 
-if ! [[ "$ROUTER_PACKAGE_JOBS" =~ ^[0-9]+$ ]] || [ "$ROUTER_PACKAGE_JOBS" -ne 1 ]; then
-	echo "ROUTER_PACKAGE_JOBS must remain 1 until repeated clean builds prove the vendor package graph race-free" >&2
+if ! [[ "$ROUTER_PACKAGE_JOBS" =~ ^[0-9]+$ ]] || [ "$ROUTER_PACKAGE_JOBS" -lt 1 ]; then
+	echo "ROUTER_PACKAGE_JOBS must be a positive integer" >&2
 	exit 2
+fi
+
+if [ "$ROUTER_PACKAGE_JOBS" -gt "$(nproc)" ]; then
+	echo "ROUTER_PACKAGE_JOBS cannot exceed the available $(nproc) CPU threads" >&2
+	exit 2
+fi
+
+if [ "$ROUTER_PACKAGE_JOBS" -gt 1 ]; then
+	echo "Experimental parallel router DAG enabled with $ROUTER_PACKAGE_JOBS shared job tokens"
 fi
 
 if ! [[ "$PREPARE_JOBS" =~ ^[0-9]+$ ]] || [ "$PREPARE_JOBS" -lt 1 ]; then
@@ -684,6 +747,9 @@ case "$REQUIRE_TMPFS" in
 		exit 2
 		;;
 esac
+
+ensure_gnu_make
+export PATH="$GNU_MAKE_BINDIR:$PATH"
 
 if [ "$REQUIRE_TMPFS" = "1" ]; then
 	verify_ram_only_paths
@@ -831,6 +897,7 @@ fi
 
 export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC TOOLCHAIN_MOUNT_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
 export MAKE_JOBS ROUTER_PACKAGE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
+export GNU_MAKE_VERSION GNU_MAKE_SHA256 GNU_MAKE_BINDIR GNU_MAKE_BIN
 export DIRECT_TOOLCHAIN CCACHE_ENABLED CCACHE_DIR CCACHE_MAXSIZE CCACHE_PATH_VALUE
 export RUST_REPACK_MAKEFILE RUST_CONSUMER_MANIFEST WEB_PAYLOAD_MANIFEST WEB_SYMLINK_MANIFEST
 export RUST_TOOLCHAIN RUST_TARGET RUST_CPU_FLAGS
@@ -913,7 +980,7 @@ if [ "$CCACHE_ENABLED" = "1" ]; then
 	export CCACHE_UMASK=002
 fi
 export LD_LIBRARY_PATH="/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/lib:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/lib:/opt/toolchains/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/lib:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/lib:/opt/toolchains/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25/usr/lib:$HOSTTOOLS/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-export PATH="$HOME/.cargo/bin:$FAKEBIN:$HOSTTOOLS/usr/bin:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2011.09/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2013.11/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="$GNU_MAKE_BINDIR:$HOME/.cargo/bin:$FAKEBIN:$HOSTTOOLS/usr/bin:/opt/toolchains/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:/opt/toolchains/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1/usr/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2011.09/bin:$TOOLCHAINS/brcm-arm-sdk/hndtools-armeabi-2013.11/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 cd "$ROOT/$SDK_PATH"
 make_args=()
@@ -1083,6 +1150,9 @@ if [ "$build_rc" -eq 0 ]; then
 		echo "rust_toolchain=$RUST_TOOLCHAIN"
 		echo "rust_target=$RUST_TARGET"
 		echo "rust_cpu_flags=$RUST_CPU_FLAGS"
+		echo "gnu_make_version=$GNU_MAKE_VERSION"
+		echo "gnu_make_sha256=$GNU_MAKE_SHA256"
+		echo "router_package_jobs=$ROUTER_PACKAGE_JOBS"
 		echo "build_mode=$BUILD_MODE"
 		echo "force_profile=$FORCE_PROFILE"
 		echo "firmware_sha256=$(sha256sum "$output_image" | awk '{print $1}')"
