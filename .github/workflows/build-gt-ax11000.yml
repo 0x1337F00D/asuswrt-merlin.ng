@@ -13,10 +13,6 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - release/**
-      - .github/ci/gt-ax11000/**
-      - .github/workflows/**
   workflow_call:
   workflow_dispatch:
   schedule:
