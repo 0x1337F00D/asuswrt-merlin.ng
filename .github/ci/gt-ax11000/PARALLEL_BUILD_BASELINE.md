@@ -82,9 +82,9 @@ reference, required hosted CI now uses `ROUTER_PACKAGE_JOBS=1`. Parallel mode
 remains an opt-in research path; a future version must use a positive safe
 whitelist rather than treating the full vendor list as a DAG.
 
-The remaining gate is a hosted GitHub Actions serial cold run followed by an exact
-cache-hit run. CI metadata records runner CPU count, router tokens and both
-cache-hit states so the hosted wall-time result is auditable.
+The hosted GitHub Actions serial cold run and exact kernel-cache reuse run now
+provide the auditable reference. CI metadata records runner CPU count, router
+tokens and all cache-hit states.
 
 The hosted serial cold run completed successfully with every firmware and
 runtime gate green and saved a 528 MiB exact kernel archive. Its first reuse
@@ -101,3 +101,12 @@ Broadcom `SRCBASE/.config` profile symlink. That symlink is not a reusable
 kernel output and is now rebuilt on every invocation; only the actual kernel
 configuration remains protected. The changed patch contract intentionally
 uses a new exact cache key.
+
+The final hosted comparison showed that kernel-only reuse does not shorten the
+four-vCPU runner's critical path: the cold reference already served 21,430 of
+21,608 cacheable compiler calls (99.18%) from `ccache`. Required CI therefore
+adds an exact completed-vendor-tree cache and uses the already gated
+`rust-fast` relink/repack path for cache-compatible Rust-only changes. This
+removes Clean/Configure/Link work from the common iteration without enabling
+the unsafe package DAG. Scheduled and manually forced clean runs remain the
+release reference.

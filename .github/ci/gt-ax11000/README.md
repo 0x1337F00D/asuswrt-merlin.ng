@@ -41,7 +41,7 @@ different implicit-order failures in Netfilter, `lldpd`, and `hub-ctrl`/libusb.
 Required CI therefore remains at the faster stable serial default. Full-DAG
 parallelism stays available only as a manual experiment until a positive safe
 package whitelist passes repeated clean-build and extracted-rootfs equivalence
-gates. The exact kernel cache is the supported CI speedup.
+gates. Reusable, contract-bound build state is the supported CI speedup.
 The durable comparison is recorded in `PARALLEL_BUILD_BASELINE.md`.
 
 CI keeps a 2 GiB `ccache` for the HND cross-compilers. The cache is keyed by toolchain,
@@ -59,6 +59,18 @@ kernel archive. On an exact hit the redundant in-script full-tree diff is
 disabled because the restored tracked kernel build outputs are expected to
 change that diff; the cache contract and explicit artifact checks still fail
 closed, and the pre-restore lock attestation is embedded in build metadata.
+
+The hosted runner already reaches roughly 99% cache hits for cacheable C/C++
+compilations, so restoring only the kernel did not reduce its critical path.
+CI therefore also stores the exact completed vendor build tree. Its key binds
+the upstream and toolchain revisions, runner image, Rust target, complete patch
+series, input lock, repack rules and build driver, but deliberately excludes
+Rust source. A hit selects `rust-fast`: the current Rust tree is synchronized,
+all five firmware consumers are rebuilt and checksum-bound into the rootfs, and
+the image is repacked and verified. Patch, profile, toolchain, runner-image or
+upstream changes miss the cache and take the normal clean path. The weekly
+scheduled build and a manual `force_clean` dispatch always retain the clean
+release gate.
 
 ## Fast Rust iteration
 
