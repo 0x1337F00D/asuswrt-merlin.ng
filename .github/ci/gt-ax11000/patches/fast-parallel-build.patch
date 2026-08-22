@@ -6,6 +6,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 -all: clean-build kernel_header version fsbuild $(obj-y)
 +ROUTER_PACKAGE_JOBS ?= 1
 +.PHONY: router-foundation router-packages
++.NOTPARALLEL: router-foundation
 +
 +all:
 +	+$(MAKE) clean-build

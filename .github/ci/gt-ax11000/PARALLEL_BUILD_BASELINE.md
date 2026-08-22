@@ -59,6 +59,14 @@ already invokes `$(OPENSSL)`, so listing both as parallel foundation targets
 could compile `openssl-1.1` twice and race on `.d.tmp` files. The foundation
 now contains only the public `openssl` target.
 
+The first genuinely clean hosted run exposed a second hidden ordering
+assumption that retained local stage files had masked: Netfilter configure
+tests could overlap the shared OpenSSL/Netfilter staging producers and fail to
+link their probe executables. `router-foundation` is therefore explicitly
+`.NOTPARALLEL`; only the much larger package remainder receives the shared
+four-token jobserver. This keeps the high-value parallel region while making
+the common stage a deterministic prefix.
+
 The remaining gate is a hosted GitHub Actions cold run followed by an exact
 cache-hit run. CI metadata records runner CPU count, router tokens and both
 cache-hit states so the hosted wall-time result is auditable.
