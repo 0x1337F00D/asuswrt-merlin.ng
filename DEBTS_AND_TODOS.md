@@ -196,9 +196,13 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `upstream-sync/<sha>` pull request instead of merging `main`, and run separate
   required `Rust`, `Security overlay` and `Firmware` checks for vendor,
   overlay, workflow and lock changes.
-- [ ] Protect GitHub `main` against direct/force pushes and deletion; require
-  the three GT-AX11000 checks, one review and code-owner review. Repository
-  governance files are present, but remote enforcement must be verified.
+- [x] Protect GitHub `main` with separate active rulesets: Rust, Security
+  overlay and Firmware checks from GitHub Actions are mandatory without a
+  bypass; deletion and force-push are blocked. A second rule requires a PR,
+  one review, code-owner review and resolved threads. The sole-maintainer
+  bypass is limited to PRs and cannot bypass build gates. A no-content direct
+  update probe was rejected with HTTP 422 for both the missing checks and the
+  missing PR.
 - [ ] Fix the fast-resume path so unchanged kernel configuration does not force
   repeated kernel rebuilds.
 - [x] Record worktree preparation, source adaptation, vendor build and
@@ -220,8 +224,14 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   cache to the overlay, upstream, toolchain and Rust identities. Restored Cargo
   fingerprints are safe because every firmware consumer recipe is forced and
   Cargo revalidates the current sources before Make consumes an artifact.
-- [ ] Confirm the GitHub-hosted public runner pilot (no self-hosted runner),
-  including peak disk use, runtime, cache effectiveness, and artifact upload.
+- [x] Confirm the standard GitHub-hosted `ubuntu-24.04` public-runner pilot;
+  no self-hosted runner is configured. The first full run completed in about
+  39.5 minutes, retained at least 76 GiB free, peaked at 8.2 GiB source plus
+  1.2 GiB toolchains, restored 92 MiB Rust and 410 MiB compiler caches, reached
+  98.7% ccache hits for cacheable calls and uploaded a 72.4 MB artifact. The
+  final locked run passed the separate Rust, Security overlay and Firmware
+  jobs and uploaded artifact digest
+  `sha256:6d5dfd7876e1276ba6306b4a444c90476182435820292a92a7b8f39ecb9fa283`.
 
 ## Trial and recovery debt
 
