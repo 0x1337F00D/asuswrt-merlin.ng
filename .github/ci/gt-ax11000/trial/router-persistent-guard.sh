@@ -7,33 +7,20 @@ export PATH
 TRIAL_DIR=/data/firmware-trial-rollback
 STATE_FILE="$TRIAL_DIR/state"
 LOG_FILE="$TRIAL_DIR/guard.log"
-WEB_PAYLOAD_MANIFEST_SHA256=94a4622ba0ce9a51f808f9105e6f9520016dd639db06c0ce348d79eeb3c17ed8
+PROMOTION_HOLD_FILE="$TRIAL_DIR/hold-promotion"
+WEB_PAYLOAD_MANIFEST_SHA256=194837804834e2e9078452ec3d039d2caa260f8989fa582619a2855f315ac627
 WEB_SYMLINK_MANIFEST_SHA256=e651541e58c5ae985d833ccc6782752281b2c4f6f8d0b2782bf0000fc5f6b0bf
 
-set_boot_roles() {
-	bootstate=$(/bin/bcm_bootstate 2>/dev/null) || return 1
-	case "$bootstate" in
-		*"Booted Partition: First"*)
-			CANDIDATE_STATE=BOOT_SET_PART1_IMAGE
-			FALLBACK_STATE=BOOT_SET_PART2_IMAGE
-			FALLBACK_ONCE_STATE=BOOT_SET_PART2_IMAGE_ONCE
-			CANDIDATE_PARTITION=PART1
-			CANDIDATE_BOOT_LABEL=First
-			FALLBACK_PARTITION=PART2
-			;;
-		*"Booted Partition: Second"*)
-			CANDIDATE_STATE=BOOT_SET_PART2_IMAGE
-			FALLBACK_STATE=BOOT_SET_PART1_IMAGE
-			FALLBACK_ONCE_STATE=BOOT_SET_PART1_IMAGE_ONCE
-			CANDIDATE_PARTITION=PART2
-			CANDIDATE_BOOT_LABEL=Second
-			FALLBACK_PARTITION=PART1
-			;;
-		*)
-			return 1
-			;;
-	esac
-}
+# This guard deliberately has asymmetric roles. The known-good image remains
+# on partition 2 and the candidate is installed on partition 1. Inferring the
+# roles from the currently booted slot lets a baseline boot re-arm an unsafe
+# candidate, defeating the rollback guarantee.
+CANDIDATE_STATE=BOOT_SET_PART1_IMAGE
+FALLBACK_STATE=BOOT_SET_PART2_IMAGE
+FALLBACK_ONCE_STATE=BOOT_SET_PART2_IMAGE_ONCE
+CANDIDATE_PARTITION=PART1
+CANDIDATE_BOOT_LABEL=First
+FALLBACK_PARTITION=PART2
 
 log_guard() {
 	mkdir -p "$TRIAL_DIR" 2>/dev/null || return 0
@@ -138,12 +125,11 @@ healthy() {
 			}' || return 1
 	done
 	! dmesg | grep -Eiq \
-		'sigill|illegal instruction|undefined instruction|segmentation fault|segfault|kernel oops|kernel panic'
+		'sigill|illegal instruction|undefined instruction|segmentation fault|segfault|potentially unexpected fatal signal|fatal signal [0-9]+|kernel oops|kernel panic'
 }
 
 case "${1:-}" in
 	arm)
-		set_boot_roles || exit 1
 		is_candidate_identity || exit 0
 		if bootstate_has "$CANDIDATE_STATE"; then
 			/bin/bcm_bootstate "$FALLBACK_ONCE_STATE" >/dev/null || exit 1
@@ -152,7 +138,16 @@ case "${1:-}" in
 		fi
 		;;
 	promote)
-		set_boot_roles || exit 1
+		# A host-driven one-shot trial may deliberately keep the candidate
+		# running for observation while requiring every subsequent reboot to
+		# return to the known-good slot.  A persistent hold is fail-safe: it
+		# can only block promotion, never select the candidate.
+		if [ -e "$PROMOTION_HOLD_FILE" ] && is_candidate_identity; then
+			/bin/bcm_bootstate "$FALLBACK_STATE" >/dev/null || exit 1
+			set_state "PROMOTION_HELD_FALLBACK_${FALLBACK_PARTITION}"
+			log_guard hold "fallback-${FALLBACK_PARTITION}-persistent"
+			exit 0
+		fi
 		if healthy; then
 			/bin/bcm_bootstate "$CANDIDATE_STATE" >/dev/null || exit 1
 			set_state "PROMOTED_UI_NVRAM_${CANDIDATE_PARTITION}"

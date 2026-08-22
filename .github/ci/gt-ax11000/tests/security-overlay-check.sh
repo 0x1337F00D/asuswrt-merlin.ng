@@ -31,18 +31,34 @@ httpd_stubs="$router/httpd/httpd_compat_stubs.c"
 web="$router/httpd/web.c"
 rc_stubs="$router/rc/rc_compat_stubs.c"
 firewall="$router/rc/firewall.c"
+lan="$router/rc/lan.c"
+init="$router/rc/init.c"
+services="$router/rc/services.c"
+watchdog="$router/rc/watchdog.c"
 ipsec="$router/rc/rc_ipsec.c"
 wireguard="$router/rc/wireguard.c"
 wps="$router/rc/sysdeps/wps-broadcom.c"
 openvpn="$router/libovpn/openvpn_options.c"
+openvpn_setup="$router/libovpn/openvpn_setup.c"
+rstats_makefile="$router/rstats/Makefile"
+model_config="$router/config_gt-ax11000"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
 security_rust="$router/rust-components/router-security/src/lib.rs"
 policy_rust="$router/rust-components/router-policy/src/vpn.rs"
 wireless_ui="$router/www/Advanced_WAdvanced_Content.asp"
+wifi_base="$root/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools"
 
-for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$ipsec" \
+for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
+	"$services" "$watchdog" "$ipsec" \
 	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
-	"$policy_rust" "$wireless_ui"; do
+	"$policy_rust" "$wireless_ui" "$openvpn_setup" \
+	"$rstats_makefile" "$model_config" \
+	"$wifi_base/hostapd/src/common/sae.c" \
+	"$wifi_base/hostapd/src/radius/radius.c" \
+	"$wifi_base/hostapd/src/rsn_supp/wpa.c" \
+	"$wifi_base/wpa_supplicant/src/common/sae.c" \
+	"$wifi_base/wpa_supplicant/src/radius/radius.c" \
+	"$wifi_base/wpa_supplicant/src/rsn_supp/wpa.c"; do
 	test -f "$file" || { echo "security input is missing: $file" >&2; exit 1; }
 done
 
@@ -68,7 +84,21 @@ require_text "$wireless_ui" 'Länderprofil anwenden'
 require_text "$wireless_ui" '(!acknowledgement || !acknowledgement.checked)'
 reject_text "$wireless_ui" 'regionControl.value == currentRegion'
 reject_text "$wireless_ui" 'Für ein neues Profil bitte ein anderes Land wählen.'
-require_text "$wireless_ui" 'aktuelle Leistungseinstellung='
+require_text "$wireless_ui" 'Treiberanforderung='
+require_text "$wireless_ui" 'regulatory_lab_country_codes = ("AD AF AG'
+require_text "$wireless_ui" 'ALL (Testlabor – Broadcom #a)'
+country_codes=$(sed -n 's/^var regulatory_lab_country_codes = ("\([A-Z ]*\)").*/\1/p' "$wireless_ui")
+country_count=$(wc -w <<<"$country_codes")
+unique_country_count=$(tr ' ' '\n' <<<"$country_codes" | sort -u | wc -l)
+if [ "$country_count" -lt 180 ] || [ "$country_count" -ne "$unique_country_count" ]; then
+	echo "regulatory test-lab country list is incomplete or contains duplicates" >&2
+	exit 1
+fi
+if grep -qw ALL <<<"$country_codes" ||
+   [ "$(grep -Fc 'new Option("ALL (Testlabor – Broadcom #a)"' "$wireless_ui")" -ne 1 ]; then
+	echo "regulatory test-lab selector must contain exactly one synthetic ALL profile" >&2
+	exit 1
+fi
 require_text "$httpd_stubs" 'websGetVar(stream, "country", "")'
 require_text "$httpd_stubs" 'websGetVar(stream, "confirmation", "")'
 require_text "$httpd_stubs" 'websGetVar(stream, "acknowledge_only", "0")'
@@ -80,10 +110,29 @@ reject_text "$httpd_stubs" 'nvram_set("wl0_chlist"'
 reject_text "$httpd_stubs" 'nvram_set("0:maxp'
 require_text "$httpd_stubs" 'nvram_set("rust_regulatory_testlab_ack_v1", "1");'
 require_text "$httpd_stubs" 'nvram_commit();'
-for unit in 0 1 2; do
-	require_text "$httpd_stubs" "nvram_set(\"${unit}:ccode\", country);"
-	require_text "$httpd_stubs" "nvram_set(\"wl${unit}_txpower\", \"100\");"
-	require_text "$httpd_stubs" "nvram_unset(\"wl${unit}_chlist\");"
+reject_text "$httpd_stubs" 'nvram_set("wl0_country_code"'
+reject_text "$httpd_stubs" 'nvram_set("wl0_txpower"'
+require_text "$lan" 'rust_regulatory_profile_kind(country)'
+require_text "$lan" 'driver_country = kind == 2 ? "#a" : country;'
+require_text "$lan" 'txpower = kind == 2 ? "500" : "100";'
+require_text "$lan" 'apply_regulatory_testlab_profile();'
+require_text "$init" 'apply_regulatory_testlab_profile();'
+require_text "$security_rust" 'pub unsafe extern "C" fn rust_regulatory_profile_kind'
+require_text "$services" 'suspended bsd under regulatory test-lab ALL profile'
+require_text "$services" 'suspended roamast under regulatory test-lab ALL profile'
+require_text "$watchdog" 'if (nvram_match("location_code", "ALL"))'
+restart_defaults_line=$(grep -nF 'wl_defaults();' "$lan" | tail -1 | cut -d: -f1)
+restart_profile_line=$(grep -nF $'\tapply_regulatory_testlab_profile();' "$lan" | tail -1 | cut -d: -f1)
+restart_start_line=$(grep -nF $'\tstart_lan_wl();' "$lan" | tail -1 | cut -d: -f1)
+if [ -z "$restart_defaults_line" ] || [ -z "$restart_profile_line" ] ||
+   [ -z "$restart_start_line" ] ||
+   [ "$restart_defaults_line" -ge "$restart_profile_line" ] ||
+   [ "$restart_profile_line" -ge "$restart_start_line" ]; then
+	echo "regulatory profile must be re-derived after wl_defaults and before start_lan_wl" >&2
+	exit 1
+fi
+for protected in '"0:ccode"' '"2:ccode"' '"wl0_txpower"' '"wl2_chlist"'; do
+	require_text "$lan" "$protected"
 done
 for protected in 'b"0:ccode"' 'b"2:maxp5ga2"' 'b"pci/2/1/maxp2ga0"' \
 	'b"wl0_txpower"' 'b"wl2_chlist"'; do
@@ -92,12 +141,16 @@ done
 
 # The effective firewall is checked after custom/VPN hooks and forwarding is
 # enabled only after that check. Failures install the emergency WAN deny.
-require_text "$firewall" 'rust_validate_effective_firewall_files'
+require_text "$firewall" 'rust_validate_effective_firewall_policy_files'
+require_text "$firewall" '#define CODEX_WAN_GUARD "CODEX_WAN_GUARD"'
+require_text "$firewall" 'install_wan_admin_guard(wan_if)'
 require_text "$firewall" 'firewall_enter_fail_closed();'
 custom_line=$(grep -nF 'run_custom_script("firewall-start"' "$firewall" | tail -1 | cut -d: -f1)
+guard_line=$(grep -nF '!install_wan_admin_guard(wan_if)' "$firewall" | tail -1 | cut -d: -f1)
 validation_line=$(grep -nF '!validate_effective_firewall_policy()' "$firewall" | tail -1 | cut -d: -f1)
 forward_line=$(grep -nF $'\t\tenable_ip_forward();' "$firewall" | tail -1 | cut -d: -f1)
-if ! [ "$custom_line" -lt "$validation_line" ] || ! [ "$validation_line" -lt "$forward_line" ]; then
+if ! [ "$custom_line" -lt "$guard_line" ] || ! [ "$guard_line" -lt "$validation_line" ] || \
+   ! [ "$validation_line" -lt "$forward_line" ]; then
 	echo "firewall validation/forwarding order is unsafe" >&2
 	exit 1
 fi
@@ -121,10 +174,30 @@ require_text "$httpd_rust" 'pub unsafe extern "C" fn rust_openvpn_import_option_
 require_text "$security_rust" 'pub unsafe extern "C" fn rust_openvpn_import_option_allowed'
 require_text "$policy_rust" 'pub enum OpenVpnImportDirective'
 require_text "$policy_rust" 'openvpn_import_directive_allowed'
+require_text "$policy_rust" 'openvpn_custom_config_allowed'
 reject_text "$openvpn" 'safe_imported_custom_option'
 reject_text "$openvpn" 'safe_modern_cipher_list'
 reject_text "$openvpn" 'safe_modern_digest'
 require_text "$openvpn" 'OpenVPN import disabled compression'
 require_text "$openvpn" 'OpenVPN import ignored unsafe or unsupported directive'
+require_text "$openvpn_setup" 'OVPN_HARDENED_DATA_CIPHERS'
+require_text "$openvpn_setup" 'rust_openvpn_custom_config_allowed'
+require_text "$openvpn_setup" 'allow-compression no'
+require_text "$openvpn_setup" 'tls-version-min 1.2'
+require_text "$openvpn_setup" 'remote-cert-tls server'
+reject_text "$openvpn_setup" 'data-ciphers-fallback AES-128-CBC'
+
+# The legacy ISP-meter writes JFFS state and is not a GT-AX11000 feature.
+# Cargo may enable it only for model profiles that explicitly select it.
+require_text "$rstats_makefile" 'ifeq ($(RTCONFIG_ISP_METER),y)'
+require_text "$rstats_makefile" 'RUST_RSTAT_FEATURES := --features isp-meter'
+require_text "$model_config" '# RTCONFIG_ISP_METER is not set'
+
+# Security fixes are backported into both duplicate vendor trees.
+for wifi_tree in hostapd wpa_supplicant; do
+	require_text "$wifi_base/$wifi_tree/src/common/sae.c" 'dragonfly_sqrt(sae->tmp->ec, y, y)'
+	require_text "$wifi_base/$wifi_tree/src/radius/radius.c" 'attr->length != sizeof(*attr) + MD5_MAC_LEN'
+	require_text "$wifi_base/$wifi_tree/src/rsn_supp/wpa.c" 'sm->network_ctx, sm->key_mgmt'
+done
 
 echo "security overlay invariants verified"

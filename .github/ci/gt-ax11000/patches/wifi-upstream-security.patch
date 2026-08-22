@@ -1,0 +1,1135 @@
+# Backports from upstream hostapd/wpa_supplicant security advisories 2022-1,
+# 2026-2 and 2026-5. The vendor SDK carries separate hostapd and
+# wpa_supplicant copies, so the audited changes are intentionally duplicated.
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.c
+index 1ab5e5ebf05..c91b31fce4c 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.c
+@@ -206,3 +206,37 @@ int dragonfly_generate_scalar(const struct crypto_bignum *order,
+ 		   "dragonfly: Unable to get randomness for own scalar");
+ 	return -1;
+ }
++
++
++/* res = sqrt(val) */
++int dragonfly_sqrt(struct crypto_ec *ec, const struct crypto_bignum *val,
++		   struct crypto_bignum *res)
++{
++	const struct crypto_bignum *prime;
++	struct crypto_bignum *tmp, *one;
++	int ret = 0;
++	u8 prime_bin[DRAGONFLY_MAX_ECC_PRIME_LEN];
++	size_t prime_len;
++
++	/* For prime p such that p = 3 mod 4, sqrt(w) = w^((p+1)/4) mod p */
++
++	prime = crypto_ec_get_prime(ec);
++	prime_len = crypto_ec_prime_len(ec);
++	tmp = crypto_bignum_init();
++	one = crypto_bignum_init_uint(1);
++
++	if (crypto_bignum_to_bin(prime, prime_bin, sizeof(prime_bin),
++				 prime_len) < 0 ||
++	    (prime_bin[prime_len - 1] & 0x03) != 3 ||
++	    !tmp || !one ||
++	    /* tmp = (p+1)/4 */
++	    crypto_bignum_add(prime, one, tmp) < 0 ||
++	    crypto_bignum_rshift(tmp, 2, tmp) < 0 ||
++	    /* res = sqrt(val) */
++	    crypto_bignum_exptmod(val, tmp, prime, res) < 0)
++		ret = -1;
++
++	crypto_bignum_deinit(tmp, 0);
++	crypto_bignum_deinit(one, 0);
++	return ret;
++}
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.h b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.h
+index ec3dd593eda..84d67f575c5 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.h
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/dragonfly.h
+@@ -27,5 +27,7 @@ int dragonfly_generate_scalar(const struct crypto_bignum *order,
+ 			      struct crypto_bignum *_rand,
+ 			      struct crypto_bignum *_mask,
+ 			      struct crypto_bignum *scalar);
++int dragonfly_sqrt(struct crypto_ec *ec, const struct crypto_bignum *val,
++		   struct crypto_bignum *res);
+ 
+ #endif /* DRAGONFLY_H */
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/sae.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/sae.c
+index 8e97a3ee4c5..39600e516d3 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/sae.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/common/sae.c
+@@ -279,14 +279,16 @@ static int sae_derive_pwe_ecc(struct sae_data *sae, const u8 *addr1,
+ 	int pwd_seed_odd = 0;
+ 	u8 prime[SAE_MAX_ECC_PRIME_LEN];
+ 	size_t prime_len;
+-	struct crypto_bignum *x = NULL, *qr = NULL, *qnr = NULL;
++	struct crypto_bignum *x = NULL, *y = NULL, *qr = NULL, *qnr = NULL;
+ 	u8 x_bin[SAE_MAX_ECC_PRIME_LEN];
+ 	u8 x_cand_bin[SAE_MAX_ECC_PRIME_LEN];
+ 	u8 qr_bin[SAE_MAX_ECC_PRIME_LEN];
+ 	u8 qnr_bin[SAE_MAX_ECC_PRIME_LEN];
++	u8 x_y[2 * SAE_MAX_ECC_PRIME_LEN];
+ 	int res = -1;
+ 	u8 found = 0; /* 0 (false) or 0xff (true) to be used as const_time_*
+ 		       * mask */
++	unsigned int is_eq;
+ 
+ 	os_memset(x_bin, 0, sizeof(x_bin));
+ 
+@@ -395,25 +397,42 @@ static int sae_derive_pwe_ecc(struct sae_data *sae, const u8 *addr1,
+ 		goto fail;
+ 	}
+ 
+-	if (!sae->tmp->pwe_ecc)
+-		sae->tmp->pwe_ecc = crypto_ec_point_init(sae->tmp->ec);
+-	if (!sae->tmp->pwe_ecc)
+-		res = -1;
+-	else
+-		res = crypto_ec_point_solve_y_coord(sae->tmp->ec,
+-						    sae->tmp->pwe_ecc, x,
+-						    pwd_seed_odd);
+-	if (res < 0) {
+-		/*
+-		 * This should not happen since we already checked that there
+-		 * is a result.
+-		 */
++	/* y = sqrt(x^3 + ax + b) mod p
++	 * if LSB(save) == LSB(y): PWE = (x, y)
++	 * else: PWE = (x, p - y)
++	 *
++	 * Calculate y and the two possible values for PWE and after that,
++	 * use constant time selection to copy the correct alternative.
++	 */
++	y = crypto_ec_point_compute_y_sqr(sae->tmp->ec, x);
++	if (!y ||
++	    dragonfly_sqrt(sae->tmp->ec, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y, SAE_MAX_ECC_PRIME_LEN,
++				 prime_len) < 0 ||
++	    crypto_bignum_sub(sae->tmp->prime, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y + SAE_MAX_ECC_PRIME_LEN,
++				 SAE_MAX_ECC_PRIME_LEN, prime_len) < 0) {
+ 		wpa_printf(MSG_DEBUG, "SAE: Could not solve y");
++		goto fail;
++	}
++
++	is_eq = const_time_eq(pwd_seed_odd, x_y[prime_len - 1] & 0x01);
++	const_time_select_bin(is_eq, x_y, x_y + SAE_MAX_ECC_PRIME_LEN,
++			      prime_len, x_y + prime_len);
++	os_memcpy(x_y, x_bin, prime_len);
++	wpa_hexdump_key(MSG_DEBUG, "SAE: PWE", x_y, 2 * prime_len);
++	crypto_ec_point_deinit(sae->tmp->pwe_ecc, 1);
++	sae->tmp->pwe_ecc = crypto_ec_point_from_bin(sae->tmp->ec, x_y);
++	if (!sae->tmp->pwe_ecc) {
++		wpa_printf(MSG_DEBUG, "SAE: Could not generate PWE");
++		res = -1;
+ 	}
+ 
+ fail:
++	forced_memzero(x_y, sizeof(x_y));
+ 	crypto_bignum_deinit(qr, 0);
+ 	crypto_bignum_deinit(qnr, 0);
++	crypto_bignum_deinit(y, 1);
+ 	os_free(dummy_password);
+ 	bin_clear_free(tmp_password, password_len);
+ 	crypto_bignum_deinit(x, 1);
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto.h b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto.h
+index b6e4f64f71b..6938adfd175 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto.h
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto.h
+@@ -513,6 +513,13 @@ struct crypto_bignum * crypto_bignum_init(void);
+  */
+ struct crypto_bignum * crypto_bignum_init_set(const u8 *buf, size_t len);
+ 
++/**
++ * crypto_bignum_init_set - Allocate memory for bignum and set the value (uint)
++ * @val: Value to set
++ * Returns: Pointer to allocated bignum or %NULL on failure
++ */
++struct crypto_bignum * crypto_bignum_init_uint(unsigned int val);
++
+ /**
+  * crypto_bignum_deinit - Free bignum
+  * @n: Bignum from crypto_bignum_init() or crypto_bignum_init_set()
+@@ -607,6 +614,19 @@ int crypto_bignum_div(const struct crypto_bignum *a,
+ 		      const struct crypto_bignum *b,
+ 		      struct crypto_bignum *c);
+ 
++/**
++ * crypto_bignum_addmod - d = a + b (mod c)
++ * @a: Bignum
++ * @b: Bignum
++ * @c: Bignum
++ * @d: Bignum; used to store the result of (a + b) % c
++ * Returns: 0 on success, -1 on failure
++ */
++int crypto_bignum_addmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 const struct crypto_bignum *c,
++			 struct crypto_bignum *d);
++
+ /**
+  * crypto_bignum_mulmod - d = a * b (mod c)
+  * @a: Bignum
+@@ -620,6 +640,28 @@ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 const struct crypto_bignum *c,
+ 			 struct crypto_bignum *d);
+ 
++/**
++ * crypto_bignum_sqrmod - c = a^2 (mod b)
++ * @a: Bignum
++ * @b: Bignum
++ * @c: Bignum; used to store the result of a^2 % b
++ * Returns: 0 on success, -1 on failure
++ */
++int crypto_bignum_sqrmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 struct crypto_bignum *c);
++
++/**
++ * crypto_bignum_sqrtmod - returns sqrt(a) (mod b)
++ * @a: Bignum
++ * @b: Bignum
++ * @c: Bignum; used to store the result
++ * Returns: 0 on success, -1 on failure
++ */
++int crypto_bignum_sqrtmod(const struct crypto_bignum *a,
++			  const struct crypto_bignum *b,
++			  struct crypto_bignum *c);
++
+ /**
+  * crypto_bignum_rshift - r = a >> n
+  * @a: Bignum
+@@ -726,6 +768,9 @@ const struct crypto_bignum * crypto_ec_get_prime(struct crypto_ec *e);
+  */
+ const struct crypto_bignum * crypto_ec_get_order(struct crypto_ec *e);
+ 
++const struct crypto_bignum * crypto_ec_get_a(struct crypto_ec *e);
++const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e);
++
+ /**
+  * struct crypto_ec_point - Elliptic curve point
+  *
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_openssl.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_openssl.c
+index c3c9358eaf9..47d5518ce7e 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_openssl.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_openssl.c
+@@ -1219,6 +1219,24 @@ struct crypto_bignum * crypto_bignum_init_set(const u8 *buf, size_t len)
+ 	return (struct crypto_bignum *) bn;
+ }
+ 
++struct crypto_bignum * crypto_bignum_init_uint(unsigned int val)
++{
++	BIGNUM *bn;
++
++	if (TEST_FAIL())
++		return NULL;
++
++	bn = BN_new();
++	if (!bn)
++		return NULL;
++	if (BN_set_word(bn, val) != 1) {
++		BN_free(bn);
++		return NULL;
++	}
++	return (struct crypto_bignum *) bn;
++}
++
++
+ void crypto_bignum_deinit(struct crypto_bignum *n, int clear)
+ {
+ 	if (clear)
+@@ -1376,6 +1394,28 @@ int crypto_bignum_div(const struct crypto_bignum *a,
+ 	return res ? 0 : -1;
+ }
+ 
++int crypto_bignum_addmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 const struct crypto_bignum *c,
++			 struct crypto_bignum *d)
++{
++	int res;
++	BN_CTX *bnctx;
++
++	if (TEST_FAIL())
++		return -1;
++
++	bnctx = BN_CTX_new();
++	if (!bnctx)
++		return -1;
++	res = BN_mod_add((BIGNUM *) d, (const BIGNUM *) a, (const BIGNUM *) b,
++			 (const BIGNUM *) c, bnctx);
++	BN_CTX_free(bnctx);
++
++	return res ? 0 : -1;
++}
++
++
+ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 const struct crypto_bignum *b,
+ 			 const struct crypto_bignum *c,
+@@ -1398,6 +1438,48 @@ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 	return res ? 0 : -1;
+ }
+ 
++int crypto_bignum_sqrmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 struct crypto_bignum *c)
++{
++	int res;
++	BN_CTX *bnctx;
++
++	if (TEST_FAIL())
++		return -1;
++
++	bnctx = BN_CTX_new();
++	if (!bnctx)
++		return -1;
++	res = BN_mod_sqr((BIGNUM *) c, (const BIGNUM *) a, (const BIGNUM *) b,
++			 bnctx);
++	BN_CTX_free(bnctx);
++
++	return res ? 0 : -1;
++}
++
++
++int crypto_bignum_sqrtmod(const struct crypto_bignum *a,
++			  const struct crypto_bignum *b,
++			  struct crypto_bignum *c)
++{
++	BN_CTX *bnctx;
++	BIGNUM *res;
++
++	if (TEST_FAIL())
++		return -1;
++
++	bnctx = BN_CTX_new();
++	if (!bnctx)
++		return -1;
++	res = BN_mod_sqrt((BIGNUM *) c, (const BIGNUM *) a, (const BIGNUM *) b,
++			  bnctx);
++	BN_CTX_free(bnctx);
++
++	return res ? 0 : -1;
++}
++
++
+ int crypto_bignum_rshift(const struct crypto_bignum *a, int n,
+ 			 struct crypto_bignum *r)
+ {
+@@ -1594,6 +1676,18 @@ const struct crypto_bignum * crypto_ec_get_order(struct crypto_ec *e)
+ 	return (const struct crypto_bignum *) e->order;
+ }
+ 
++const struct crypto_bignum * crypto_ec_get_a(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) e->a;
++}
++
++
++const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) e->b;
++}
++
++
+ void crypto_ec_point_deinit(struct crypto_ec_point *p, int clear)
+ {
+ 	if (clear)
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_wolfssl.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_wolfssl.c
+index d76e2f3b689..f836b9f88cf 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_wolfssl.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/crypto/crypto_wolfssl.c
+@@ -988,6 +988,26 @@ struct crypto_bignum * crypto_bignum_init_set(const u8 *buf, size_t len)
+ 	return (struct crypto_bignum *) a;
+ }
+ 
++struct crypto_bignum * crypto_bignum_init_uint(unsigned int val)
++{
++	mp_int *a;
++
++	if (TEST_FAIL())
++		return NULL;
++
++	a = (mp_int *) crypto_bignum_init();
++	if (!a)
++		return NULL;
++
++	if (mp_set_int(a, val) != MP_OKAY) {
++		os_free(a);
++		a = NULL;
++	}
++
++	return (struct crypto_bignum *) a;
++}
++
++
+ void crypto_bignum_deinit(struct crypto_bignum *n, int clear)
+ {
+ 	if (!n)
+@@ -1105,6 +1125,19 @@ int crypto_bignum_div(const struct crypto_bignum *a,
+ 		      NULL) == MP_OKAY ? 0 : -1;
+ }
+ 
++int crypto_bignum_addmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 const struct crypto_bignum *c,
++			 struct crypto_bignum *d)
++{
++	if (TEST_FAIL())
++		return -1;
++
++	return mp_addmod((mp_int *) a, (mp_int *) b, (mp_int *) c,
++			 (mp_int *) d) == MP_OKAY ?  0 : -1;
++}
++
++
+ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 const struct crypto_bignum *b,
+ 			 const struct crypto_bignum *m,
+@@ -1117,6 +1150,27 @@ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 (mp_int *) d) == MP_OKAY ?  0 : -1;
+ }
+ 
++int crypto_bignum_sqrmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 struct crypto_bignum *c)
++{
++	if (TEST_FAIL())
++		return -1;
++
++	return mp_sqrmod((mp_int *) a, (mp_int *) b,
++			 (mp_int *) c) == MP_OKAY ?  0 : -1;
++}
++
++
++int crypto_bignum_sqrtmod(const struct crypto_bignum *a,
++			  const struct crypto_bignum *b,
++			  struct crypto_bignum *c)
++{
++	/* TODO */
++	return -1;
++}
++
++
+ int crypto_bignum_rshift(const struct crypto_bignum *a, int n,
+ 			 struct crypto_bignum *r)
+ {
+@@ -1308,6 +1362,18 @@ const struct crypto_bignum * crypto_ec_get_order(struct crypto_ec *e)
+ 	return (const struct crypto_bignum *) &e->order;
+ }
+ 
++const struct crypto_bignum * crypto_ec_get_a(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) &e->a;
++}
++
++
++const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) &e->b;
++}
++
++
+ void crypto_ec_point_deinit(struct crypto_ec_point *p, int clear)
+ {
+ 	ecc_point *point = (ecc_point *) p;
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/eap_common/eap_pwd_common.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/eap_common/eap_pwd_common.c
+index ea6a3165903..99f6e2e4c02 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/eap_common/eap_pwd_common.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/eap_common/eap_pwd_common.c
+@@ -121,7 +121,8 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	u8 qr_or_qnr_bin[MAX_ECC_PRIME_LEN];
+ 	u8 x_bin[MAX_ECC_PRIME_LEN];
+ 	u8 prime_bin[MAX_ECC_PRIME_LEN];
+-	struct crypto_bignum *tmp2 = NULL;
++	u8 x_y[2 * MAX_ECC_PRIME_LEN];
++	struct crypto_bignum *tmp2 = NULL, *y = NULL;
+ 	struct crypto_hash *hash;
+ 	unsigned char pwe_digest[SHA256_MAC_LEN], *prfbuf = NULL, ctr;
+ 	int ret = 0, res;
+@@ -133,6 +134,7 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	u8 found_ctr = 0, is_odd = 0;
+ 	int cmp_prime;
+ 	unsigned int in_range;
++	unsigned int is_eq;
+ 
+ 	if (grp->pwe)
+ 		return -1;
+@@ -145,11 +147,6 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	if (crypto_bignum_to_bin(prime, prime_bin, sizeof(prime_bin),
+ 				 primebytelen) < 0)
+ 		return -1;
+-	grp->pwe = crypto_ec_point_init(grp->group);
+-	if (!grp->pwe) {
+-		wpa_printf(MSG_INFO, "EAP-pwd: unable to create bignums");
+-		goto fail;
+-	}
+ 
+ 	if ((prfbuf = os_malloc(primebytelen)) == NULL) {
+ 		wpa_printf(MSG_INFO, "EAP-pwd: unable to malloc space for prf "
+@@ -255,10 +252,37 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	 */
+ 	crypto_bignum_deinit(x_candidate, 1);
+ 	x_candidate = crypto_bignum_init_set(x_bin, primebytelen);
+-	if (!x_candidate ||
+-	    crypto_ec_point_solve_y_coord(grp->group, grp->pwe, x_candidate,
+-					  is_odd) != 0) {
+-		wpa_printf(MSG_INFO, "EAP-pwd: Could not solve for y");
++	if (!x_candidate)
++		goto fail;
++
++	/* y = sqrt(x^3 + ax + b) mod p
++	 * if LSB(y) == LSB(pwd-seed): PWE = (x, y)
++	 * else: PWE = (x, p - y)
++	 *
++	 * Calculate y and the two possible values for PWE and after that,
++	 * use constant time selection to copy the correct alternative.
++	 */
++	y = crypto_ec_point_compute_y_sqr(grp->group, x_candidate);
++	if (!y ||
++	    dragonfly_sqrt(grp->group, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y, MAX_ECC_PRIME_LEN, primebytelen) < 0 ||
++	    crypto_bignum_sub(prime, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y + MAX_ECC_PRIME_LEN,
++				 MAX_ECC_PRIME_LEN, primebytelen) < 0) {
++		wpa_printf(MSG_DEBUG, "SAE: Could not solve y");
++		goto fail;
++	}
++
++	/* Constant time selection of the y coordinate from the two
++	 * options */
++	is_eq = const_time_eq(is_odd, x_y[primebytelen - 1] & 0x01);
++	const_time_select_bin(is_eq, x_y, x_y + MAX_ECC_PRIME_LEN,
++			      primebytelen, x_y + primebytelen);
++	os_memcpy(x_y, x_bin, primebytelen);
++	wpa_hexdump_key(MSG_DEBUG, "EAP-pwd: PWE", x_y, 2 * primebytelen);
++	grp->pwe = crypto_ec_point_from_bin(grp->group, x_y);
++	if (!grp->pwe) {
++		wpa_printf(MSG_DEBUG, "EAP-pwd: Could not generate PWE");
+ 		goto fail;
+ 	}
+ 
+@@ -283,6 +307,7 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	/* cleanliness and order.... */
+ 	crypto_bignum_deinit(x_candidate, 1);
+ 	crypto_bignum_deinit(tmp2, 1);
++	crypto_bignum_deinit(y, 1);
+ 	crypto_bignum_deinit(qr, 1);
+ 	crypto_bignum_deinit(qnr, 1);
+ 	bin_clear_free(prfbuf, primebytelen);
+@@ -290,6 +315,7 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	os_memset(qnr_bin, 0, sizeof(qnr_bin));
+ 	os_memset(qr_or_qnr_bin, 0, sizeof(qr_or_qnr_bin));
+ 	os_memset(pwe_digest, 0, sizeof(pwe_digest));
++	forced_memzero(x_y, sizeof(x_y));
+ 
+ 	return ret;
+ }
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/radius/radius.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/radius/radius.c
+index d4ca7047d67..5b22e6b435e 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/radius/radius.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/radius/radius.c
+@@ -568,6 +568,11 @@ int radius_msg_verify_das_req(struct radius_msg *msg, const u8 *secret,
+ 		return 0;
+ 	}
+ 
++	if (attr->length != sizeof(*attr) + MD5_MAC_LEN) {
++		wpa_printf(MSG_WARNING, "Invalid Message-Authenticator length");
++		return 1;
++	}
++
+ 	os_memcpy(orig, attr + 1, MD5_MAC_LEN);
+ 	os_memset(attr + 1, 0, MD5_MAC_LEN);
+ 	os_memcpy(orig_authenticator, msg->hdr->authenticator,
+@@ -794,6 +799,11 @@ int radius_msg_verify_msg_auth(struct radius_msg *msg, const u8 *secret,
+ 		return 1;
+ 	}
+ 
++	if (attr->length != sizeof(*attr) + MD5_MAC_LEN) {
++		wpa_printf(MSG_INFO, "Invalid Message-Authenticator length");
++		return 1;
++	}
++
+ 	os_memcpy(orig, attr + 1, MD5_MAC_LEN);
+ 	os_memset(attr + 1, 0, MD5_MAC_LEN);
+ 	if (req_auth) {
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/rsn_supp/wpa.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/rsn_supp/wpa.c
+index d749a7a47b2..fb43b4a0721 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/rsn_supp/wpa.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/src/rsn_supp/wpa.c
+@@ -265,7 +265,7 @@ static int wpa_supplicant_get_pmk(struct wpa_sm *sm,
+ 		 * event before receiving this 1/4 message, so try to find a
+ 		 * matching PMKSA cache entry here. */
+ 		sm->cur_pmksa = pmksa_cache_get(sm->pmksa, src_addr, pmkid,
+-						NULL, 0);
++						sm->network_ctx, sm->key_mgmt);
+ 		if (sm->cur_pmksa) {
+ 			wpa_dbg(sm->ctx->msg_ctx, MSG_DEBUG,
+ 				"RSN: found matching PMKID from PMKSA cache");
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.c
+index 1ab5e5ebf05..c91b31fce4c 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.c
+@@ -206,3 +206,37 @@ int dragonfly_generate_scalar(const struct crypto_bignum *order,
+ 		   "dragonfly: Unable to get randomness for own scalar");
+ 	return -1;
+ }
++
++
++/* res = sqrt(val) */
++int dragonfly_sqrt(struct crypto_ec *ec, const struct crypto_bignum *val,
++		   struct crypto_bignum *res)
++{
++	const struct crypto_bignum *prime;
++	struct crypto_bignum *tmp, *one;
++	int ret = 0;
++	u8 prime_bin[DRAGONFLY_MAX_ECC_PRIME_LEN];
++	size_t prime_len;
++
++	/* For prime p such that p = 3 mod 4, sqrt(w) = w^((p+1)/4) mod p */
++
++	prime = crypto_ec_get_prime(ec);
++	prime_len = crypto_ec_prime_len(ec);
++	tmp = crypto_bignum_init();
++	one = crypto_bignum_init_uint(1);
++
++	if (crypto_bignum_to_bin(prime, prime_bin, sizeof(prime_bin),
++				 prime_len) < 0 ||
++	    (prime_bin[prime_len - 1] & 0x03) != 3 ||
++	    !tmp || !one ||
++	    /* tmp = (p+1)/4 */
++	    crypto_bignum_add(prime, one, tmp) < 0 ||
++	    crypto_bignum_rshift(tmp, 2, tmp) < 0 ||
++	    /* res = sqrt(val) */
++	    crypto_bignum_exptmod(val, tmp, prime, res) < 0)
++		ret = -1;
++
++	crypto_bignum_deinit(tmp, 0);
++	crypto_bignum_deinit(one, 0);
++	return ret;
++}
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.h b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.h
+index ec3dd593eda..84d67f575c5 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.h
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/dragonfly.h
+@@ -27,5 +27,7 @@ int dragonfly_generate_scalar(const struct crypto_bignum *order,
+ 			      struct crypto_bignum *_rand,
+ 			      struct crypto_bignum *_mask,
+ 			      struct crypto_bignum *scalar);
++int dragonfly_sqrt(struct crypto_ec *ec, const struct crypto_bignum *val,
++		   struct crypto_bignum *res);
+ 
+ #endif /* DRAGONFLY_H */
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/sae.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/sae.c
+index 8e97a3ee4c5..39600e516d3 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/sae.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/common/sae.c
+@@ -279,14 +279,16 @@ static int sae_derive_pwe_ecc(struct sae_data *sae, const u8 *addr1,
+ 	int pwd_seed_odd = 0;
+ 	u8 prime[SAE_MAX_ECC_PRIME_LEN];
+ 	size_t prime_len;
+-	struct crypto_bignum *x = NULL, *qr = NULL, *qnr = NULL;
++	struct crypto_bignum *x = NULL, *y = NULL, *qr = NULL, *qnr = NULL;
+ 	u8 x_bin[SAE_MAX_ECC_PRIME_LEN];
+ 	u8 x_cand_bin[SAE_MAX_ECC_PRIME_LEN];
+ 	u8 qr_bin[SAE_MAX_ECC_PRIME_LEN];
+ 	u8 qnr_bin[SAE_MAX_ECC_PRIME_LEN];
++	u8 x_y[2 * SAE_MAX_ECC_PRIME_LEN];
+ 	int res = -1;
+ 	u8 found = 0; /* 0 (false) or 0xff (true) to be used as const_time_*
+ 		       * mask */
++	unsigned int is_eq;
+ 
+ 	os_memset(x_bin, 0, sizeof(x_bin));
+ 
+@@ -395,25 +397,42 @@ static int sae_derive_pwe_ecc(struct sae_data *sae, const u8 *addr1,
+ 		goto fail;
+ 	}
+ 
+-	if (!sae->tmp->pwe_ecc)
+-		sae->tmp->pwe_ecc = crypto_ec_point_init(sae->tmp->ec);
+-	if (!sae->tmp->pwe_ecc)
+-		res = -1;
+-	else
+-		res = crypto_ec_point_solve_y_coord(sae->tmp->ec,
+-						    sae->tmp->pwe_ecc, x,
+-						    pwd_seed_odd);
+-	if (res < 0) {
+-		/*
+-		 * This should not happen since we already checked that there
+-		 * is a result.
+-		 */
++	/* y = sqrt(x^3 + ax + b) mod p
++	 * if LSB(save) == LSB(y): PWE = (x, y)
++	 * else: PWE = (x, p - y)
++	 *
++	 * Calculate y and the two possible values for PWE and after that,
++	 * use constant time selection to copy the correct alternative.
++	 */
++	y = crypto_ec_point_compute_y_sqr(sae->tmp->ec, x);
++	if (!y ||
++	    dragonfly_sqrt(sae->tmp->ec, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y, SAE_MAX_ECC_PRIME_LEN,
++				 prime_len) < 0 ||
++	    crypto_bignum_sub(sae->tmp->prime, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y + SAE_MAX_ECC_PRIME_LEN,
++				 SAE_MAX_ECC_PRIME_LEN, prime_len) < 0) {
+ 		wpa_printf(MSG_DEBUG, "SAE: Could not solve y");
++		goto fail;
++	}
++
++	is_eq = const_time_eq(pwd_seed_odd, x_y[prime_len - 1] & 0x01);
++	const_time_select_bin(is_eq, x_y, x_y + SAE_MAX_ECC_PRIME_LEN,
++			      prime_len, x_y + prime_len);
++	os_memcpy(x_y, x_bin, prime_len);
++	wpa_hexdump_key(MSG_DEBUG, "SAE: PWE", x_y, 2 * prime_len);
++	crypto_ec_point_deinit(sae->tmp->pwe_ecc, 1);
++	sae->tmp->pwe_ecc = crypto_ec_point_from_bin(sae->tmp->ec, x_y);
++	if (!sae->tmp->pwe_ecc) {
++		wpa_printf(MSG_DEBUG, "SAE: Could not generate PWE");
++		res = -1;
+ 	}
+ 
+ fail:
++	forced_memzero(x_y, sizeof(x_y));
+ 	crypto_bignum_deinit(qr, 0);
+ 	crypto_bignum_deinit(qnr, 0);
++	crypto_bignum_deinit(y, 1);
+ 	os_free(dummy_password);
+ 	bin_clear_free(tmp_password, password_len);
+ 	crypto_bignum_deinit(x, 1);
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto.h b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto.h
+index b6e4f64f71b..6938adfd175 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto.h
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto.h
+@@ -513,6 +513,13 @@ struct crypto_bignum * crypto_bignum_init(void);
+  */
+ struct crypto_bignum * crypto_bignum_init_set(const u8 *buf, size_t len);
+ 
++/**
++ * crypto_bignum_init_set - Allocate memory for bignum and set the value (uint)
++ * @val: Value to set
++ * Returns: Pointer to allocated bignum or %NULL on failure
++ */
++struct crypto_bignum * crypto_bignum_init_uint(unsigned int val);
++
+ /**
+  * crypto_bignum_deinit - Free bignum
+  * @n: Bignum from crypto_bignum_init() or crypto_bignum_init_set()
+@@ -607,6 +614,19 @@ int crypto_bignum_div(const struct crypto_bignum *a,
+ 		      const struct crypto_bignum *b,
+ 		      struct crypto_bignum *c);
+ 
++/**
++ * crypto_bignum_addmod - d = a + b (mod c)
++ * @a: Bignum
++ * @b: Bignum
++ * @c: Bignum
++ * @d: Bignum; used to store the result of (a + b) % c
++ * Returns: 0 on success, -1 on failure
++ */
++int crypto_bignum_addmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 const struct crypto_bignum *c,
++			 struct crypto_bignum *d);
++
+ /**
+  * crypto_bignum_mulmod - d = a * b (mod c)
+  * @a: Bignum
+@@ -620,6 +640,28 @@ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 const struct crypto_bignum *c,
+ 			 struct crypto_bignum *d);
+ 
++/**
++ * crypto_bignum_sqrmod - c = a^2 (mod b)
++ * @a: Bignum
++ * @b: Bignum
++ * @c: Bignum; used to store the result of a^2 % b
++ * Returns: 0 on success, -1 on failure
++ */
++int crypto_bignum_sqrmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 struct crypto_bignum *c);
++
++/**
++ * crypto_bignum_sqrtmod - returns sqrt(a) (mod b)
++ * @a: Bignum
++ * @b: Bignum
++ * @c: Bignum; used to store the result
++ * Returns: 0 on success, -1 on failure
++ */
++int crypto_bignum_sqrtmod(const struct crypto_bignum *a,
++			  const struct crypto_bignum *b,
++			  struct crypto_bignum *c);
++
+ /**
+  * crypto_bignum_rshift - r = a >> n
+  * @a: Bignum
+@@ -726,6 +768,9 @@ const struct crypto_bignum * crypto_ec_get_prime(struct crypto_ec *e);
+  */
+ const struct crypto_bignum * crypto_ec_get_order(struct crypto_ec *e);
+ 
++const struct crypto_bignum * crypto_ec_get_a(struct crypto_ec *e);
++const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e);
++
+ /**
+  * struct crypto_ec_point - Elliptic curve point
+  *
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_openssl.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_openssl.c
+index c3c9358eaf9..47d5518ce7e 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_openssl.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_openssl.c
+@@ -1219,6 +1219,24 @@ struct crypto_bignum * crypto_bignum_init_set(const u8 *buf, size_t len)
+ 	return (struct crypto_bignum *) bn;
+ }
+ 
++struct crypto_bignum * crypto_bignum_init_uint(unsigned int val)
++{
++	BIGNUM *bn;
++
++	if (TEST_FAIL())
++		return NULL;
++
++	bn = BN_new();
++	if (!bn)
++		return NULL;
++	if (BN_set_word(bn, val) != 1) {
++		BN_free(bn);
++		return NULL;
++	}
++	return (struct crypto_bignum *) bn;
++}
++
++
+ void crypto_bignum_deinit(struct crypto_bignum *n, int clear)
+ {
+ 	if (clear)
+@@ -1376,6 +1394,28 @@ int crypto_bignum_div(const struct crypto_bignum *a,
+ 	return res ? 0 : -1;
+ }
+ 
++int crypto_bignum_addmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 const struct crypto_bignum *c,
++			 struct crypto_bignum *d)
++{
++	int res;
++	BN_CTX *bnctx;
++
++	if (TEST_FAIL())
++		return -1;
++
++	bnctx = BN_CTX_new();
++	if (!bnctx)
++		return -1;
++	res = BN_mod_add((BIGNUM *) d, (const BIGNUM *) a, (const BIGNUM *) b,
++			 (const BIGNUM *) c, bnctx);
++	BN_CTX_free(bnctx);
++
++	return res ? 0 : -1;
++}
++
++
+ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 const struct crypto_bignum *b,
+ 			 const struct crypto_bignum *c,
+@@ -1398,6 +1438,48 @@ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 	return res ? 0 : -1;
+ }
+ 
++int crypto_bignum_sqrmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 struct crypto_bignum *c)
++{
++	int res;
++	BN_CTX *bnctx;
++
++	if (TEST_FAIL())
++		return -1;
++
++	bnctx = BN_CTX_new();
++	if (!bnctx)
++		return -1;
++	res = BN_mod_sqr((BIGNUM *) c, (const BIGNUM *) a, (const BIGNUM *) b,
++			 bnctx);
++	BN_CTX_free(bnctx);
++
++	return res ? 0 : -1;
++}
++
++
++int crypto_bignum_sqrtmod(const struct crypto_bignum *a,
++			  const struct crypto_bignum *b,
++			  struct crypto_bignum *c)
++{
++	BN_CTX *bnctx;
++	BIGNUM *res;
++
++	if (TEST_FAIL())
++		return -1;
++
++	bnctx = BN_CTX_new();
++	if (!bnctx)
++		return -1;
++	res = BN_mod_sqrt((BIGNUM *) c, (const BIGNUM *) a, (const BIGNUM *) b,
++			  bnctx);
++	BN_CTX_free(bnctx);
++
++	return res ? 0 : -1;
++}
++
++
+ int crypto_bignum_rshift(const struct crypto_bignum *a, int n,
+ 			 struct crypto_bignum *r)
+ {
+@@ -1594,6 +1676,18 @@ const struct crypto_bignum * crypto_ec_get_order(struct crypto_ec *e)
+ 	return (const struct crypto_bignum *) e->order;
+ }
+ 
++const struct crypto_bignum * crypto_ec_get_a(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) e->a;
++}
++
++
++const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) e->b;
++}
++
++
+ void crypto_ec_point_deinit(struct crypto_ec_point *p, int clear)
+ {
+ 	if (clear)
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_wolfssl.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_wolfssl.c
+index d76e2f3b689..f836b9f88cf 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_wolfssl.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/crypto/crypto_wolfssl.c
+@@ -988,6 +988,26 @@ struct crypto_bignum * crypto_bignum_init_set(const u8 *buf, size_t len)
+ 	return (struct crypto_bignum *) a;
+ }
+ 
++struct crypto_bignum * crypto_bignum_init_uint(unsigned int val)
++{
++	mp_int *a;
++
++	if (TEST_FAIL())
++		return NULL;
++
++	a = (mp_int *) crypto_bignum_init();
++	if (!a)
++		return NULL;
++
++	if (mp_set_int(a, val) != MP_OKAY) {
++		os_free(a);
++		a = NULL;
++	}
++
++	return (struct crypto_bignum *) a;
++}
++
++
+ void crypto_bignum_deinit(struct crypto_bignum *n, int clear)
+ {
+ 	if (!n)
+@@ -1105,6 +1125,19 @@ int crypto_bignum_div(const struct crypto_bignum *a,
+ 		      NULL) == MP_OKAY ? 0 : -1;
+ }
+ 
++int crypto_bignum_addmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 const struct crypto_bignum *c,
++			 struct crypto_bignum *d)
++{
++	if (TEST_FAIL())
++		return -1;
++
++	return mp_addmod((mp_int *) a, (mp_int *) b, (mp_int *) c,
++			 (mp_int *) d) == MP_OKAY ?  0 : -1;
++}
++
++
+ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 const struct crypto_bignum *b,
+ 			 const struct crypto_bignum *m,
+@@ -1117,6 +1150,27 @@ int crypto_bignum_mulmod(const struct crypto_bignum *a,
+ 			 (mp_int *) d) == MP_OKAY ?  0 : -1;
+ }
+ 
++int crypto_bignum_sqrmod(const struct crypto_bignum *a,
++			 const struct crypto_bignum *b,
++			 struct crypto_bignum *c)
++{
++	if (TEST_FAIL())
++		return -1;
++
++	return mp_sqrmod((mp_int *) a, (mp_int *) b,
++			 (mp_int *) c) == MP_OKAY ?  0 : -1;
++}
++
++
++int crypto_bignum_sqrtmod(const struct crypto_bignum *a,
++			  const struct crypto_bignum *b,
++			  struct crypto_bignum *c)
++{
++	/* TODO */
++	return -1;
++}
++
++
+ int crypto_bignum_rshift(const struct crypto_bignum *a, int n,
+ 			 struct crypto_bignum *r)
+ {
+@@ -1308,6 +1362,18 @@ const struct crypto_bignum * crypto_ec_get_order(struct crypto_ec *e)
+ 	return (const struct crypto_bignum *) &e->order;
+ }
+ 
++const struct crypto_bignum * crypto_ec_get_a(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) &e->a;
++}
++
++
++const struct crypto_bignum * crypto_ec_get_b(struct crypto_ec *e)
++{
++	return (const struct crypto_bignum *) &e->b;
++}
++
++
+ void crypto_ec_point_deinit(struct crypto_ec_point *p, int clear)
+ {
+ 	ecc_point *point = (ecc_point *) p;
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/eap_common/eap_pwd_common.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/eap_common/eap_pwd_common.c
+index ea6a3165903..99f6e2e4c02 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/eap_common/eap_pwd_common.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/eap_common/eap_pwd_common.c
+@@ -121,7 +121,8 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	u8 qr_or_qnr_bin[MAX_ECC_PRIME_LEN];
+ 	u8 x_bin[MAX_ECC_PRIME_LEN];
+ 	u8 prime_bin[MAX_ECC_PRIME_LEN];
+-	struct crypto_bignum *tmp2 = NULL;
++	u8 x_y[2 * MAX_ECC_PRIME_LEN];
++	struct crypto_bignum *tmp2 = NULL, *y = NULL;
+ 	struct crypto_hash *hash;
+ 	unsigned char pwe_digest[SHA256_MAC_LEN], *prfbuf = NULL, ctr;
+ 	int ret = 0, res;
+@@ -133,6 +134,7 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	u8 found_ctr = 0, is_odd = 0;
+ 	int cmp_prime;
+ 	unsigned int in_range;
++	unsigned int is_eq;
+ 
+ 	if (grp->pwe)
+ 		return -1;
+@@ -145,11 +147,6 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	if (crypto_bignum_to_bin(prime, prime_bin, sizeof(prime_bin),
+ 				 primebytelen) < 0)
+ 		return -1;
+-	grp->pwe = crypto_ec_point_init(grp->group);
+-	if (!grp->pwe) {
+-		wpa_printf(MSG_INFO, "EAP-pwd: unable to create bignums");
+-		goto fail;
+-	}
+ 
+ 	if ((prfbuf = os_malloc(primebytelen)) == NULL) {
+ 		wpa_printf(MSG_INFO, "EAP-pwd: unable to malloc space for prf "
+@@ -255,10 +252,37 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	 */
+ 	crypto_bignum_deinit(x_candidate, 1);
+ 	x_candidate = crypto_bignum_init_set(x_bin, primebytelen);
+-	if (!x_candidate ||
+-	    crypto_ec_point_solve_y_coord(grp->group, grp->pwe, x_candidate,
+-					  is_odd) != 0) {
+-		wpa_printf(MSG_INFO, "EAP-pwd: Could not solve for y");
++	if (!x_candidate)
++		goto fail;
++
++	/* y = sqrt(x^3 + ax + b) mod p
++	 * if LSB(y) == LSB(pwd-seed): PWE = (x, y)
++	 * else: PWE = (x, p - y)
++	 *
++	 * Calculate y and the two possible values for PWE and after that,
++	 * use constant time selection to copy the correct alternative.
++	 */
++	y = crypto_ec_point_compute_y_sqr(grp->group, x_candidate);
++	if (!y ||
++	    dragonfly_sqrt(grp->group, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y, MAX_ECC_PRIME_LEN, primebytelen) < 0 ||
++	    crypto_bignum_sub(prime, y, y) < 0 ||
++	    crypto_bignum_to_bin(y, x_y + MAX_ECC_PRIME_LEN,
++				 MAX_ECC_PRIME_LEN, primebytelen) < 0) {
++		wpa_printf(MSG_DEBUG, "SAE: Could not solve y");
++		goto fail;
++	}
++
++	/* Constant time selection of the y coordinate from the two
++	 * options */
++	is_eq = const_time_eq(is_odd, x_y[primebytelen - 1] & 0x01);
++	const_time_select_bin(is_eq, x_y, x_y + MAX_ECC_PRIME_LEN,
++			      primebytelen, x_y + primebytelen);
++	os_memcpy(x_y, x_bin, primebytelen);
++	wpa_hexdump_key(MSG_DEBUG, "EAP-pwd: PWE", x_y, 2 * primebytelen);
++	grp->pwe = crypto_ec_point_from_bin(grp->group, x_y);
++	if (!grp->pwe) {
++		wpa_printf(MSG_DEBUG, "EAP-pwd: Could not generate PWE");
+ 		goto fail;
+ 	}
+ 
+@@ -283,6 +307,7 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	/* cleanliness and order.... */
+ 	crypto_bignum_deinit(x_candidate, 1);
+ 	crypto_bignum_deinit(tmp2, 1);
++	crypto_bignum_deinit(y, 1);
+ 	crypto_bignum_deinit(qr, 1);
+ 	crypto_bignum_deinit(qnr, 1);
+ 	bin_clear_free(prfbuf, primebytelen);
+@@ -290,6 +315,7 @@ int compute_password_element(EAP_PWD_group *grp, u16 num,
+ 	os_memset(qnr_bin, 0, sizeof(qnr_bin));
+ 	os_memset(qr_or_qnr_bin, 0, sizeof(qr_or_qnr_bin));
+ 	os_memset(pwe_digest, 0, sizeof(pwe_digest));
++	forced_memzero(x_y, sizeof(x_y));
+ 
+ 	return ret;
+ }
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/radius/radius.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/radius/radius.c
+index d4ca7047d67..5b22e6b435e 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/radius/radius.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/radius/radius.c
+@@ -568,6 +568,11 @@ int radius_msg_verify_das_req(struct radius_msg *msg, const u8 *secret,
+ 		return 0;
+ 	}
+ 
++	if (attr->length != sizeof(*attr) + MD5_MAC_LEN) {
++		wpa_printf(MSG_WARNING, "Invalid Message-Authenticator length");
++		return 1;
++	}
++
+ 	os_memcpy(orig, attr + 1, MD5_MAC_LEN);
+ 	os_memset(attr + 1, 0, MD5_MAC_LEN);
+ 	os_memcpy(orig_authenticator, msg->hdr->authenticator,
+@@ -794,6 +799,11 @@ int radius_msg_verify_msg_auth(struct radius_msg *msg, const u8 *secret,
+ 		return 1;
+ 	}
+ 
++	if (attr->length != sizeof(*attr) + MD5_MAC_LEN) {
++		wpa_printf(MSG_INFO, "Invalid Message-Authenticator length");
++		return 1;
++	}
++
+ 	os_memcpy(orig, attr + 1, MD5_MAC_LEN);
+ 	os_memset(attr + 1, 0, MD5_MAC_LEN);
+ 	if (req_auth) {
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/rsn_supp/wpa.c b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/rsn_supp/wpa.c
+index d749a7a47b2..fb43b4a0721 100644
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/rsn_supp/wpa.c
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/wpa_supplicant/src/rsn_supp/wpa.c
+@@ -265,7 +265,7 @@ static int wpa_supplicant_get_pmk(struct wpa_sm *sm,
+ 		 * event before receiving this 1/4 message, so try to find a
+ 		 * matching PMKSA cache entry here. */
+ 		sm->cur_pmksa = pmksa_cache_get(sm->pmksa, src_addr, pmkid,
+-						NULL, 0);
++						sm->network_ctx, sm->key_mgmt);
+ 		if (sm->cur_pmksa) {
+ 			wpa_dbg(sm->ctx->msg_ctx, MSG_DEBUG,
+ 				"RSN: found matching PMKID from PMKSA cache");

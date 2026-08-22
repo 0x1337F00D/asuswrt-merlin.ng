@@ -69,22 +69,30 @@ python3 -m unittest discover -s .github/ci/gt-ax11000/trial \
 ## Persistent promotion guard
 
 `router-persistent-guard.sh` is deliberately separate from the one-shot trial
-controller. It derives candidate and fallback roles from the currently booted
-partition, so either slot can be promoted while the opposite slot remains the
-known-good fallback. Candidate identity requires the exact model/version,
-running partition, final test-lab UI markers, the `httpd` NVRAM marker, and
-complete file-plus-symlink Web manifests; the shared base firmware version
-string alone is not sufficient.
+controller. Its roles are intentionally asymmetric for this deployment:
+partition 1 is the candidate and partition 2 is the known-good fallback. It
+never derives those roles from the currently booted slot, because doing so can
+make a baseline boot re-arm a rejected candidate. Candidate identity requires
+the exact model/version, partition 1, final test-lab UI markers, the `httpd`
+NVRAM marker, and complete file-plus-symlink Web manifests; the shared base
+firmware version string alone is not sufficient.
 
 The manifests live under `/usr/share/codex`. ASUS maps `/etc` to volatile
 `/tmp/etc` at runtime, so immutable candidate identity must never be stored
 there.
 
-On every persistent candidate boot, `arm` selects the opposite partition for
+On every persistent partition-1 candidate boot, `arm` selects partition 2 for
 one boot. The delayed `services-start` hook invokes `promote` after 120 seconds.
 Only the complete services, WAN/DNS, three-radio, firewall, kernel-log and
-UI-marker health gate restores the currently booted candidate persistently. A
-reachable health failure selects the opposite partition persistently and
+UI-marker health gate restores partition 1 persistently. A reachable health
+failure selects partition 2 persistently and
 requests a reboot. A candidate that never becomes reachable still requires
 out-of-band power control to trigger the already armed fallback, as documented
 above.
+
+For a host-driven soak that must never auto-promote, create the root-owned
+`/data/firmware-trial-rollback/hold-promotion` marker before booting the
+candidate. The delayed guard then selects partition 2 persistently while it
+leaves the running candidate available for observation. Removing the marker
+does not itself promote or change the boot state; a later explicit trial must
+pass the complete guard again.

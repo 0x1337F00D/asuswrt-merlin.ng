@@ -50,6 +50,24 @@ pub unsafe extern "C" fn rust_openvpn_import_option_allowed(
     router_policy::vpn::openvpn_import_directive_allowed(name, &args).into()
 }
 
+/// Validate the full OpenVPN custom field before libovpn appends it to a
+/// generated configuration.
+///
+/// # Safety
+///
+/// `config` must address a NUL-terminated string for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_openvpn_custom_config_allowed(config: *const c_char) -> c_int {
+    if config.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    unsafe { CStr::from_ptr(config) }
+        .to_str()
+        .is_ok_and(router_policy::vpn::openvpn_custom_config_allowed)
+        .into()
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -74,12 +92,19 @@ fn decoded_octet(input: &[u8], offset: usize, plus_as_space: bool) -> Option<(u8
     }
 }
 
-fn url_decode_in_place(input: &mut [u8], plus_as_space: bool) -> Result<usize, ()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UrlDecodeError {
+    EmbeddedNul,
+    InvalidOffset,
+}
+
+pub fn url_decode_in_place(input: &mut [u8], plus_as_space: bool) -> Result<usize, UrlDecodeError> {
     let mut read = 0;
     while read < input.len() {
-        let (decoded, consumed) = decoded_octet(input, read, plus_as_space).ok_or(())?;
+        let (decoded, consumed) =
+            decoded_octet(input, read, plus_as_space).ok_or(UrlDecodeError::InvalidOffset)?;
         if decoded == 0 {
-            return Err(());
+            return Err(UrlDecodeError::EmbeddedNul);
         }
         read += consumed;
     }
@@ -87,7 +112,8 @@ fn url_decode_in_place(input: &mut [u8], plus_as_space: bool) -> Result<usize, (
     let mut read = 0;
     let mut write = 0;
     while read < input.len() {
-        let (decoded, consumed) = decoded_octet(input, read, plus_as_space).ok_or(())?;
+        let (decoded, consumed) =
+            decoded_octet(input, read, plus_as_space).ok_or(UrlDecodeError::InvalidOffset)?;
         input[write] = decoded;
         read += consumed;
         write += 1;
@@ -119,7 +145,7 @@ pub unsafe extern "C" fn rust_httpd_url_decode(
     let bytes = unsafe { slice::from_raw_parts_mut(buffer.cast::<u8>(), length + 1) };
     let decoded_length = match url_decode_in_place(&mut bytes[..length], plus_as_space != 0) {
         Ok(length) => length,
-        Err(()) => return EMBEDDED_NUL,
+        Err(_) => return EMBEDDED_NUL,
     };
     bytes[decoded_length] = 0;
     decoded_length as c_int
@@ -145,7 +171,7 @@ pub unsafe extern "C" fn rust_httpd_query_capacity(query: *const c_char, length:
         .saturating_add(1)
 }
 
-fn query_is_valid(bytes: &[u8]) -> bool {
+pub fn query_is_valid(bytes: &[u8]) -> bool {
     bytes.len() <= MAX_QUERY_LENGTH
         && bytes
             .iter()
@@ -272,7 +298,7 @@ fn field_is_decodable(field: &[u8]) -> bool {
     true
 }
 
-fn multipart_filename_is_safe(name: &[u8]) -> bool {
+pub fn multipart_filename_is_safe(name: &[u8]) -> bool {
     !name.is_empty()
         && name.len() <= 63
         && name[0] != b'-'
@@ -302,7 +328,7 @@ pub unsafe extern "C" fn rust_httpd_multipart_filename_validate(
     i32::from(multipart_filename_is_safe(bytes))
 }
 
-fn is_readonly_wireless_identity_key(name: &[u8]) -> bool {
+pub fn is_readonly_wireless_identity_key(name: &[u8]) -> bool {
     const GLOBAL_KEYS: [&[u8]; 17] = [
         b"acs_unii4",
         b"location_code",
@@ -427,7 +453,12 @@ pub unsafe extern "C" fn rust_httpd_testlab_country_authorize(
     )
 }
 
-fn asus_wlan_security_is_valid(authentication: &str, cipher: &str, pmf: &str, wps: &str) -> bool {
+pub fn asus_wlan_security_is_valid(
+    authentication: &str,
+    cipher: &str,
+    pmf: &str,
+    wps: &str,
+) -> bool {
     let authentication = match authentication {
         "psk2" => Authentication::Wpa2Personal,
         "sae" | "wpa3" => Authentication::Wpa3Sae,

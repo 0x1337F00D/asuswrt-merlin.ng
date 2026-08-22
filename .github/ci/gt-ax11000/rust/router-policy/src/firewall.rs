@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 const MAX_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_RULES: usize = 512;
 const MAX_EFFECTIVE_RULESET_BYTES: usize = 128 * 1024;
+pub const WAN_ADMIN_GUARD_CHAIN: &str = "CODEX_WAN_GUARD";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AddressFamily {
@@ -206,6 +207,129 @@ impl FirewallManifest {
             }
         }
         Ok(())
+    }
+}
+
+/// Validate the complete runtime contract installed after all vendor, VPN and
+/// user firewall hooks. Besides terminal INPUT/FORWARD DROP, the very first
+/// INPUT rule must divert packets from the active WAN interface into a small
+/// generated chain that drops every local administration port before any
+/// vendor ACCEPT rule can run.
+pub fn validate_effective_firewall_policy(
+    ipv4: &str,
+    ipv6: Option<&str>,
+    require_ipv6: bool,
+    wan_ipv4_interface: &str,
+    wan_ipv6_interface: Option<&str>,
+    admin_tcp_ports: &[u16],
+) -> Result<(), PolicyError> {
+    validate_interface(wan_ipv4_interface)?;
+    if admin_tcp_ports.is_empty() || admin_tcp_ports.contains(&0) || has_duplicate(admin_tcp_ports)
+    {
+        return Err(PolicyError::InvalidValue("WAN administration port"));
+    }
+
+    FirewallManifest::from_effective_filter_saves(ipv4, ipv6)?
+        .validate_terminal_drops(require_ipv6)?;
+    validate_wan_admin_guard(ipv4, wan_ipv4_interface, admin_tcp_ports)?;
+    if require_ipv6 {
+        let wan_ipv6_interface =
+            wan_ipv6_interface.ok_or(PolicyError::Missing("IPv6 WAN interface"))?;
+        validate_interface(wan_ipv6_interface)?;
+        validate_wan_admin_guard(
+            ipv6.ok_or(PolicyError::Missing("IPv6 ruleset"))?,
+            wan_ipv6_interface,
+            admin_tcp_ports,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_wan_admin_guard(
+    input: &str,
+    wan_interface: &str,
+    required_ports: &[u16],
+) -> Result<(), PolicyError> {
+    if input.len() > MAX_EFFECTIVE_RULESET_BYTES || !input.is_ascii() {
+        return Err(PolicyError::TooLong);
+    }
+
+    let mut in_filter = false;
+    let mut committed = false;
+    let mut first_input = None::<Vec<String>>;
+    let mut guard_rules = Vec::<Vec<String>>::new();
+    for line in input.lines().map(str::trim) {
+        if line == "*filter" {
+            if in_filter || committed {
+                return Err(PolicyError::InvalidFormat);
+            }
+            in_filter = true;
+            continue;
+        }
+        if !in_filter {
+            continue;
+        }
+        if line == "COMMIT" {
+            committed = true;
+            in_filter = false;
+            continue;
+        }
+        let words = line.split_ascii_whitespace().collect::<Vec<_>>();
+        if let ["-A", chain, rest @ ..] = words.as_slice() {
+            if *chain == "INPUT" && first_input.is_none() {
+                first_input = Some(rest.iter().map(|word| (*word).to_owned()).collect());
+            } else if *chain == WAN_ADMIN_GUARD_CHAIN {
+                guard_rules.push(rest.iter().map(|word| (*word).to_owned()).collect());
+            }
+        }
+    }
+    if in_filter || !committed {
+        return Err(PolicyError::InvalidFormat);
+    }
+
+    let valid_hook = first_input.as_deref().is_some_and(|rule| {
+        rule.len() == 4
+            && rule[0] == "-i"
+            && rule[1] == wan_interface
+            && rule[2] == "-j"
+            && rule[3] == WAN_ADMIN_GUARD_CHAIN
+    });
+    if !valid_hook {
+        return Err(PolicyError::Invariant("WAN guard must be first INPUT rule"));
+    }
+    let Some((last, drops)) = guard_rules.split_last() else {
+        return Err(PolicyError::Missing("WAN administration guard"));
+    };
+    if last.as_slice() != ["-j", "RETURN"] {
+        return Err(PolicyError::Invariant("WAN guard terminal RETURN"));
+    }
+
+    let mut denied = HashSet::new();
+    for rule in drops {
+        let [protocol_flag, protocol, match_flag, matcher, port_flag, port, jump_flag, verdict] =
+            rule.as_slice()
+        else {
+            return Err(PolicyError::Invariant("WAN guard rule"));
+        };
+        if protocol_flag != "-p"
+            || protocol != "tcp"
+            || match_flag != "-m"
+            || matcher != "tcp"
+            || port_flag != "--dport"
+            || jump_flag != "-j"
+            || verdict != "DROP"
+        {
+            return Err(PolicyError::Invariant("WAN guard rule"));
+        }
+        let port = parse_port(port)?;
+        if !denied.insert(port) {
+            return Err(PolicyError::Duplicate("WAN administration deny"));
+        }
+    }
+    if required_ports.iter().all(|port| denied.contains(port)) {
+        Ok(())
+    } else {
+        Err(PolicyError::Invariant("WAN administration deny"))
     }
 }
 
@@ -514,5 +638,45 @@ vpn-killswitch ipv6 eth0 wg0 deny
         let ipv4_only = FirewallManifest::from_effective_filter_saves(rules, None).unwrap();
         ipv4_only.validate_terminal_drops(false).unwrap();
         assert!(ipv4_only.validate_terminal_drops(true).is_err());
+    }
+
+    #[test]
+    fn effective_policy_requires_first_rule_wan_admin_guard() {
+        let rules = "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:CODEX_WAN_GUARD - [0:0]\n-A INPUT -i eth0 -j CODEX_WAN_GUARD\n-A INPUT -i br0 -j ACCEPT\n-A INPUT -j DROP\n-A FORWARD -j DROP\n-A CODEX_WAN_GUARD -p tcp -m tcp --dport 22 -j DROP\n-A CODEX_WAN_GUARD -p tcp -m tcp --dport 443 -j DROP\n-A CODEX_WAN_GUARD -j RETURN\nCOMMIT\n";
+        validate_effective_firewall_policy(
+            rules,
+            Some(rules),
+            true,
+            "eth0",
+            Some("eth0"),
+            &[22, 443],
+        )
+        .unwrap();
+
+        for invalid in [
+            rules.replace(
+                "-A INPUT -i eth0 -j CODEX_WAN_GUARD\n-A INPUT -i br0 -j ACCEPT",
+                "-A INPUT -i br0 -j ACCEPT\n-A INPUT -i eth0 -j CODEX_WAN_GUARD",
+            ),
+            rules.replace("-A CODEX_WAN_GUARD -p tcp -m tcp --dport 443 -j DROP\n", ""),
+            rules.replace("--dport 443 -j DROP", "--dport 443 -j ACCEPT"),
+            rules.replace(
+                "-A CODEX_WAN_GUARD -j RETURN",
+                "-A CODEX_WAN_GUARD -j ACCEPT",
+            ),
+        ] {
+            assert!(
+                validate_effective_firewall_policy(
+                    &invalid,
+                    None,
+                    false,
+                    "eth0",
+                    None,
+                    &[22, 443],
+                )
+                .is_err(),
+                "accepted unsafe WAN guard: {invalid:?}"
+            );
+        }
     }
 }

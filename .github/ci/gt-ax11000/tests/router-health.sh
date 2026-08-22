@@ -204,7 +204,7 @@ pass TERMINAL_DROP_RULES
 if ! dmesg >"$TMP_DIR/dmesg.out" 2>&1; then
 	fail DMESG_READ
 fi
-if grep -Eiq 'sigill|illegal instruction|undefined instruction|segmentation fault|segfault|kernel oops|oops|kernel panic|panic' "$TMP_DIR/dmesg.out"; then
+if grep -Eiq 'sigill|illegal instruction|undefined instruction|segmentation fault|segfault|potentially unexpected fatal signal|fatal signal [0-9]+|kernel oops|oops|kernel panic|panic' "$TMP_DIR/dmesg.out"; then
 	fail DMESG_FAULT
 fi
 pass DMESG_FAULT_FREE

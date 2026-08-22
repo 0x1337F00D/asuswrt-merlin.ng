@@ -5,6 +5,7 @@ members = [
     "nt-event",
     "router-policy",
     "router-security",
+    "router-fuzz",
     "rstats",
     "wanduck-transition",
 ]

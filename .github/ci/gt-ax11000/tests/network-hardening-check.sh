@@ -51,14 +51,18 @@ fi
 # enabled; any failed apply or semantic ruleset failure stays fail-closed.
 ovpn_line=$(grep -nF 'ovpn_run_fw_scripts();' "$firewall" | tail -1 | cut -d: -f1)
 custom_line=$(grep -nF 'run_custom_script("firewall-start"' "$firewall" | tail -1 | cut -d: -f1)
+guard_line=$(grep -nF '!install_wan_admin_guard(wan_if)' "$firewall" | tail -1 | cut -d: -f1)
 validation_line=$(grep -nF '!validate_effective_firewall_policy()' "$firewall" | tail -1 | cut -d: -f1)
 forward_line=$(grep -nF $'\t\tenable_ip_forward();' "$firewall" | tail -1 | cut -d: -f1)
 if [ -z "$ovpn_line" ] || [ -z "$custom_line" ] || [ -z "$validation_line" ] || \
-   [ -z "$forward_line" ] || [ "$ovpn_line" -ge "$custom_line" ] || \
-   [ "$custom_line" -ge "$validation_line" ] || [ "$validation_line" -ge "$forward_line" ]; then
+   [ -z "$guard_line" ] || [ -z "$forward_line" ] || \
+   [ "$ovpn_line" -ge "$custom_line" ] || [ "$custom_line" -ge "$guard_line" ] || \
+   [ "$guard_line" -ge "$validation_line" ] || [ "$validation_line" -ge "$forward_line" ]; then
 	echo "firewall hook/validation/forwarding order is unsafe" >&2
 	exit 1
 fi
 require_text "$firewall" 'firewall_enter_fail_closed();'
+require_text "$firewall" 'rust_validate_effective_firewall_policy_files'
+require_text "$firewall" '#define CODEX_WAN_GUARD "CODEX_WAN_GUARD"'
 
 echo "network hardening overlay checks passed"
