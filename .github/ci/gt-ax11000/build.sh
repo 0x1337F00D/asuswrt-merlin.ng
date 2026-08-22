@@ -39,6 +39,7 @@ Environment overrides:
   ASUSWRT_CCACHE=0|1                          cache HND cross-compiler output, default: 0
   ASUSWRT_CCACHE_DIR=/path                    default: /tmp/asuswrt-ccache
   ASUSWRT_CCACHE_MAXSIZE=size                 default: 2G
+  ASUSWRT_KERNEL_CACHE_RESTORE=0|1            trust an exact successful CI kernel cache
   ASUSWRT_DIRECT_TOOLCHAIN=0|1                use /opt symlink instead of unshare (CI)
   ASUSWRT_REQUIRE_TMPFS=0|1                   reject non-tmpfs build paths, default: 0
   ASUSWRT_WORKTREE_BASE=/path/to/worktrees    default: this directory
@@ -98,6 +99,7 @@ PREPARE_JOBS="${ASUSWRT_PREPARE_JOBS:-4}"
 CCACHE_ENABLED="${ASUSWRT_CCACHE:-0}"
 CCACHE_DIR="${ASUSWRT_CCACHE_DIR:-/tmp/asuswrt-ccache}"
 CCACHE_MAXSIZE="${ASUSWRT_CCACHE_MAXSIZE:-2G}"
+KERNEL_CACHE_RESTORE="${ASUSWRT_KERNEL_CACHE_RESTORE:-0}"
 TOOLCHAIN_VIEW="${ASUSWRT_TOOLCHAIN_VIEW:-/tmp/asuswrt-toolchain-view/$TOOLCHAIN_GROUP}"
 TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_SRC"
 CCACHE_PATH_VALUE=""
@@ -119,6 +121,8 @@ BUILD_STARTED_EPOCH="${ASUSWRT_BUILD_STARTED_EPOCH:-$(date +%s)}"
 WORKTREE_PREP_SECONDS="${ASUSWRT_WORKTREE_PREP_SECONDS:-0}"
 ENFORCE_INPUT_LOCK="${ASUSWRT_ENFORCE_INPUT_LOCK:-0}"
 INPUT_LOCK_STATE_FILE="$OUTPUT_DIR/.asuswrt-input-lock-state"
+KERNEL_CACHE_STATE_FILE="$ROOT/.asuswrt-kernel-cache-state"
+KERNEL_CACHE_REUSE=0
 
 require_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -397,6 +401,17 @@ compute_full_build_contract_id() {
 	} | sha256sum | awk '{print $1}'
 }
 
+compute_kernel_cache_contract_id() {
+	{
+		printf 'format=1\n'
+		printf 'source=%s\n' "$ASUSWRT_SOURCE_STATE_ID"
+		printf 'profile=%s\n' "$PROFILE"
+		printf 'sdk_path=%s\n' "$SDK_PATH"
+		printf 'toolchains=%s\n' "$(compute_toolchain_state_id)"
+		printf 'gnu_make=%s\n' "$GNU_MAKE_SHA256"
+	} | sha256sum | awk '{print $1}'
+}
+
 compute_rust_state_id() {
 	(
 		cd "$RUST_OVERLAY"
@@ -484,7 +499,12 @@ prepare_source_worktree() {
 }
 
 normalize_source_timestamps() {
-	find "$ROOT" -type f -exec touch -c {} +
+	if [ "$KERNEL_CACHE_REUSE" = "1" ]; then
+		find "$ROOT" -path "$SDK_DIR/kernel/linux-4.1" -prune -o \
+			-type f -exec touch -c {} +
+	else
+		find "$ROOT" -type f -exec touch -c {} +
+	fi
 }
 
 normalize_autotools_timestamps() {
@@ -726,6 +746,15 @@ case "$CCACHE_ENABLED" in
 		;;
 esac
 
+case "$KERNEL_CACHE_RESTORE" in
+	0|1)
+		;;
+	*)
+		echo "ASUSWRT_KERNEL_CACHE_RESTORE must be 0 or 1" >&2
+		exit 2
+		;;
+esac
+
 if [ -z "$FORCE_PROFILE" ]; then
 	FORCE_PROFILE=0
 fi
@@ -803,6 +832,40 @@ fi
 if [ ! -f "$RUST_REPACK_MAKEFILE" ]; then
 	echo "Manifest-bound repack makefile not found: $RUST_REPACK_MAKEFILE" >&2
 	exit 1
+fi
+
+if [ "$KERNEL_CACHE_RESTORE" = "1" ]; then
+	expected_kernel_cache="$(compute_kernel_cache_contract_id)"
+	if [ ! -f "$KERNEL_CACHE_STATE_FILE" ] || [ -L "$KERNEL_CACHE_STATE_FILE" ]; then
+		echo "Exact kernel cache hit has no trustworthy state file" >&2
+		exit 1
+	fi
+	actual_kernel_cache="$(cat "$KERNEL_CACHE_STATE_FILE")"
+	if [ "$actual_kernel_cache" != "$expected_kernel_cache" ]; then
+		echo "Exact kernel cache contract mismatch: expected $expected_kernel_cache, got $actual_kernel_cache" >&2
+		exit 1
+	fi
+	for kernel_artifact in \
+		.config vmlinux Module.symvers include/generated/autoconf.h \
+		include/config/auto.conf arch/arm64/boot/Image .pre_kernelbuild
+	do
+		if [ ! -f "$SDK_DIR/kernel/linux-4.1/$kernel_artifact" ]; then
+			echo "Exact kernel cache is incomplete: $kernel_artifact" >&2
+			exit 1
+		fi
+	done
+	for dtb in 94908.dtb 94908REF.dtb; do
+		if [ ! -s "$SDK_DIR/kernel/dts/4908/$dtb" ]; then
+			echo "Exact kernel cache is incomplete: kernel/dts/4908/$dtb" >&2
+			exit 1
+		fi
+	done
+	if [ -z "$(find "$SDK_DIR/targets/$PROFILE/modules" -type f -name '*.ko' -print -quit 2>/dev/null)" ]; then
+		echo "Exact kernel cache has no installed kernel modules" >&2
+		exit 1
+	fi
+	KERNEL_CACHE_REUSE=1
+	echo "Reusing exact successful kernel cache $expected_kernel_cache"
 fi
 
 source_adapt_started=$SECONDS
@@ -898,6 +961,7 @@ fi
 export ROOT SDK_PATH MAKE_TARGET TOOLCHAINS TOOLCHAIN_SRC TOOLCHAIN_MOUNT_SRC HOSTTOOLS FAKEBIN LOG_FILE OUTER_USER
 export MAKE_JOBS ROUTER_PACKAGE_JOBS PREPARE_JOBS BUILD_MODE FORCE_PROFILE
 export GNU_MAKE_VERSION GNU_MAKE_SHA256 GNU_MAKE_BINDIR GNU_MAKE_BIN
+export ASUSWRT_KERNEL_REUSE="$KERNEL_CACHE_REUSE"
 export DIRECT_TOOLCHAIN CCACHE_ENABLED CCACHE_DIR CCACHE_MAXSIZE CCACHE_PATH_VALUE
 export RUST_REPACK_MAKEFILE RUST_CONSUMER_MANIFEST WEB_PAYLOAD_MANIFEST WEB_SYMLINK_MANIFEST
 export RUST_TOOLCHAIN RUST_TARGET RUST_CPU_FLAGS
@@ -1153,6 +1217,7 @@ if [ "$build_rc" -eq 0 ]; then
 		echo "gnu_make_version=$GNU_MAKE_VERSION"
 		echo "gnu_make_sha256=$GNU_MAKE_SHA256"
 		echo "router_package_jobs=$ROUTER_PACKAGE_JOBS"
+		echo "kernel_cache_reuse=$KERNEL_CACHE_REUSE"
 		echo "build_mode=$BUILD_MODE"
 		echo "force_profile=$FORCE_PROFILE"
 		echo "firmware_sha256=$(sha256sum "$output_image" | awk '{print $1}')"
@@ -1168,6 +1233,9 @@ if [ "$build_rc" -eq 0 ]; then
 	} > "$OUTPUT_DIR/BUILD-STATE.txt"
 	if [ "$BUILD_MODE" != "rust-fast" ]; then
 		compute_full_build_contract_id > "$full_build_state"
+		kernel_cache_state_new="$(mktemp --tmpdir asuswrt-kernel-cache-state.XXXXXX)"
+		compute_kernel_cache_contract_id > "$kernel_cache_state_new"
+		mv -f "$kernel_cache_state_new" "$KERNEL_CACHE_STATE_FILE"
 	fi
 	echo "Copied outputs to: $OUTPUT_DIR"
 else

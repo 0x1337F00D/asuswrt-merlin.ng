@@ -25,7 +25,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 +libnetfilter_cttimeout-1.0.0: libmnl-1.0.4
 +libdisk: shared nvram$(BCMEX)$(EX7)
 +
-+ROUTER_FOUNDATION_TARGETS := openssl $(OPENSSL) shared nvram$(BCMEX)$(EX7) \
++ROUTER_FOUNDATION_TARGETS := openssl shared nvram$(BCMEX)$(EX7) \
 +	libdisk libnfnetlink-$(NETLINK_LIB_VER) libmnl-1.0.4 \
 +	libnetfilter_conntrack-1.0.7 libnetfilter_cttimeout-1.0.0
 +ROUTER_PACKAGE_TARGETS := $(filter-out $(ROUTER_FOUNDATION_TARGETS),$(obj-y))

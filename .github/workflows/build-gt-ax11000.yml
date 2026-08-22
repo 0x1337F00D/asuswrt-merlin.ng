@@ -243,6 +243,13 @@ jobs:
           } | sha256sum | cut -d' ' -f1)"
           echo "overlay_sha=$overlay_sha" >> "$GITHUB_OUTPUT"
 
+      - name: Record runner capacity
+        run: |
+          set -euo pipefail
+          printf 'logical_cpus=%s\n' "$(nproc)"
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+
       - name: Install host dependencies
         run: |
           sudo apt-get update
@@ -303,6 +310,18 @@ jobs:
             | tee input-lock-state.txt
           git -C source status --short
 
+      # This is deliberately an exact, all-or-nothing cache.  Reusing kernel
+      # objects across a different source, toolchain or overlay state is unsafe.
+      - name: Restore exact successful kernel build
+        id: kernel-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            source/release/src-rt-5.02axhnd/kernel
+            source/release/src-rt-5.02axhnd/targets/94908HND/modules
+            source/.asuswrt-kernel-cache-state
+          key: gt-ax11000-kernel-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.patched_diff_sha256 }}-${{ steps.revisions.outputs.overlay_sha }}
+
       - name: Show disk usage before build
         run: |
           df -h "$GITHUB_WORKSPACE"
@@ -321,6 +340,7 @@ jobs:
           ASUSWRT_ENFORCE_INPUT_LOCK: "1"
           ASUSWRT_FAKEBIN: ${{ runner.temp }}/asuswrt-fakebin
           ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
+          ASUSWRT_KERNEL_CACHE_RESTORE: ${{ steps.kernel-cache.outputs.cache-hit == 'true' && '1' || '0' }}
           ASUSWRT_MAKE_JOBS: "1"
           ASUSWRT_PREPARE_JOBS: "4"
           ASUSWRT_OUTPUT_DIR: ${{ github.workspace }}/output
@@ -328,7 +348,7 @@ jobs:
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
           ASUSWRT_TOOLCHAIN_VIEW: ${{ runner.temp }}/asuswrt-toolchain-view/brcm-arm-hnd
           ASUSWRT_TOOLCHAINS_STATE: ${{ steps.revisions.outputs.toolchains_sha }}
-          ROUTER_PACKAGE_JOBS: "1"
+          ROUTER_PACKAGE_JOBS: "4"
           RUST_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
         run: |
           set -euo pipefail
@@ -366,8 +386,11 @@ jobs:
             echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)"
             echo "ci_sha=${GITHUB_SHA}"
             echo "runner_image=${ImageOS:-unknown}"
+            echo "runner_logical_cpus=$(nproc)"
             echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
+            echo "kernel_cache_exact_hit=${{ steps.kernel-cache.outputs.cache-hit }}"
             echo "prepare_jobs=4"
+            echo "router_package_jobs=4"
             echo "rust_toolchain=${{ steps.inputs.outputs.rust_toolchain }}"
             echo "rust_target=${{ steps.inputs.outputs.rust_target }}"
             echo "rust_target_cpu=${{ steps.inputs.outputs.rust_target_cpu }}"
