@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 
+sys.dont_write_bytecode = True
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
 import input_lock  # noqa: E402
