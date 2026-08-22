@@ -189,6 +189,16 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Build and CI debt
 
+- [x] Replace moving upstream/toolchain inputs with exact commits in
+  `inputs.lock`; validate its schema, the complete ordered patch set and the
+  actual binary source-diff hash before a release build.
+- [x] Make the scheduled upstream sync create/update a draft
+  `upstream-sync/<sha>` pull request instead of merging `main`, and run separate
+  required `Rust`, `Security overlay` and `Firmware` checks for vendor,
+  overlay, workflow and lock changes.
+- [ ] Protect GitHub `main` against direct/force pushes and deletion; require
+  the three GT-AX11000 checks, one review and code-owner review. Repository
+  governance files are present, but remote enforcement must be verified.
 - [ ] Fix the fast-resume path so unchanged kernel configuration does not force
   repeated kernel rebuilds.
 - [x] Record worktree preparation, source adaptation, vendor build and
@@ -202,9 +212,10 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [ ] Keep top-level orchestration at `-j1`; only enable package-graph `-j2`
   after repeated reproducible clean builds. Recursive jobs must share the GNU
   jobserver instead of spawning independent pools.
-- [ ] Make one code path own patch application. When CI supplies a prepared
-  worktree, record and verify the actual source diff hash instead of trusting
-  only the intended patch list.
+- [x] Make one code path own patch application. CI applies the canonical
+  `patches/series` exactly once to its prepared source tree; `build.sh` then
+  verifies the complete actual source diff (including added files) against
+  `inputs.lock` instead of trusting only the intended patch list.
 - [x] Pin the GitHub overlay checkout to the exact `GITHUB_SHA`; bind the Rust
   cache to the overlay, upstream, toolchain and Rust identities. Restored Cargo
   fingerprints are safe because every firmware consumer recipe is forced and

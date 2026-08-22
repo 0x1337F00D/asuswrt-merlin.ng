@@ -27,16 +27,24 @@ jobs:
           gh repo clone "$GITHUB_REPOSITORY" repo -- \
             --filter=blob:none --no-checkout
           git -C repo sparse-checkout init --cone
-          git -C repo sparse-checkout set .github
+          git -C repo sparse-checkout set .github/ci/gt-ax11000
           git -C repo checkout main
           git -C repo config user.name github-actions[bot]
           git -C repo config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
-          git -C repo remote add upstream https://github.com/RMerl/asuswrt-merlin.ng.git
+          lock=repo/.github/ci/gt-ax11000/inputs.lock
+          tool=repo/.github/ci/gt-ax11000/tools/input_lock.py
+          patch_root=repo/.github/ci/gt-ax11000/patches
+          upstream_repo=$(python3 "$tool" get upstream_repo --lock "$lock")
+          locked_upstream=$(python3 "$tool" get upstream_sha --lock "$lock")
+
+          git -C repo remote add upstream "$upstream_repo"
           git -C repo fetch --no-tags upstream main
           upstream_sha=$(git -C repo rev-parse upstream/main)
-          if git -C repo merge-base --is-ancestor "$upstream_sha" origin/main; then
-            echo "Fork already contains upstream $upstream_sha"
+          if [ "$upstream_sha" = "$locked_upstream" ] && \
+            git -C repo merge-base --is-ancestor "$upstream_sha" origin/main
+          then
+            echo "Fork already locks and contains upstream $upstream_sha"
             exit 0
           fi
 
@@ -46,13 +54,39 @@ jobs:
           git -C repo merge --no-edit --no-ff "$upstream_sha"
           test "$(git -C repo rev-parse HEAD:release)" = \
             "$(git -C repo rev-parse "$upstream_sha:release")"
-          git -C repo push --force-with-lease origin "$branch"
 
+          source="$RUNNER_TEMP/upstream-source"
+          git init "$source"
+          git -C "$source" remote add origin "$upstream_repo"
+          git -C "$source" sparse-checkout init --cone
+          git -C "$source" sparse-checkout set \
+            release/src release/src-rt release/src-rt-5.02axhnd
+          git -C "$source" fetch --depth=1 --filter=blob:none origin "$upstream_sha"
+          git -C "$source" checkout --detach FETCH_HEAD
+          while IFS= read -r patch_name; do
+            patch_name=${patch_name%%#*}
+            patch_name=${patch_name//[[:space:]]/}
+            test -n "$patch_name" || continue
+            git -C "$source" apply --recount --check "$patch_root/$patch_name"
+            git -C "$source" apply --recount "$patch_root/$patch_name"
+          done < "$patch_root/series"
+          patched_diff=$(python3 "$tool" diff-hash --source "$source")
+          python3 "$tool" update \
+            --lock "$lock" \
+            --upstream-sha "$upstream_sha" \
+            --patched-diff-sha256 "$patched_diff"
+          git -C repo add -- .github/ci/gt-ax11000/inputs.lock
+          if ! git -C repo diff --cached --quiet; then
+            git -C repo commit -m "Lock GT-AX11000 inputs to upstream $short_sha"
+          fi
+
+          git -C repo push --force-with-lease origin "$branch"
           title="Sync RMerl/main to $short_sha"
-          body=$(printf '%s\n\n%s\n%s\n' \
+          body=$(printf '%s\n\n%s\n%s\n%s\n' \
             'Automated upstream synchronization. This PR is never merged automatically.' \
             "- Upstream: \`$upstream_sha\`" \
-            '- Required GT-AX11000 firmware checks must pass before review.')
+            "- Patched source diff: \`$patched_diff\`" \
+            '- Required Rust, security-overlay and firmware checks must pass before review.')
           existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main \
             --head "$branch" --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then

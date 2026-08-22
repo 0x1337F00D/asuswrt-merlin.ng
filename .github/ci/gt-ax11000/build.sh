@@ -7,6 +7,9 @@ ROOT="${ASUSWRT_SOURCE_ROOT:-$SOURCE_REPO}"
 DEVICE="${1:-}"
 RUST_OVERLAY="$SCRIPT_ROOT/rust"
 RUST_REPACK_MAKEFILE="$SCRIPT_ROOT/rust-repack.mk"
+INPUT_LOCK="$SCRIPT_ROOT/inputs.lock"
+INPUT_LOCK_TOOL="$SCRIPT_ROOT/tools/input_lock.py"
+PATCH_SERIES="$SCRIPT_ROOT/patches/series"
 SECURITY_OVERLAY_TEST="$SCRIPT_ROOT/tests/security-overlay-check.sh"
 NETWORK_HARDENING_TEST="$SCRIPT_ROOT/tests/network-hardening-check.sh"
 WEB_PAYLOAD_TEST="$SCRIPT_ROOT/tests/verify-web-payload.sh"
@@ -71,21 +74,17 @@ TOOLCHAIN_SRC="$TOOLCHAINS/$TOOLCHAIN_GROUP"
 HOSTTOOLS="${ASUSWRT_HOSTTOOLS:-/tmp/asuswrt-hosttools}"
 APT_CACHE="${ASUSWRT_APT_CACHE:-/tmp/asuswrt-apt}"
 FAKEBIN="${ASUSWRT_FAKEBIN:-/tmp/asuswrt-fakebin}"
-PATCH_FILES=(
-	"$SCRIPT_ROOT/patches/local-features.patch"
-	"$SCRIPT_ROOT/patches/${MAKE_TARGET}-wsl.patch"
-	"$SCRIPT_ROOT/patches/fast-parallel-build.patch"
-	"$SCRIPT_ROOT/patches/rust-components.patch"
-	"$SCRIPT_ROOT/patches/security-hardening.patch"
-	"$SCRIPT_ROOT/patches/wps-shell-hardening.patch"
-	"$SCRIPT_ROOT/patches/wireless-policy-ui.patch"
-	"$SCRIPT_ROOT/patches/runtime-policy.patch"
-	"$SCRIPT_ROOT/patches/regulatory-profile-boot.patch"
-	"$SCRIPT_ROOT/patches/wireless-service-testlab-stability.patch"
-	"$SCRIPT_ROOT/patches/network-hardening.patch"
-	"$SCRIPT_ROOT/patches/runtime-hardening-2026.patch"
-	"$SCRIPT_ROOT/patches/wifi-upstream-security.patch"
-)
+PATCH_FILES=()
+while IFS= read -r patch_name; do
+	patch_name="${patch_name%%#*}"
+	patch_name="${patch_name//[[:space:]]/}"
+	[ -n "$patch_name" ] || continue
+	case "$patch_name" in
+		*/*|.*) echo "Unsafe patch-series entry: $patch_name" >&2; exit 1 ;;
+	esac
+	PATCH_FILES+=("$SCRIPT_ROOT/patches/$patch_name")
+done < "$PATCH_SERIES"
+[ "${#PATCH_FILES[@]}" -gt 0 ] || { echo "Patch series is empty" >&2; exit 1; }
 MAKE_JOBS="${ASUSWRT_MAKE_JOBS:-1}"
 ROUTER_PACKAGE_JOBS="${ROUTER_PACKAGE_JOBS:-1}"
 PREPARE_JOBS="${ASUSWRT_PREPARE_JOBS:-4}"
@@ -111,6 +110,8 @@ WEB_SYMLINK_MANIFEST="$ROOT/.asuswrt-web-symlinks-expected"
 OUTER_USER="$(id -un)"
 BUILD_STARTED_EPOCH="${ASUSWRT_BUILD_STARTED_EPOCH:-$(date +%s)}"
 WORKTREE_PREP_SECONDS="${ASUSWRT_WORKTREE_PREP_SECONDS:-0}"
+ENFORCE_INPUT_LOCK="${ASUSWRT_ENFORCE_INPUT_LOCK:-0}"
+INPUT_LOCK_STATE_FILE="$OUTPUT_DIR/.asuswrt-input-lock-state"
 
 require_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -142,6 +143,29 @@ require_tmpfs_path() {
 		exit 1
 	fi
 	printf 'RAM-only check: %-20s tmpfs (%s)\n' "$label" "$path"
+}
+
+verify_locked_inputs() {
+	mkdir -p "$OUTPUT_DIR"
+	if [ "$ENFORCE_INPUT_LOCK" != "1" ]; then
+		printf '%s\n' \
+			"input_lock_status=not-enforced" \
+			"input_lock_sha256=$(sha256sum "$INPUT_LOCK" | awk '{print $1}')" \
+			> "$INPUT_LOCK_STATE_FILE"
+		return
+	fi
+	require_cmd python3
+	python3 "$INPUT_LOCK_TOOL" verify \
+		--lock "$INPUT_LOCK" \
+		--series "$PATCH_SERIES" \
+		--patch-root "$SCRIPT_ROOT/patches" \
+		--source "$ROOT" \
+		--toolchains "$TOOLCHAINS" \
+		--rust-toolchain "$RUST_TOOLCHAIN" \
+		--rust-target "$RUST_TARGET" \
+		--rust-target-cpu "${RUST_CPU_FLAGS#-Ctarget-cpu=}" \
+		> "$INPUT_LOCK_STATE_FILE"
+	printf '%s\n' "input_lock_status=verified" >> "$INPUT_LOCK_STATE_FILE"
 }
 
 verify_ram_only_paths() {
@@ -717,6 +741,7 @@ fi
 
 source_adapt_started=$SECONDS
 echo "Installing Rust component overlay"
+verify_locked_inputs
 install_rust_components
 
 echo "Verifying security overlay invariants"
@@ -1061,6 +1086,10 @@ if [ "$build_rc" -eq 0 ]; then
 		echo "build_mode=$BUILD_MODE"
 		echo "force_profile=$FORCE_PROFILE"
 		echo "firmware_sha256=$(sha256sum "$output_image" | awk '{print $1}')"
+		echo "rust_consumers_manifest_sha256=$(sha256sum "$RUST_CONSUMER_MANIFEST" | awk '{print $1}')"
+		echo "web_payload_manifest_sha256=$(sha256sum "$WEB_PAYLOAD_MANIFEST" | awk '{print $1}')"
+		echo "web_symlinks_manifest_sha256=$(sha256sum "$WEB_SYMLINK_MANIFEST" | awk '{print $1}')"
+		cat "$INPUT_LOCK_STATE_FILE"
 		echo "worktree_prepare_seconds=$WORKTREE_PREP_SECONDS"
 		echo "source_adapt_seconds=$source_adapt_seconds"
 		echo "vendor_build_seconds=$vendor_build_seconds"
