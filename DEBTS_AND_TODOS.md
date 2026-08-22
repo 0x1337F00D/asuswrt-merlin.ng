@@ -189,6 +189,16 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Build and CI debt
 
+- [x] Replace moving upstream/toolchain inputs with exact commits in
+  `inputs.lock`; validate its schema, the complete ordered patch set and the
+  actual binary source-diff hash before a release build.
+- [x] Make the scheduled upstream sync create/update a draft
+  `upstream-sync/<sha>` pull request instead of merging `main`, and run separate
+  required `Rust`, `Security overlay` and `Firmware` checks for vendor,
+  overlay, workflow and lock changes.
+- [ ] Protect GitHub `main` against direct/force pushes and deletion; require
+  the three GT-AX11000 checks, one review and code-owner review. Repository
+  governance files are present, but remote enforcement must be verified.
 - [ ] Fix the fast-resume path so unchanged kernel configuration does not force
   repeated kernel rebuilds.
 - [x] Record worktree preparation, source adaptation, vendor build and

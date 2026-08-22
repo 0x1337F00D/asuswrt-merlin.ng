@@ -7,8 +7,17 @@ on:
       - codex/rust-porting
       - codex/network-hardening-2026
     paths:
+      - release/**
       - .github/ci/gt-ax11000/**
-      - .github/workflows/build-gt-ax11000.yml
+      - .github/workflows/**
+  pull_request:
+    branches:
+      - main
+    paths:
+      - release/**
+      - .github/ci/gt-ax11000/**
+      - .github/workflows/**
+  workflow_call:
   workflow_dispatch:
   schedule:
     - cron: "17 3 * * 0"
@@ -21,8 +30,134 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact overlay
+        run: |
+          set -euo pipefail
+          git init overlay
+          git -C overlay remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C overlay sparse-checkout init --cone
+          git -C overlay sparse-checkout set .github/ci/gt-ax11000
+          git -C overlay fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
+          git -C overlay checkout --detach FETCH_HEAD
+          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Read locked inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          lock=overlay/.github/ci/gt-ax11000/inputs.lock
+          tool=overlay/.github/ci/gt-ax11000/tools/input_lock.py
+          for key in upstream_sha toolchains_sha rust_toolchain rust_target rust_target_cpu
+          do
+            value=$(python3 "$tool" get "$key" --lock "$lock")
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+          overlay_sha="$({
+            sha256sum overlay/.github/ci/gt-ax11000/build.sh
+            sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
+            find overlay/.github/ci/gt-ax11000/rust -type f \
+              -not -path '*/target/*' -print0 | sort -z | xargs -0 sha256sum
+          } | sha256sum | cut -d' ' -f1)"
+          printf 'overlay_sha=%s\n' "$overlay_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "${{ steps.inputs.outputs.rust_toolchain }}" \
+            --profile minimal --component clippy,rustfmt \
+            --target "${{ steps.inputs.outputs.rust_target }}"
+
+      - name: Restore Rust cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/asuswrt-rust-target
+          key: gt-ax11000-rust-v3-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.overlay_sha }}
+
+      - name: Run Rust, input-lock, fuzz and C ABI gates
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
+          RUST_C_ABI_CARGO_HOME: ${{ runner.temp }}/asuswrt-c-abi-cargo
+          RUST_C_ABI_FIXTURE_DIR: ${{ runner.temp }}/asuswrt-c-abi-fixtures
+          RUST_C_ABI_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
+          RUST_FUZZ_CARGO_HOME: ${{ runner.temp }}/asuswrt-fuzz-cargo
+          RUST_FUZZ_ITERATIONS: "250000"
+          RUST_FUZZ_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
+        run: |
+          set -euo pipefail
+          root=overlay/.github/ci/gt-ax11000
+          python3 "$root/tests/test_input_lock.py"
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" fmt \
+            --manifest-path "$root/rust/Cargo.toml" --all -- --check
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" test \
+            --manifest-path "$root/rust/Cargo.toml" --workspace --locked
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" clippy \
+            --manifest-path "$root/rust/Cargo.toml" \
+            --workspace --all-targets --locked -- -D warnings
+          RUSTFLAGS="-Dwarnings -Ctarget-cpu=${{ steps.inputs.outputs.rust_target_cpu }}" \
+            cargo +"${{ steps.inputs.outputs.rust_toolchain }}" check \
+            --manifest-path "$root/rust/Cargo.toml" --workspace --locked \
+            --target "${{ steps.inputs.outputs.rust_target }}"
+          bash "$root/tests/rust-fuzz-smoke.sh"
+          bash "$root/tests/c-abi-smoke.sh"
+
+  security-overlay:
+    name: Security overlay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact overlay
+        run: |
+          set -euo pipefail
+          git init overlay
+          git -C overlay remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C overlay sparse-checkout init --cone
+          git -C overlay sparse-checkout set .github/ci/gt-ax11000
+          git -C overlay fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
+          git -C overlay checkout --detach FETCH_HEAD
+          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Checkout and patch locked upstream
+        run: |
+          set -euo pipefail
+          root=overlay/.github/ci/gt-ax11000
+          lock="$root/inputs.lock"
+          tool="$root/tools/input_lock.py"
+          patch_root="$root/patches"
+          upstream_repo=$(python3 "$tool" get upstream_repo --lock "$lock")
+          upstream_sha=$(python3 "$tool" get upstream_sha --lock "$lock")
+          expected_diff=$(python3 "$tool" get patched_diff_sha256 --lock "$lock")
+          python3 "$tool" patch-set-hash \
+            --series "$patch_root/series" --patch-root "$patch_root"
+          git init source
+          git -C source remote add origin "$upstream_repo"
+          git -C source sparse-checkout init --cone
+          git -C source sparse-checkout set \
+            release/src release/src-rt release/src-rt-5.02axhnd
+          git -C source fetch --depth=1 --filter=blob:none origin "$upstream_sha"
+          git -C source checkout --detach FETCH_HEAD
+          while IFS= read -r patch_name; do
+            patch_name=${patch_name%%#*}
+            patch_name=${patch_name//[[:space:]]/}
+            test -n "$patch_name" || continue
+            git -C source apply --recount --check "$patch_root/$patch_name"
+            git -C source apply --recount "$patch_root/$patch_name"
+          done < "$patch_root/series"
+          actual_diff=$(python3 "$tool" diff-hash --source source)
+          test "$actual_diff" = "$expected_diff"
+          mkdir -p source/release/src/router/rust-components
+          cp -a "$root/rust/." source/release/src/router/rust-components/
+          bash "$root/tests/security-overlay-check.sh" "$GITHUB_WORKSPACE/source"
+          bash "$root/tests/network-hardening-check.sh" "$GITHUB_WORKSPACE/source"
+
   build:
     name: Firmware
+    needs:
+      - rust
+      - security-overlay
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -39,33 +174,67 @@ jobs:
           git -C overlay checkout --detach FETCH_HEAD
           test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
 
-      - name: Checkout current upstream sources
+      - name: Read locked build inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          lock=overlay/.github/ci/gt-ax11000/inputs.lock
+          tool=overlay/.github/ci/gt-ax11000/tools/input_lock.py
+          for key in upstream_repo upstream_sha toolchains_repo toolchains_sha \
+            rust_toolchain rust_target rust_target_cpu patched_diff_sha256
+          do
+            value=$(python3 "$tool" get "$key" --lock "$lock")
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Checkout locked upstream sources
+        env:
+          UPSTREAM_REPO: ${{ steps.inputs.outputs.upstream_repo }}
+          UPSTREAM_SHA: ${{ steps.inputs.outputs.upstream_sha }}
         run: |
           set -euxo pipefail
-          git clone --depth=1 --filter=blob:none --sparse --branch main \
-            https://github.com/RMerl/asuswrt-merlin.ng.git source
+          git init source
+          git -C source remote add origin "$UPSTREAM_REPO"
+          git -C source sparse-checkout init --cone
           git -C source sparse-checkout set \
             release/src \
             release/src-rt \
             release/src-rt-5.02axhnd
-          git -C source rev-parse HEAD
+          git -C source fetch --depth=1 --filter=blob:none origin "$UPSTREAM_SHA"
+          git -C source checkout --detach FETCH_HEAD
+          test "$(git -C source rev-parse HEAD)" = "$UPSTREAM_SHA"
 
-      - name: Checkout required toolchains
+      - name: Checkout locked toolchains
+        env:
+          TOOLCHAINS_REPO: ${{ steps.inputs.outputs.toolchains_repo }}
+          TOOLCHAINS_SHA: ${{ steps.inputs.outputs.toolchains_sha }}
         run: |
           set -euxo pipefail
-          git clone --depth=1 --filter=blob:none --sparse --branch master \
-            https://github.com/RMerl/am-toolchains.git toolchains
+          git init toolchains
+          git -C toolchains remote add origin "$TOOLCHAINS_REPO"
+          git -C toolchains sparse-checkout init --cone
           git -C toolchains sparse-checkout set \
             brcm-arm-hnd/crosstools-arm-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1 \
             brcm-arm-hnd/crosstools-aarch64-gcc-5.5-linux-4.1-glibc-2.26-binutils-2.28.1 \
             brcm-arm-hnd/crosstools-arm-gcc-5.3-linux-4.1-glibc-2.22-binutils-2.25 \
             brcm-arm-sdk/hndtools-armeabi-2011.09 \
             brcm-arm-sdk/hndtools-armeabi-2013.11
-          git -C toolchains rev-parse HEAD
+          git -C toolchains fetch --depth=1 --filter=blob:none origin "$TOOLCHAINS_SHA"
+          git -C toolchains checkout --detach FETCH_HEAD
+          test "$(git -C toolchains rev-parse HEAD)" = "$TOOLCHAINS_SHA"
 
       - name: Record input revisions
         id: revisions
         run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = \
+            "${{ steps.inputs.outputs.upstream_sha }}"
+          test "$(git -C toolchains rev-parse HEAD)" = \
+            "${{ steps.inputs.outputs.toolchains_sha }}"
+          # The fork may carry overlay commits, but its vendor tree must be
+          # byte-for-byte the tree from the locked RMerl commit.
+          test "$(git -C overlay rev-parse HEAD:release)" = \
+            "$(git -C source rev-parse HEAD:release)"
           echo "upstream_sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           overlay_sha="$({
@@ -88,53 +257,18 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: |
-          rustup toolchain install 1.85.1 --profile minimal \
-            --component clippy,rustfmt --target armv7-unknown-linux-gnueabi
-          rustc +1.85.1 --version --verbose
+          rustup toolchain install "${{ steps.inputs.outputs.rust_toolchain }}" \
+            --profile minimal --component clippy,rustfmt \
+            --target "${{ steps.inputs.outputs.rust_target }}"
+          rustc +"${{ steps.inputs.outputs.rust_toolchain }}" --version --verbose
 
       - name: Restore Rust build cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/asuswrt-rust-target
-          key: gt-ax11000-rust-v2-${{ runner.os }}-rust-1.85.1-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.revisions.outputs.overlay_sha }}
+          key: gt-ax11000-rust-v3-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.revisions.outputs.overlay_sha }}
           restore-keys: |
-            gt-ax11000-rust-v2-${{ runner.os }}-rust-1.85.1-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
-
-      - name: Test Rust components
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
-        run: |
-          set -euo pipefail
-          cargo +1.85.1 fmt \
-            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
-            --all -- --check
-          cargo +1.85.1 test \
-            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
-            --workspace --locked
-          cargo +1.85.1 clippy \
-            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
-            --workspace --all-targets --locked -- -D warnings
-          RUSTFLAGS="-Dwarnings -Ctarget-cpu=cortex-a9" cargo +1.85.1 check \
-            --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
-            --workspace --locked --target armv7-unknown-linux-gnueabi
-
-      - name: Run structured Rust fuzz gates
-        env:
-          RUST_FUZZ_CARGO_HOME: ${{ runner.temp }}/asuswrt-fuzz-cargo
-          RUST_FUZZ_ITERATIONS: "250000"
-          RUST_FUZZ_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
-        run: |
-          set -euo pipefail
-          bash overlay/.github/ci/gt-ax11000/tests/rust-fuzz-smoke.sh
-
-      - name: Verify C to Rust ABI fixtures
-        env:
-          RUST_C_ABI_CARGO_HOME: ${{ runner.temp }}/asuswrt-c-abi-cargo
-          RUST_C_ABI_FIXTURE_DIR: ${{ runner.temp }}/asuswrt-c-abi-fixtures
-          RUST_C_ABI_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
-        run: |
-          set -euo pipefail
-          bash overlay/.github/ci/gt-ax11000/tests/c-abi-smoke.sh
+            gt-ax11000-rust-v3-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
 
       - name: Restore compiler cache
         id: ccache
@@ -149,23 +283,26 @@ jobs:
       - name: Apply local CI overlay
         run: |
           set -euxo pipefail
-          for patch in \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/local-features.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/gt-ax11000-wsl.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/fast-parallel-build.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/rust-components.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/security-hardening.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wps-shell-hardening.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wireless-policy-ui.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/runtime-policy.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/regulatory-profile-boot.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/network-hardening.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/runtime-hardening-2026.patch" \
-            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wifi-upstream-security.patch"
-          do
+          patch_root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches"
+          while IFS= read -r patch_name; do
+            patch_name=${patch_name%%#*}
+            patch_name=${patch_name//[[:space:]]/}
+            test -n "$patch_name" || continue
+            patch="$patch_root/$patch_name"
             git -C source apply --recount --check "$patch"
             git -C source apply --recount "$patch"
-          done
+          done < "$patch_root/series"
+          python3 \
+            overlay/.github/ci/gt-ax11000/tools/input_lock.py verify \
+            --lock overlay/.github/ci/gt-ax11000/inputs.lock \
+            --series "$patch_root/series" \
+            --patch-root "$patch_root" \
+            --source source \
+            --toolchains toolchains \
+            --rust-toolchain "${{ steps.inputs.outputs.rust_toolchain }}" \
+            --rust-target "${{ steps.inputs.outputs.rust_target }}" \
+            --rust-target-cpu "${{ steps.inputs.outputs.rust_target_cpu }}" \
+            | tee input-lock-state.txt
           git -C source status --short
 
       - name: Show disk usage before build
@@ -183,6 +320,7 @@ jobs:
           ASUSWRT_CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
           ASUSWRT_CCACHE_MAXSIZE: 2G
           ASUSWRT_DIRECT_TOOLCHAIN: "1"
+          ASUSWRT_ENFORCE_INPUT_LOCK: "1"
           ASUSWRT_FAKEBIN: ${{ runner.temp }}/asuswrt-fakebin
           ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
           ASUSWRT_MAKE_JOBS: "1"
@@ -232,7 +370,10 @@ jobs:
             echo "runner_image=${ImageOS:-unknown}"
             echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
             echo "prepare_jobs=4"
-            echo "rust_toolchain=1.85.1"
+            echo "rust_toolchain=${{ steps.inputs.outputs.rust_toolchain }}"
+            echo "rust_target=${{ steps.inputs.outputs.rust_target }}"
+            echo "rust_target_cpu=${{ steps.inputs.outputs.rust_target_cpu }}"
+            cat input-lock-state.txt
           } > output/BUILD-METADATA.txt
           (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)
           find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n

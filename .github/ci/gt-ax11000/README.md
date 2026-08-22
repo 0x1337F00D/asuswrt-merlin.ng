@@ -2,9 +2,16 @@
 
 This directory contains the complete local build overlay for the GT-AX11000.
 The upstream Asuswrt-Merlin source tree remains unchanged in Git. CI checks out
-the current `RMerl/asuswrt-merlin.ng` `main` branch, applies the patch series only in
-the ephemeral runner workspace, and uploads the firmware plus build log as a
-short-lived artifact.
+the exact upstream and toolchain commits recorded in `inputs.lock`, applies the
+canonical `patches/series` only in the ephemeral runner workspace, verifies the
+actual binary Git diff against its locked SHA-256, and uploads the firmware plus
+build metadata and log as a short-lived artifact. Moving `main` or `master`
+heads are never release inputs.
+
+The scheduled upstream workflow never changes `main`. It merges a new
+`RMerl/main` into `upstream-sync/<sha>`, recomputes the locked patched-source
+diff and opens or updates a draft pull request. The separate `Rust`,
+`Security overlay` and `Firmware` checks must pass before review and merge.
 
 Local builds can set `ASUSWRT_REQUIRE_TMPFS=1` to fail closed unless the source
 repository, build worktree, firmware output, temporary directory, build home,
