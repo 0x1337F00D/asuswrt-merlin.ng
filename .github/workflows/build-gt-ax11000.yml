@@ -84,7 +84,7 @@ jobs:
           RUST_FUZZ_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
         run: |
           set -euo pipefail
-          root=overlay/.github/ci/gt-ax11000
+          root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           python3 "$root/tests/test_input_lock.py"
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" fmt \
             --manifest-path "$root/rust/Cargo.toml" --all -- --check
@@ -119,7 +119,7 @@ jobs:
       - name: Checkout and patch locked upstream
         run: |
           set -euo pipefail
-          root=overlay/.github/ci/gt-ax11000
+          root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           lock="$root/inputs.lock"
           tool="$root/tools/input_lock.py"
           patch_root="$root/patches"
