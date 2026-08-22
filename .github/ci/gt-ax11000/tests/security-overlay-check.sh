@@ -41,7 +41,7 @@ wps="$router/rc/sysdeps/wps-broadcom.c"
 openvpn="$router/libovpn/openvpn_options.c"
 openvpn_setup="$router/libovpn/openvpn_setup.c"
 rstats_makefile="$router/rstats/Makefile"
-model_config="$router/config_gt-ax11000"
+router_config_base="$router/config_base"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
 security_rust="$router/rust-components/router-security/src/lib.rs"
 policy_rust="$router/rust-components/router-policy/src/vpn.rs"
@@ -52,7 +52,7 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$services" "$watchdog" "$ipsec" \
 	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
 	"$policy_rust" "$wireless_ui" "$openvpn_setup" \
-	"$rstats_makefile" "$model_config" \
+	"$rstats_makefile" "$router_config_base" \
 	"$wifi_base/hostapd/src/common/sae.c" \
 	"$wifi_base/hostapd/src/radius/radius.c" \
 	"$wifi_base/hostapd/src/rsn_supp/wpa.c" \
@@ -191,7 +191,7 @@ reject_text "$openvpn_setup" 'data-ciphers-fallback AES-128-CBC'
 # Cargo may enable it only for model profiles that explicitly select it.
 require_text "$rstats_makefile" 'ifeq ($(RTCONFIG_ISP_METER),y)'
 require_text "$rstats_makefile" 'RUST_RSTAT_FEATURES := --features isp-meter'
-require_text "$model_config" '# RTCONFIG_ISP_METER is not set'
+require_text "$router_config_base" '# RTCONFIG_ISP_METER is not set'
 
 # Security fixes are backported into both duplicate vendor trees.
 for wifi_tree in hostapd wpa_supplicant; do
