@@ -67,6 +67,13 @@ link their probe executables. `router-foundation` is therefore explicitly
 four-token jobserver. This keeps the high-value parallel region while making
 the common stage a deterministic prefix.
 
+The next hosted run exposed the same implicit-order problem inside a package:
+`lldpd` listed its staged libraries and generated Autoconf `Makefile` as peer
+prerequisites, allowing configure to link before those libraries existed.
+Every top-level package target now preserves its declared prerequisite order;
+independent package targets still run concurrently. This generalizes the fix
+without serializing the large package remainder.
+
 The remaining gate is a hosted GitHub Actions cold run followed by an exact
 cache-hit run. CI metadata records runner CPU count, router tokens and both
 cache-hit states so the hosted wall-time result is auditable.

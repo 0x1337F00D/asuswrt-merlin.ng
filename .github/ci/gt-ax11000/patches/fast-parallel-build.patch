@@ -1,12 +1,11 @@
 diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
-@@ -2101,7 +2101,35 @@
+@@ -2101,7 +2101,38 @@
  ifeq ($(HND_ROUTER),y)
 -all: clean-build kernel_header version fsbuild $(obj-y)
 +ROUTER_PACKAGE_JOBS ?= 1
 +.PHONY: router-foundation router-packages
-+.NOTPARALLEL: router-foundation
 +
 +all:
 +	+$(MAKE) clean-build
@@ -30,6 +29,10 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 +	libdisk libnfnetlink-$(NETLINK_LIB_VER) libmnl-1.0.4 \
 +	libnetfilter_conntrack-1.0.7 libnetfilter_cttimeout-1.0.0
 +ROUTER_PACKAGE_TARGETS := $(filter-out $(ROUTER_FOUNDATION_TARGETS),$(obj-y))
++# Preserve the vendor-declared prerequisite order inside each package (for
++# example libraries before an Autoconf Makefile), while separate packages may
++# still consume the shared jobserver concurrently.
++.NOTPARALLEL: router-foundation $(ROUTER_PACKAGE_TARGETS)
 +
 +router-foundation: $(ROUTER_FOUNDATION_TARGETS)
 +router-packages: router-foundation .WAIT $(ROUTER_PACKAGE_TARGETS)
