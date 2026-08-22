@@ -7,9 +7,34 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+use router_policy::testlab::TestlabRequest;
+
 const MAX_WIREGUARD_CONFIG_SIZE: u64 = 65_536;
 const MAX_FIREWALL_RULESET_SIZE: u64 = 128 * 1024;
 const O_NOFOLLOW: i32 = 0o400000;
+
+/// Classify a persisted regulatory profile without accepting an independent
+/// channel or power value. `1` is a supported normal country, `2` is the
+/// synthetic `ALL` profile, and `0` is invalid.
+///
+/// # Safety
+///
+/// `country` must address a NUL-terminated string for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_regulatory_profile_kind(country: *const c_char) -> c_int {
+    if country.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    let Ok(country) = unsafe { CStr::from_ptr(country) }.to_str() else {
+        return 0;
+    };
+    match TestlabRequest::from_country(country) {
+        Ok(_) if country == "ALL" => 2,
+        Ok(_) => 1,
+        Err(_) => 0,
+    }
+}
 
 fn read_regular_ascii_file(path: &Path, max_size: u64) -> Option<String> {
     let file = OpenOptions::new()

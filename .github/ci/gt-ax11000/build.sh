@@ -80,6 +80,8 @@ PATCH_FILES=(
 	"$SCRIPT_ROOT/patches/wps-shell-hardening.patch"
 	"$SCRIPT_ROOT/patches/wireless-policy-ui.patch"
 	"$SCRIPT_ROOT/patches/runtime-policy.patch"
+	"$SCRIPT_ROOT/patches/regulatory-profile-boot.patch"
+	"$SCRIPT_ROOT/patches/wireless-service-testlab-stability.patch"
 	"$SCRIPT_ROOT/patches/network-hardening.patch"
 	"$SCRIPT_ROOT/patches/runtime-hardening-2026.patch"
 	"$SCRIPT_ROOT/patches/wifi-upstream-security.patch"
@@ -108,6 +110,7 @@ WEB_PAYLOAD_MANIFEST="$ROOT/.asuswrt-web-payload-expected"
 WEB_SYMLINK_MANIFEST="$ROOT/.asuswrt-web-symlinks-expected"
 OUTER_USER="$(id -un)"
 BUILD_STARTED_EPOCH="${ASUSWRT_BUILD_STARTED_EPOCH:-$(date +%s)}"
+WORKTREE_PREP_SECONDS="${ASUSWRT_WORKTREE_PREP_SECONDS:-0}"
 
 require_cmd() {
 	if ! command -v "$1" >/dev/null 2>&1; then
@@ -675,13 +678,16 @@ if [ -z "${ASUSWRT_BUILD_WORKTREE:-}" ]; then
 	else
 		echo "Preparing clean source worktree in $WORKTREE_DIR"
 	fi
+	worktree_prepare_started=$SECONDS
 	prepare_source_worktree
+	WORKTREE_PREP_SECONDS=$((SECONDS - worktree_prepare_started))
 	if [ "$BUILD_MODE" = "rust-fast" ] && [ "$ASUSWRT_FAST_REUSE_HIT" != "1" ]; then
 		echo "rust-fast requires an exact prepared-source state from a prior full build" >&2
 		exit 1
 	fi
 	exec env \
 		ASUSWRT_BUILD_STARTED_EPOCH="$BUILD_STARTED_EPOCH" \
+		ASUSWRT_WORKTREE_PREP_SECONDS="$WORKTREE_PREP_SECONDS" \
 		ASUSWRT_BUILD_WORKTREE=1 \
 		ASUSWRT_BUILD_MODE="$BUILD_MODE" \
 		ASUSWRT_FORCE_PROFILE="$FORCE_PROFILE" \
@@ -709,6 +715,7 @@ if [ ! -f "$RUST_REPACK_MAKEFILE" ]; then
 	exit 1
 fi
 
+source_adapt_started=$SECONDS
 echo "Installing Rust component overlay"
 install_rust_components
 
@@ -772,6 +779,7 @@ if [ "$CCACHE_ENABLED" = "1" ]; then
 	echo "Preparing persistent HND compiler cache in $CCACHE_DIR"
 	prepare_ccache_toolchain_view
 fi
+source_adapt_seconds=$((SECONDS - source_adapt_started))
 
 DIRECT_TOOLCHAIN_LINK_CREATED=0
 cleanup_direct_toolchain() {
@@ -814,6 +822,7 @@ find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
 	-name "$IMAGE_GLOB" -delete 2>/dev/null || true
 build_started_marker="$(mktemp --tmpdir asuswrt-build-start.XXXXXX)"
 touch "$build_started_marker"
+vendor_build_started=$SECONDS
 set +e
 "${build_shell[@]}" <<'EOF'
 set -euo pipefail
@@ -937,6 +946,8 @@ exit "$make_rc"
 EOF
 build_rc=$?
 set -e
+vendor_build_seconds=$((SECONDS - vendor_build_started))
+post_build_gate_started=$SECONDS
 
 mapfile -d '' built_images < <(
 	find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
@@ -1050,6 +1061,10 @@ if [ "$build_rc" -eq 0 ]; then
 		echo "build_mode=$BUILD_MODE"
 		echo "force_profile=$FORCE_PROFILE"
 		echo "firmware_sha256=$(sha256sum "$output_image" | awk '{print $1}')"
+		echo "worktree_prepare_seconds=$WORKTREE_PREP_SECONDS"
+		echo "source_adapt_seconds=$source_adapt_seconds"
+		echo "vendor_build_seconds=$vendor_build_seconds"
+		echo "post_build_gate_seconds=$((SECONDS - post_build_gate_started))"
 		echo "duration_seconds=$(($(date +%s) - BUILD_STARTED_EPOCH))"
 	} > "$OUTPUT_DIR/BUILD-STATE.txt"
 	if [ "$BUILD_MODE" != "rust-fast" ]; then

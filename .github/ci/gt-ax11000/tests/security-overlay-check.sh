@@ -31,20 +31,28 @@ httpd_stubs="$router/httpd/httpd_compat_stubs.c"
 web="$router/httpd/web.c"
 rc_stubs="$router/rc/rc_compat_stubs.c"
 firewall="$router/rc/firewall.c"
+lan="$router/rc/lan.c"
+init="$router/rc/init.c"
+services="$router/rc/services.c"
+watchdog="$router/rc/watchdog.c"
 ipsec="$router/rc/rc_ipsec.c"
 wireguard="$router/rc/wireguard.c"
 wps="$router/rc/sysdeps/wps-broadcom.c"
 openvpn="$router/libovpn/openvpn_options.c"
 openvpn_setup="$router/libovpn/openvpn_setup.c"
+rstats_makefile="$router/rstats/Makefile"
+model_config="$router/config_gt-ax11000"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
 security_rust="$router/rust-components/router-security/src/lib.rs"
 policy_rust="$router/rust-components/router-policy/src/vpn.rs"
 wireless_ui="$router/www/Advanced_WAdvanced_Content.asp"
 wifi_base="$root/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools"
 
-for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$ipsec" \
+for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
+	"$services" "$watchdog" "$ipsec" \
 	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
 	"$policy_rust" "$wireless_ui" "$openvpn_setup" \
+	"$rstats_makefile" "$model_config" \
 	"$wifi_base/hostapd/src/common/sae.c" \
 	"$wifi_base/hostapd/src/radius/radius.c" \
 	"$wifi_base/hostapd/src/rsn_supp/wpa.c" \
@@ -102,14 +110,30 @@ reject_text "$httpd_stubs" 'nvram_set("wl0_chlist"'
 reject_text "$httpd_stubs" 'nvram_set("0:maxp'
 require_text "$httpd_stubs" 'nvram_set("rust_regulatory_testlab_ack_v1", "1");'
 require_text "$httpd_stubs" 'nvram_commit();'
-for unit in 0 1 2; do
-	require_text "$httpd_stubs" "nvram_set(\"${unit}:ccode\", driver_country);"
-	require_text "$httpd_stubs" "nvram_set(\"wl${unit}_txpower\", txpower);"
-	require_text "$httpd_stubs" "nvram_unset(\"wl${unit}_chlist\");"
+reject_text "$httpd_stubs" 'nvram_set("wl0_country_code"'
+reject_text "$httpd_stubs" 'nvram_set("wl0_txpower"'
+require_text "$lan" 'rust_regulatory_profile_kind(country)'
+require_text "$lan" 'driver_country = kind == 2 ? "#a" : country;'
+require_text "$lan" 'txpower = kind == 2 ? "500" : "100";'
+require_text "$lan" 'apply_regulatory_testlab_profile();'
+require_text "$init" 'apply_regulatory_testlab_profile();'
+require_text "$security_rust" 'pub unsafe extern "C" fn rust_regulatory_profile_kind'
+require_text "$services" 'suspended bsd under regulatory test-lab ALL profile'
+require_text "$services" 'suspended roamast under regulatory test-lab ALL profile'
+require_text "$watchdog" 'if (nvram_match("location_code", "ALL"))'
+restart_defaults_line=$(grep -nF 'wl_defaults();' "$lan" | tail -1 | cut -d: -f1)
+restart_profile_line=$(grep -nF $'\tapply_regulatory_testlab_profile();' "$lan" | tail -1 | cut -d: -f1)
+restart_start_line=$(grep -nF $'\tstart_lan_wl();' "$lan" | tail -1 | cut -d: -f1)
+if [ -z "$restart_defaults_line" ] || [ -z "$restart_profile_line" ] ||
+   [ -z "$restart_start_line" ] ||
+   [ "$restart_defaults_line" -ge "$restart_profile_line" ] ||
+   [ "$restart_profile_line" -ge "$restart_start_line" ]; then
+	echo "regulatory profile must be re-derived after wl_defaults and before start_lan_wl" >&2
+	exit 1
+fi
+for protected in '"0:ccode"' '"2:ccode"' '"wl0_txpower"' '"wl2_chlist"'; do
+	require_text "$lan" "$protected"
 done
-require_text "$httpd_stubs" 'driver_country = !strcmp(country, "ALL") ? "#a" : country;'
-require_text "$httpd_stubs" 'txpower = !strcmp(country, "ALL") ? "500" : "100";'
-require_text "$httpd_stubs" 'nvram_set("acs_unii4", !strcmp(country, "ALL") ? "1" : "0");'
 for protected in 'b"0:ccode"' 'b"2:maxp5ga2"' 'b"pci/2/1/maxp2ga0"' \
 	'b"wl0_txpower"' 'b"wl2_chlist"'; do
 	require_text "$httpd_rust" "$protected"
@@ -162,6 +186,12 @@ require_text "$openvpn_setup" 'allow-compression no'
 require_text "$openvpn_setup" 'tls-version-min 1.2'
 require_text "$openvpn_setup" 'remote-cert-tls server'
 reject_text "$openvpn_setup" 'data-ciphers-fallback AES-128-CBC'
+
+# The legacy ISP-meter writes JFFS state and is not a GT-AX11000 feature.
+# Cargo may enable it only for model profiles that explicitly select it.
+require_text "$rstats_makefile" 'ifeq ($(RTCONFIG_ISP_METER),y)'
+require_text "$rstats_makefile" 'RUST_RSTAT_FEATURES := --features isp-meter'
+require_text "$model_config" '# RTCONFIG_ISP_METER is not set'
 
 # Security fixes are backported into both duplicate vendor trees.
 for wifi_tree in hostapd wpa_supplicant; do

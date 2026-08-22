@@ -2,7 +2,7 @@ diff --git a/release/src/router/www/Advanced_WAdvanced_Content.asp b/release/src
 index 01b2ade7412..ec7a6ead318 100644
 --- a/release/src/router/www/Advanced_WAdvanced_Content.asp
 +++ b/release/src/router/www/Advanced_WAdvanced_Content.asp
-@@ -308,6 +308,7 @@ function initial(){
+@@ -308,6 +308,8 @@ function initial(){
  	register_event();
  	init_cookie();
  	backForwardCompatibility();
@@ -21,7 +21,7 @@ index 01b2ade7412..ec7a6ead318 100644
  	}
  
  	control_TimeField();
-@@ -963,11 +963,35 @@ function changeRSSI(_switch){
+@@ -963,11 +963,189 @@ function changeRSSI(_switch){
  	}
  }
  
@@ -221,7 +221,7 @@ index 01b2ade7412..ec7a6ead318 100644
  			if((orig_region.length > 0 && orig_region != document.form.ui_location_code.value)
  			|| (orig_region == "" && document.form.ui_location_code.value != tcode)){
  				if(amesh_support && ((isSwMode("RT") || isSwMode("WISP")) || isSwMode("ap")) && ameshRouter_support) {
-@@ -1092,7 +1206,8 @@ function applyRule(){
+@@ -1092,8 +1206,9 @@ function applyRule(){
  				httpApi.nvramSet(postData);
  			}
  		}
@@ -232,7 +232,7 @@ index 01b2ade7412..ec7a6ead318 100644
  			var uiLocationCode = document.form.ui_location_code.value;
  			var locationCode = (U5_country_code && uiLocationCode == "U5") ? "AA" : uiLocationCode;
  			httpApi.nvramSet({
-@@ -2126,6 +2241,17 @@ function wl_disable11b(obj){
+@@ -2126,6 +2241,26 @@ function wl_disable11b(obj){
  							</select>
  						</td>
  					</tr>

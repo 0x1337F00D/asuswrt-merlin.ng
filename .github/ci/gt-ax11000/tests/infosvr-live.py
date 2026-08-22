@@ -85,6 +85,28 @@ def recv_from_router(sock, router_ip, timeout, code):
             return data
 
 
+def recv_find_cap_with_one_retry(sock, router_ip):
+    """Tolerate one lost UDP broadcast without weakening response checks.
+
+    infosvr deliberately suppresses duplicate source/opcode requests for two
+    seconds.  A retry is therefore useful only after the first receive timeout,
+    which is already longer than that window.  The caller still validates the
+    exact response header, TLV bounds and stable group ID.
+    """
+    try:
+        return recv_from_router(
+            sock, router_ip, RESPONSE_TIMEOUT, "FIND_CAP_2_TIMEOUT"
+        ), False
+    except TestFailure as error:
+        if error.code != "FIND_CAP_2_TIMEOUT":
+            raise
+    drain(sock)
+    send(sock, router_ip, packet(CMD_FIND_CAP), "SEND_FIND_CAP_RETRY_ERROR")
+    return recv_from_router(
+        sock, router_ip, RESPONSE_TIMEOUT, "FIND_CAP_RETRY_TIMEOUT"
+    ), True
+
+
 def expect_silence(sock, router_ip, code):
     deadline = time.monotonic() + SILENCE_TIMEOUT
     while True:
@@ -199,7 +221,7 @@ def run(router_ip):
         if wait > 0:
             time.sleep(wait)
         send(sock, router_ip, packet(CMD_FIND_CAP), "SEND_FIND_CAP_2_ERROR")
-        second = recv_from_router(sock, router_ip, RESPONSE_TIMEOUT, "FIND_CAP_2_TIMEOUT")
+        second, retried = recv_find_cap_with_one_retry(sock, router_ip)
         second_received = time.monotonic()
         check_response_header(second, CMD_FIND_CAP, "FIND_CAP_2_RESPONSE")
         second_group = find_group_id(second)
@@ -209,6 +231,7 @@ def run(router_ip):
         if first_group != second_group:
             raise TestFailure("FIND_CAP_GROUP_ID_MISMATCH")
         print("FIND_CAP_GAP_MS={}".format(gap_ms))
+        print("FIND_CAP_RETRY={}".format(int(retried)))
         print("FIND_CAP_GROUP_ID_LEN=20")
         print("FIND_CAP_GROUP_ID_MATCH=PASS")
     finally:

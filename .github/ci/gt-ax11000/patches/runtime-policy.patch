@@ -21,7 +21,7 @@ index 1bb1dcb959b..8bb170803ca 100644
  
  int nvram_modify_log(char *name, char *new, char *old, struct json_object *nvram_modify_obj)
  {
-@@ -87,6 +91,63 @@ void do_get_security_update_cgi(char *url, FILE *stream)
+@@ -87,6 +91,95 @@ void do_get_security_update_cgi(char *url, FILE *stream)
  	websWrite(stream, "{\"supported\":false}");
  }
  
@@ -129,7 +129,7 @@ index bd024c2785d..43fd8e223d8 100644
  
  extern void do_set_ASUS_privacy_policy_cgi(char *url, FILE *stream);
  extern void do_get_ASUS_privacy_policy_cgi(char *url, FILE *stream);
-@@ -4264,12 +4265,69 @@ static void clear_residual_bw_qos_state(void);
+@@ -4264,12 +4265,66 @@ static void clear_residual_bw_qos_state(void);
  #endif
  
  extern int rust_httpd_wireless_identity_is_readonly(const char *name, size_t length);

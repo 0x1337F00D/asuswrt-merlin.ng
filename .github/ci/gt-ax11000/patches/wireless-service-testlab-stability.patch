@@ -1,0 +1,43 @@
+diff --git a/release/src/router/rc/services.c b/release/src/router/rc/services.c
+--- a/release/src/router/rc/services.c
++++ b/release/src/router/rc/services.c
+@@ -23677,6 +23677,12 @@ int start_bsd(void)
+ 
+ 	stop_bsd();
+ 
++#if defined(GTAX11000)
++	if (nvram_match("location_code", "ALL")) {
++		logmessage("wireless", "suspended bsd under regulatory test-lab ALL profile");
++		return -1;
++	}
++#endif
+ #ifdef RTCONFIG_FAST_ACL_SET
+ 	if (nvram_match("watchdog_wait_a_moment", "1"))
+ 		return ret;	
+@@ -24417,6 +24423,12 @@ void start_roamast(void){
+ #endif
+ 	stop_roamast();
+ 
++#if defined(GTAX11000)
++	if (nvram_match("location_code", "ALL")) {
++		logmessage("wireless", "suspended roamast under regulatory test-lab ALL profile");
++		return;
++	}
++#endif
+ 	if (mediabridge_mode())
+ 		return;
+ 
+diff --git a/release/src/router/rc/watchdog.c b/release/src/router/rc/watchdog.c
+--- a/release/src/router/rc/watchdog.c
++++ b/release/src/router/rc/watchdog.c
+@@ -8457,6 +8457,10 @@ void roamast_check()
+ #ifdef RTCONFIG_BCM_MFG
+ 	return;
+ #endif
++#if defined(GTAX11000)
++	if (nvram_match("location_code", "ALL"))
++		return;
++#endif
+ #if defined(RTCONFIG_STA_AP_BAND_BIND) || defined(RTCONFIG_FORCE_ROAMING)
+ 	/* if sta_binding or force roaming is enabled, roamast always runs */
+ 	rast = 1;

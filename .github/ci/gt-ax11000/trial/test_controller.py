@@ -402,5 +402,30 @@ class ParserTests(unittest.TestCase):
                     validate_host(invalid)
 
 
+class GuardSourceTests(unittest.TestCase):
+    def test_persistent_guard_has_fixed_safe_slot_roles(self):
+        source = Path(__file__).with_name("router-persistent-guard.sh").read_text()
+        self.assertIn("CANDIDATE_STATE=BOOT_SET_PART1_IMAGE", source)
+        self.assertIn("FALLBACK_STATE=BOOT_SET_PART2_IMAGE", source)
+        self.assertNotIn("set_boot_roles", source)
+
+    def test_health_gates_reject_kernel_fatal_signal_wording(self):
+        trial_root = Path(__file__).parent
+        guard = (trial_root / "router-persistent-guard.sh").read_text()
+        health = (trial_root.parent / "tests" / "router-health.sh").read_text()
+        for source in (guard, health):
+            self.assertIn("potentially unexpected fatal signal", source)
+            self.assertIn("fatal signal [0-9]+", source)
+
+    def test_persistent_guard_supports_fail_safe_promotion_hold(self):
+        source = Path(__file__).with_name("router-persistent-guard.sh").read_text()
+        self.assertIn('PROMOTION_HOLD_FILE="$TRIAL_DIR/hold-promotion"', source)
+        self.assertIn('[ -e "$PROMOTION_HOLD_FILE" ] && is_candidate_identity', source)
+        hold_block = source.split('if [ -e "$PROMOTION_HOLD_FILE" ]', 1)[1]
+        hold_block = hold_block.split("if healthy", 1)[0]
+        self.assertIn('/bin/bcm_bootstate "$FALLBACK_STATE"', hold_block)
+        self.assertNotIn('"$CANDIDATE_STATE"', hold_block)
+
+
 if __name__ == "__main__":
     unittest.main()

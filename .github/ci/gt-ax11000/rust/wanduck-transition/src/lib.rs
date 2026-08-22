@@ -62,7 +62,7 @@ pub struct WanduckTransitionOutput {
     pub disconnect_count: c_int,
 }
 
-fn transition(input: WanduckTransitionInput) -> Option<WanduckTransitionOutput> {
+pub fn transition(input: WanduckTransitionInput) -> Option<WanduckTransitionOutput> {
     let observed = LinkState::from_legacy(input.observed_state, input.special_states_enabled != 0)?;
     let mut output = WanduckTransitionOutput {
         previous_state: input.previous_state,

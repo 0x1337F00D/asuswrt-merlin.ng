@@ -2,7 +2,7 @@ diff --git a/release/src/router/infosvr/Makefile b/release/src/router/infosvr/Ma
 index bc8958362f..10b6624837 100644
 --- a/release/src/router/infosvr/Makefile
 +++ b/release/src/router/infosvr/Makefile
-@@ -78,8 +78,27 @@ install: all
+@@ -78,8 +78,28 @@ install: all
  	install infosvr $(INSTALLDIR)/usr/sbin
  
  
@@ -35,7 +35,7 @@ diff --git a/release/src/router/rstats/Makefile b/release/src/router/rstats/Make
 index d6a0f1c2ad..9b3a76f6bc 100755
 --- a/release/src/router/rstats/Makefile
 +++ b/release/src/router/rstats/Makefile
-@@ -32,16 +32,35 @@ ifeq ($(RTCONFIG_MXL_826XX),y)
+@@ -32,16 +32,40 @@ ifeq ($(RTCONFIG_MXL_826XX),y)
  LDFLAGS += -L$(TOP)/libhostapi -lhostapi
  endif
  
@@ -77,7 +77,7 @@ index d6a0f1c2ad..9b3a76f6bc 100755
  
  clean:
  	rm -f rstats .*.depend
-@@ -52,6 +71,7 @@ install: all
+@@ -52,6 +76,7 @@ install: all
  	install -D rstats $(INSTALLDIR)/bin/rstats
  	$(STRIP) $(INSTALLDIR)/bin/rstats
  
@@ -85,7 +85,7 @@ index d6a0f1c2ad..9b3a76f6bc 100755
  %.o: %.c .%.depend
  	@echo " [rstats] CC $@"
  	@$(CC) $(CFLAGS) -c $<
-@@ -63,3 +83,4 @@ install: all
+@@ -63,3 +88,4 @@ install: all
  	@$(CC) $(CFLAGS) -M $< > $@
  
  -include $(OBJS:%.o=.%.depend)
@@ -94,7 +94,7 @@ diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefi
 index 2311af7158..61366cc2cb 100644
 --- a/release/src/router/httpd/Makefile
 +++ b/release/src/router/httpd/Makefile
-@@ -202,6 +202,26 @@ ifeq ($(RTCONFIG_BCM_AFC),y)
+@@ -202,6 +202,29 @@ ifeq ($(RTCONFIG_BCM_AFC),y)
  OBJS += $(if $(wildcard asus_afc.c), asus_afc.o, prebuild/asus_afc.o)
  endif
  
@@ -137,7 +137,7 @@ diff --git a/release/src/router/httpd/cgi.c b/release/src/router/httpd/cgi.c
 index 952dc5a7b4..8810c3b092 100644
 --- a/release/src/router/httpd/cgi.c
 +++ b/release/src/router/httpd/cgi.c
-@@ -52,25 +52,24 @@ extern char *strsep(char **stringp, char *delim);
+@@ -52,25 +52,25 @@ extern char *strsep(char **stringp, char *delim);
  /* CGI hash table */
  static struct hsearch_data htab;
  
@@ -191,7 +191,7 @@ index 952dc5a7b4..8810c3b092 100644
  
  	/* Clear variables */
  	if (!query) {
-@@ -174,25 +174,15 @@ init_cgi(char *query)
+@@ -174,25 +174,17 @@ init_cgi(char *query)
  	}
  
  	/* Parse into individual assignments */
@@ -228,7 +228,7 @@ index 952dc5a7b4..8810c3b092 100644
  	}
 +	(void)result;
  }
-@@ -243,34 +233,27 @@ void webcgi_set(char *name, char *value)
+@@ -243,34 +233,29 @@ void webcgi_set(char *name, char *value)
  
  void webcgi_init(char *query)
  {
@@ -284,7 +284,7 @@ diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
 index d20106aebb..174708d3c5 100644
 --- a/release/src/router/httpd/httpd.h
 +++ b/release/src/router/httpd/httpd.h
-@@ -409,6 +409,10 @@ extern void do_f(char *path, webs_t wp);
+@@ -409,6 +409,11 @@ extern void do_f(char *path, webs_t wp);
  
  /* cgi.c */
  extern void unescape(char *s, size_t len);
@@ -341,7 +341,7 @@ index f8dca4641c..cc1ed30bcd 100644
  
  	if(strcasecmp(method, "post") == 0){
  		if (fgets(playload, MIN(cl+1, sizeof(playload)), stream)){
-@@ -43695,23 +43684,12 @@ void parsing_payload(char *url, FILE *stream, int cl, char *method, struct json_o
+@@ -43695,23 +43684,14 @@ void parsing_payload(char *url, FILE *stream, int cl, char *method, struct json_o
  	}
  
  	/* Parse into individual assignments */
@@ -378,7 +378,7 @@ diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
 index 71cb66ddfe..0d8ff8f258 100644
 --- a/release/src/router/rc/Makefile
 +++ b/release/src/router/rc/Makefile
-@@ -1321,8 +1321,38 @@ LDFLAGS += -L$(TOP)/libhostapi -lhostapi
+@@ -1321,8 +1321,37 @@ LDFLAGS += -L$(TOP)/libhostapi -lhostapi
  endif
  
  ifeq ($(RTCONFIG_BCM_AFC),y)
@@ -532,7 +532,7 @@ diff --git a/release/src/router/nt_center/Makefile b/release/src/router/nt_cente
 index a3180f3a0c9..47e1f631533 100644
 --- a/release/src/router/nt_center/Makefile
 +++ b/release/src/router/nt_center/Makefile
-@@ -79,9 +79,32 @@ endif
+@@ -79,9 +79,35 @@ endif
  
  MDIRS = lib
  

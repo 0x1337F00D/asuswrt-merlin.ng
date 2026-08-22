@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - codex/rust-porting
+      - codex/network-hardening-2026
     paths:
       - .github/ci/gt-ax11000/**
       - .github/workflows/build-gt-ax11000.yml
@@ -117,6 +118,24 @@ jobs:
             --manifest-path overlay/.github/ci/gt-ax11000/rust/Cargo.toml \
             --workspace --locked --target armv7-unknown-linux-gnueabi
 
+      - name: Run structured Rust fuzz gates
+        env:
+          RUST_FUZZ_CARGO_HOME: ${{ runner.temp }}/asuswrt-fuzz-cargo
+          RUST_FUZZ_ITERATIONS: "250000"
+          RUST_FUZZ_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
+        run: |
+          set -euo pipefail
+          bash overlay/.github/ci/gt-ax11000/tests/rust-fuzz-smoke.sh
+
+      - name: Verify C to Rust ABI fixtures
+        env:
+          RUST_C_ABI_CARGO_HOME: ${{ runner.temp }}/asuswrt-c-abi-cargo
+          RUST_C_ABI_FIXTURE_DIR: ${{ runner.temp }}/asuswrt-c-abi-fixtures
+          RUST_C_ABI_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
+        run: |
+          set -euo pipefail
+          bash overlay/.github/ci/gt-ax11000/tests/c-abi-smoke.sh
+
       - name: Restore compiler cache
         id: ccache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -139,6 +158,7 @@ jobs:
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wps-shell-hardening.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wireless-policy-ui.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/runtime-policy.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/regulatory-profile-boot.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/network-hardening.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/runtime-hardening-2026.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wifi-upstream-security.patch"

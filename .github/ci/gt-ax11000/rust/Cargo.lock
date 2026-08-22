@@ -18,6 +18,17 @@ name = "nt-event"
 version = "0.1.0"
 
 [[package]]
+name = "router-fuzz"
+version = "0.1.0"
+dependencies = [
+ "httpd-parsers",
+ "infosvr",
+ "router-policy",
+ "rstats",
+ "wanduck-transition",
+]
+
+[[package]]
 name = "router-policy"
 version = "0.1.0"
 

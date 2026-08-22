@@ -132,7 +132,7 @@ diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
 index 521d80637f1..e0a7e808a37 100644
 --- a/release/src/router/httpd/web.c
 +++ b/release/src/router/httpd/web.c
-@@ -4263,6 +4263,24 @@ static int qos_bw_rulelist_all_disabled(void);
+@@ -4263,6 +4263,13 @@ static int qos_bw_rulelist_all_disabled(void);
  static void clear_residual_bw_qos_state(void);
  #endif
  
@@ -211,7 +211,7 @@ index 521d80637f1..e0a7e808a37 100644
  #if defined(RTCONFIG_WPSMULTIBAND)
  		if ((action_para = get_cgi_json("wps_multiband",root)))
  			nvram_set("wps_multiband", action_para);
-@@ -17739,12 +17766,24 @@ enum {
+@@ -17739,12 +17766,20 @@ enum {
  	IKEV2CERT_TIMEOUT
  };
  
@@ -268,7 +268,7 @@ diff --git a/release/src/router/libovpn/openvpn_options.c b/release/src/router/l
 index f603a742747..46e7f61ec40 100644
 --- a/release/src/router/libovpn/openvpn_options.c
 +++ b/release/src/router/libovpn/openvpn_options.c
-@@ -396,6 +396,27 @@ add_custom(int unit, char *p[])
+@@ -396,6 +396,15 @@ add_custom(int unit, char *p[])
  	free(param);
  }
  
@@ -284,7 +284,7 @@ index f603a742747..46e7f61ec40 100644
  static int
  add_option (char *p[], int line, int unit)
  {
-@@ -464,23 +526,17 @@ add_option (char *p[], int line, int unit)
+@@ -464,26 +526,11 @@ add_option (char *p[], int line, int unit)
  	else if (streq (p[0], "comp-lzo"))
  	{
 -		if(p[1])
@@ -327,7 +327,7 @@ index f603a742747..46e7f61ec40 100644
  	}
  	else if (streq (p[0], "verb") && p[1])
  	{
-@@ -651,9 +711,18 @@ add_option (char *p[], int line, int unit)
+@@ -651,7 +711,11 @@ add_option (char *p[], int line, int unit)
  	}
  	else if (streq (p[0], "ncp-ciphers") && p[1])
  	{
@@ -359,7 +359,7 @@ diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
 index c2b14f526c9..fb42c0d1510 100644
 --- a/release/src/router/rc/firewall.c
 +++ b/release/src/router/rc/firewall.c
-@@ -78,6 +78,8 @@
+@@ -78,6 +78,9 @@
  #define STOP_TIME  0
  #define START_TIME 1
  
@@ -384,7 +384,7 @@ index c2b14f526c9..fb42c0d1510 100644
  
  	strcpy(wan_ip, nvram_safe_get(strcat_r(prefix, "ipaddr", tmp)));
  	strcpy(wanx_if, nvram_safe_get(strcat_r(prefix, "ifname", tmp)));
-@@ -9097,6 +9100,10 @@ int start_firewall(int wanunit, int lanunit)
+@@ -9097,6 +9100,32 @@ int start_firewall(int wanunit, int lanunit)
  	}
  #endif
  
@@ -515,7 +515,7 @@ diff --git a/release/src/router/rc/rc.h b/release/src/router/rc/rc.h
 index 4b8e6eaa708..cd4607583e0 100644
 --- a/release/src/router/rc/rc.h
 +++ b/release/src/router/rc/rc.h
-@@ -47,6 +47,10 @@
+@@ -47,6 +47,11 @@
  #endif
  #include <sys/resource.h>
  #include <errno.h>
@@ -538,7 +538,7 @@ index f46a49a75ca..12f07b7636b 100644
  #include <stdarg.h>
  #include <stddef.h>
  #include <stdio.h>
-@@ -7,6 +8,8 @@
+@@ -7,6 +8,9 @@
  
  typedef struct json_object json_object;
  
@@ -617,7 +617,7 @@ index 257ffd7d739..2da195fc85a 100644
      return file_idx;
  }
  
-@@ -952,71 +952,71 @@ void rc_ipsec_ca_import(uint32_t ca_type, FILE *fp)
+@@ -952,71 +952,87 @@ void rc_ipsec_ca_import(uint32_t ca_type, FILE *fp)
  void rc_ipsec_cert_import(char *asus_cert, char *ipsec_cli_cert,
                            char *ipsec_cli_key, char *pks12)
  {
