@@ -159,6 +159,7 @@ jobs:
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wireless-policy-ui.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/runtime-policy.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/regulatory-profile-boot.patch" \
+            "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wireless-service-testlab-stability.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/network-hardening.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/runtime-hardening-2026.patch" \
             "$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches/wifi-upstream-security.patch"
