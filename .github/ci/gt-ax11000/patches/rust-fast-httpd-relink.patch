@@ -29,8 +29,8 @@ diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefi
 +	done
 +	@echo " [httpd] Rust-only relink $@"
 +	$(CC) -o httpd $(OBJS) $(RUST_HTTPD_LINK) $(LIBS) $(EXTRALDFLAGS) -Wl,-z,relro,-z,now
-+	$(SIZECHECK)
-+	$(CPTMP)
++	@$(SIZE) httpd
++	@[ -d $(TOP)/dbgshare ] && cp httpd $(TOP)/dbgshare/ || true
 +
 +rust-install: rust-relink
 +	@echo " [httpd] Installing Rust-only relink to $(INSTALLDIR)"
