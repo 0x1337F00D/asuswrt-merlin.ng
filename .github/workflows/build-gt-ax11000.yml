@@ -110,6 +110,8 @@ jobs:
     name: Security overlay
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    outputs:
+      patched_diff_actual: ${{ steps.overlay-gate.outputs.patched_diff_actual }}
     steps:
       - name: Checkout exact overlay
         run: |
@@ -123,6 +125,7 @@ jobs:
           test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Checkout and patch locked upstream
+        id: overlay-gate
         run: |
           set -euo pipefail
           root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
@@ -152,6 +155,7 @@ jobs:
           printf 'patched_diff_expected=%s\npatched_diff_actual=%s\n' \
             "$expected_diff" "$actual_diff"
           test "$actual_diff" = "$expected_diff"
+          printf 'patched_diff_actual=%s\n' "$actual_diff" >> "$GITHUB_OUTPUT"
           mkdir -p source/release/src/router/rust-components
           cp -a "$root/rust/." source/release/src/router/rust-components/
           bash "$root/tests/security-overlay-check.sh" "$GITHUB_WORKSPACE/source"
@@ -192,8 +196,54 @@ jobs:
             value=$(python3 "$tool" get "$key" --lock "$lock")
             printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
           done
+          # These are the effective, centrally defined build-contract values.
+          # The build consumes these outputs directly and both exact caches bind
+          # their digest, so changing package parallelism cannot reuse a serial
+          # reference (or vice versa).
+          build_contract="$({
+            printf '%s\n' \
+              'format=1' \
+              'make_jobs=1' \
+              'prepare_jobs=4' \
+              'router_package_jobs=1' \
+              'ccache=1' \
+              'direct_toolchain=1' \
+              'clean_force_profile=1'
+          })"
+          printf '%s\n' "$build_contract" | while IFS='=' read -r key value
+          do
+            test -n "$key" && test -n "$value"
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+          build_contract_sha="$(
+            printf '%s\n' "$build_contract" | sha256sum | cut -d' ' -f1
+          )"
+          printf 'build_contract_sha=%s\n' "$build_contract_sha" >> "$GITHUB_OUTPUT"
+          vendor_state_sha="$({
+            sha256sum overlay/.github/ci/gt-ax11000/build.sh
+            sha256sum overlay/.github/ci/gt-ax11000/inputs.lock
+            sha256sum overlay/.github/ci/gt-ax11000/rust-repack.mk
+            sha256sum overlay/.github/ci/gt-ax11000/patches/series
+            sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
+            printf '%s\n' "$build_contract_sha"
+          } | sha256sum | cut -d' ' -f1)"
+          printf 'vendor_state_sha=%s\n' "$vendor_state_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout locked upstream sources
+      - name: Record runner capacity
+        id: runner
+        run: |
+          set -euo pipefail
+          image_version="${ImageVersion:?GitHub runner ImageVersion is required}"
+          test "$image_version" != unknown
+          printf 'logical_cpus=%s\n' "$(nproc)"
+          printf 'image_version=%s\n' "$image_version" >> "$GITHUB_OUTPUT"
+          free -h
+          df -h "$GITHUB_WORKSPACE"
+
+      # Fetch only the locked commit/tree metadata first.  On an exact vendor
+      # hit the cached, previously gated release tree is the build input, so
+      # materializing and then overwriting 5.6 GiB of upstream files is waste.
+      - name: Initialize locked upstream metadata
         env:
           UPSTREAM_REPO: ${{ steps.inputs.outputs.upstream_repo }}
           UPSTREAM_SHA: ${{ steps.inputs.outputs.upstream_sha }}
@@ -201,14 +251,58 @@ jobs:
           set -euxo pipefail
           git init source
           git -C source remote add origin "$UPSTREAM_REPO"
+          git -C source fetch --no-tags --depth=1 --filter=blob:none \
+            origin "$UPSTREAM_SHA"
+          git -C source update-ref --no-deref HEAD FETCH_HEAD
+          test "$(git -C source rev-parse HEAD)" = "$UPSTREAM_SHA"
+          test "$(git -C overlay rev-parse HEAD:release)" = \
+            "$(git -C source rev-parse HEAD:release)"
+
+      # This state contains the completed vendor userspace, kernel, profile and
+      # rootfs trees.  It is exact (no restore prefix), immutable, and saved
+      # only after all firmware gates pass. Rust source is deliberately outside
+      # the key because rust-fast replaces and verifies all five consumers.
+      - name: Restore exact successful vendor build
+        if: github.event_name != 'schedule' && inputs.force_clean != true
+        id: vendor-cache
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            source/release
+            source/.asuswrt-build-state
+            source/.asuswrt-full-build-state
+            source/.asuswrt-rust-state
+            source/.asuswrt-kernel-cache-state
+          key: gt-ax11000-vendor-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.inputs.outputs.vendor_state_sha }}
+
+      # Forced-clean gates must not overlay generated files. A lookup-only
+      # probe still tells the final save step whether this immutable key exists.
+      - name: Probe exact vendor cache without restoring
+        if: github.event_name == 'schedule' || inputs.force_clean == true
+        id: vendor-cache-probe
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          lookup-only: true
+          path: |
+            source/release
+            source/.asuswrt-build-state
+            source/.asuswrt-full-build-state
+            source/.asuswrt-rust-state
+            source/.asuswrt-kernel-cache-state
+          key: gt-ax11000-vendor-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.inputs.outputs.vendor_state_sha }}
+
+      - name: Hydrate locked upstream sources on cache miss
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
           git -C source sparse-checkout init --cone
           git -C source sparse-checkout set \
             release/src \
             release/src-rt \
             release/src-rt-5.02axhnd
-          git -C source fetch --depth=1 --filter=blob:none origin "$UPSTREAM_SHA"
-          git -C source checkout --detach FETCH_HEAD
-          test "$(git -C source rev-parse HEAD)" = "$UPSTREAM_SHA"
+          git -C source checkout --detach --force HEAD
+          test "$(git -C source rev-parse HEAD)" = \
+            "${{ steps.inputs.outputs.upstream_sha }}"
 
       - name: Checkout locked toolchains
         env:
@@ -243,6 +337,8 @@ jobs:
             "$(git -C source rev-parse HEAD:release)"
           echo "upstream_sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ci_contract_sha=${{ steps.inputs.outputs.build_contract_sha }}" \
+            >> "$GITHUB_OUTPUT"
           overlay_sha="$({
             sha256sum overlay/.github/ci/gt-ax11000/build.sh
             sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
@@ -250,26 +346,8 @@ jobs:
               -print0 | sort -z | xargs -0 sha256sum
           } | sha256sum | cut -d' ' -f1)"
           echo "overlay_sha=$overlay_sha" >> "$GITHUB_OUTPUT"
-          # The reusable vendor tree intentionally excludes Rust source.  A
-          # hit is therefore valid across Rust-only commits; rust-fast always
-          # resynchronizes and relinks every firmware Rust consumer.
-          vendor_state_sha="$({
-            sha256sum overlay/.github/ci/gt-ax11000/build.sh
-            sha256sum overlay/.github/ci/gt-ax11000/inputs.lock
-            sha256sum overlay/.github/ci/gt-ax11000/rust-repack.mk
-            sha256sum overlay/.github/ci/gt-ax11000/patches/series
-            sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
-          } | sha256sum | cut -d' ' -f1)"
-          echo "vendor_state_sha=$vendor_state_sha" >> "$GITHUB_OUTPUT"
-
-      - name: Record runner capacity
-        id: runner
-        run: |
-          set -euo pipefail
-          printf 'logical_cpus=%s\n' "$(nproc)"
-          printf 'image_version=%s\n' "${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
-          free -h
-          df -h "$GITHUB_WORKSPACE"
+          echo "vendor_state_sha=${{ steps.inputs.outputs.vendor_state_sha }}" \
+            >> "$GITHUB_OUTPUT"
 
       - name: Install host dependencies
         run: |
@@ -297,6 +375,7 @@ jobs:
             gt-ax11000-rust-v3-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
 
       - name: Restore compiler cache
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
         id: ccache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -307,6 +386,7 @@ jobs:
             gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-
 
       - name: Apply local CI overlay
+        if: steps.vendor-cache.outputs.cache-hit != 'true'
         run: |
           set -euxo pipefail
           patch_root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000/patches"
@@ -331,23 +411,31 @@ jobs:
             | tee input-lock-state.txt
           git -C source status --short
 
-      # This state contains the completed vendor userspace, kernel, profile and
-      # rootfs staging tree.  Its key excludes Rust source on purpose: rust-fast
-      # replaces and verifies all five Rust consumers before repacking.  Changes
-      # to upstream, patches, build logic, toolchains, target or runner image
-      # still force the normal clean release gate.
-      - name: Restore exact successful vendor build
-        if: github.event_name != 'schedule' && inputs.force_clean != true
-        id: vendor-cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            source/release
-            source/.asuswrt-build-state
-            source/.asuswrt-full-build-state
-            source/.asuswrt-rust-state
+      - name: Attest exact cached overlay
+        if: steps.vendor-cache.outputs.cache-hit == 'true'
+        run: |
+          set -euo pipefail
+          expected="${{ steps.inputs.outputs.patched_diff_sha256 }}"
+          security_actual="${{ needs.security-overlay.outputs.patched_diff_actual }}"
+          test -n "$security_actual"
+          test "$security_actual" = "$expected"
+          for state in \
+            source/.asuswrt-build-state \
+            source/.asuswrt-full-build-state \
+            source/.asuswrt-rust-state \
             source/.asuswrt-kernel-cache-state
-          key: gt-ax11000-vendor-v1-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.revisions.outputs.vendor_state_sha }}
+          do
+            test -f "$state"
+            test ! -L "$state"
+          done
+          {
+            echo 'input_lock_status=verified-by-security-overlay-and-exact-vendor-cache'
+            echo "upstream_sha=${{ steps.inputs.outputs.upstream_sha }}"
+            echo "toolchains_sha=${{ steps.inputs.outputs.toolchains_sha }}"
+            echo "patched_diff_sha256=$security_actual"
+            echo "vendor_state_sha=${{ steps.inputs.outputs.vendor_state_sha }}"
+            echo "build_contract_sha=${{ steps.inputs.outputs.build_contract_sha }}"
+          } | tee input-lock-state.txt
 
       # This is deliberately an exact, all-or-nothing cache.  Reusing kernel
       # objects across a different source, toolchain or overlay state is unsafe.
@@ -360,7 +448,7 @@ jobs:
             source/release/src-rt-5.02axhnd/kernel
             source/release/src-rt-5.02axhnd/targets/94908HND/modules
             source/.asuswrt-kernel-cache-state
-          key: gt-ax11000-kernel-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.patched_diff_sha256 }}-${{ steps.revisions.outputs.overlay_sha }}
+          key: gt-ax11000-kernel-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.patched_diff_sha256 }}-${{ steps.revisions.outputs.overlay_sha }}-${{ steps.revisions.outputs.ci_contract_sha }}
 
       - name: Show disk usage before build
         run: |
@@ -374,9 +462,11 @@ jobs:
           set -euo pipefail
           mkdir -p cache-equivalence
           httpd_dir=source/release/src/router/httpd
+          object_count="$(find "$httpd_dir" -type f -name '*.o' -printf '.' | wc -c)"
+          test "$object_count" -gt 0
           (
             cd "$httpd_dir"
-            find . -type f -name '*.o' -print0 | sort -z | xargs -0 sha256sum
+            find . -type f -name '*.o' -print0 | sort -z | xargs -0 -r sha256sum
           ) > cache-equivalence/httpd-objects.before
           test -s cache-equivalence/httpd-objects.before
           current_rust_state="$(
@@ -386,6 +476,11 @@ jobs:
           )"
           cached_rust_state="$(cat source/.asuswrt-rust-state)"
           same_rust=false
+          rootfs=source/release/src-rt-5.02axhnd/targets/94908HND/fs
+          image_version="$rootfs/rom/etc/image_version"
+          test -f "$image_version" && test ! -L "$image_version"
+          test "$(stat -c '%a' "$image_version")" = 644
+          grep -Eq '^HND[0-9]{7}$' "$image_version"
           if [ "$current_rust_state" = "$cached_rust_state" ]; then
             same_rust=true
             root=source/release/src-rt-5.02axhnd/targets/94908HND/fs.install
@@ -395,6 +490,20 @@ jobs:
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
+          tar_excludes=(--exclude='./rom/etc/image_version')
+          if [ "$same_rust" != true ]; then
+            tar_excludes+=(
+              --exclude='./usr/sbin/infosvr'
+              --exclude='./bin/rstats'
+              --exclude='./usr/sbin/Notify_Event2NC'
+              --exclude='./usr/sbin/httpd'
+              --exclude='./sbin/rc'
+            )
+          fi
+          tar --sort=name --format=posix --mtime=@0 --owner=0 --group=0 \
+            --numeric-owner --pax-option=delete=atime,delete=ctime \
+            "${tar_excludes[@]}" -C "$rootfs" -cf - . | sha256sum \
+            > cache-equivalence/rootfs.before
           echo "same-rust=$same_rust" >> "$GITHUB_OUTPUT"
 
       - name: Build firmware
@@ -403,21 +512,21 @@ jobs:
           ASUSWRT_APT_CACHE: ${{ runner.temp }}/asuswrt-apt
           ASUSWRT_BUILD_MODE: ${{ steps.vendor-cache.outputs.cache-hit == 'true' && 'rust-fast' || 'clean' }}
           ASUSWRT_BUILD_WORKTREE: "1"
-          ASUSWRT_CCACHE: "1"
+          ASUSWRT_CCACHE: ${{ steps.vendor-cache.outputs.cache-hit == 'true' && '0' || steps.inputs.outputs.ccache }}
           ASUSWRT_CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
           ASUSWRT_CCACHE_MAXSIZE: 2G
-          ASUSWRT_DIRECT_TOOLCHAIN: "1"
-          # The overlay diff is verified immediately before cache restore.
-          # An exact kernel hit then adds expected tracked build outputs, so a
-          # second full-tree diff would reject the cache's own generated files.
+          ASUSWRT_DIRECT_TOOLCHAIN: ${{ steps.inputs.outputs.direct_toolchain }}
+          # Clean paths verify the hydrated tree directly. Exact vendor hits
+          # inherit the independent security-overlay attestation and immutable
+          # state contract; kernel hits add expected tracked build outputs.
           ASUSWRT_ENFORCE_INPUT_LOCK: ${{ (steps.vendor-cache.outputs.cache-hit == 'true' || steps.kernel-cache.outputs.cache-hit == 'true') && '0' || '1' }}
           ASUSWRT_FAST_REUSE_HIT: ${{ steps.vendor-cache.outputs.cache-hit == 'true' && '1' || '0' }}
           ASUSWRT_FAKEBIN: ${{ runner.temp }}/asuswrt-fakebin
           ASUSWRT_HOSTTOOLS: ${{ runner.temp }}/asuswrt-hosttools
-          ASUSWRT_FORCE_PROFILE: ${{ steps.vendor-cache.outputs.cache-hit == 'true' && '0' || '1' }}
+          ASUSWRT_FORCE_PROFILE: ${{ steps.vendor-cache.outputs.cache-hit == 'true' && '0' || steps.inputs.outputs.clean_force_profile }}
           ASUSWRT_KERNEL_CACHE_RESTORE: ${{ (steps.vendor-cache.outputs.cache-hit != 'true' && steps.kernel-cache.outputs.cache-hit == 'true') && '1' || '0' }}
-          ASUSWRT_MAKE_JOBS: "1"
-          ASUSWRT_PREPARE_JOBS: "4"
+          ASUSWRT_MAKE_JOBS: ${{ steps.inputs.outputs.make_jobs }}
+          ASUSWRT_PREPARE_JOBS: ${{ steps.inputs.outputs.prepare_jobs }}
           ASUSWRT_OUTPUT_DIR: ${{ github.workspace }}/output
           ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
@@ -426,7 +535,7 @@ jobs:
           # The vendor obj-y list encodes undocumented serial ordering. Keep
           # full-DAG parallelism out of required CI until a safe whitelist is
           # proven; the exact kernel cache supplies the reliable speedup.
-          ROUTER_PACKAGE_JOBS: "1"
+          ROUTER_PACKAGE_JOBS: ${{ steps.inputs.outputs.router_package_jobs }}
           RUST_TARGET_DIR: ${{ runner.temp }}/asuswrt-rust-target
         run: |
           set -euo pipefail
@@ -446,7 +555,7 @@ jobs:
           httpd_dir=source/release/src/router/httpd
           (
             cd "$httpd_dir"
-            find . -type f -name '*.o' -print0 | sort -z | xargs -0 sha256sum
+            find . -type f -name '*.o' -print0 | sort -z | xargs -0 -r sha256sum
           ) > cache-equivalence/httpd-objects.after
           diff -u cache-equivalence/httpd-objects.before \
             cache-equivalence/httpd-objects.after
@@ -460,6 +569,27 @@ jobs:
             diff -u cache-equivalence/consumers.before \
               cache-equivalence/consumers.after
           fi
+          rootfs=source/release/src-rt-5.02axhnd/targets/94908HND/fs
+          image_version="$rootfs/rom/etc/image_version"
+          test -f "$image_version" && test ! -L "$image_version"
+          test "$(stat -c '%a' "$image_version")" = 644
+          grep -Eq '^HND[0-9]{7}$' "$image_version"
+          tar_excludes=(--exclude='./rom/etc/image_version')
+          if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
+            tar_excludes+=(
+              --exclude='./usr/sbin/infosvr'
+              --exclude='./bin/rstats'
+              --exclude='./usr/sbin/Notify_Event2NC'
+              --exclude='./usr/sbin/httpd'
+              --exclude='./sbin/rc'
+            )
+          fi
+          tar --sort=name --format=posix --mtime=@0 --owner=0 --group=0 \
+            --numeric-owner --pax-option=delete=atime,delete=ctime \
+            "${tar_excludes[@]}" -C "$rootfs" -cf - . | sha256sum \
+            > cache-equivalence/rootfs.after
+          diff -u cache-equivalence/rootfs.before \
+            cache-equivalence/rootfs.after
 
       - name: Verify Rust firmware ISA and runtime
         run: |
@@ -473,7 +603,7 @@ jobs:
             "$rootfs" "$toolchain_bin" "$(command -v qemu-arm)"
 
       - name: Show compiler cache statistics
-        if: always()
+        if: always() && steps.vendor-cache.outputs.cache-hit != 'true'
         env:
           CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
         run: ccache --show-stats --verbose || true
@@ -486,15 +616,19 @@ jobs:
             echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)"
             echo "ci_sha=${GITHUB_SHA}"
             echo "runner_image=${ImageOS:-unknown}"
+            echo "runner_image_version=${ImageVersion}"
             echo "runner_logical_cpus=$(nproc)"
             echo "ccache_exact_hit=${{ steps.ccache.outputs.cache-hit }}"
             echo "vendor_cache_exact_hit=${{ steps.vendor-cache.outputs.cache-hit }}"
             echo "kernel_cache_exact_hit=${{ steps.kernel-cache.outputs.cache-hit }}"
             echo "ci_build_mode=${{ steps.vendor-cache.outputs.cache-hit == 'true' && 'rust-fast' || 'clean' }}"
             echo "same_rust_cache_equivalence=${{ steps.cache-baseline.outputs.same-rust }}"
-            echo "prepare_jobs=4"
-            echo "router_package_jobs=1"
-            echo "input_lock_verification=verified-before-kernel-cache-restore"
+            echo "full_rootfs_equivalence=${{ steps.vendor-cache.outputs.cache-hit == 'true' && 'verified' || 'clean-reference' }}"
+            echo "build_contract_sha=${{ steps.inputs.outputs.build_contract_sha }}"
+            echo "make_jobs=${{ steps.inputs.outputs.make_jobs }}"
+            echo "prepare_jobs=${{ steps.inputs.outputs.prepare_jobs }}"
+            echo "router_package_jobs=${{ steps.inputs.outputs.router_package_jobs }}"
+            echo "input_lock_verification=verified-clean-or-exact-vendor-attested"
             echo "rust_toolchain=${{ steps.inputs.outputs.rust_toolchain }}"
             echo "rust_target=${{ steps.inputs.outputs.rust_target }}"
             echo "rust_target_cpu=${{ steps.inputs.outputs.rust_target_cpu }}"
@@ -526,9 +660,9 @@ jobs:
 
       # Restore is deliberately separate from save: scheduled/manually forced
       # clean gates must not overlay generated state before building, but a
-      # successful clean gate should still seed or refresh the exact cache.
+      # successful clean gate may still seed a missing immutable exact key.
       - name: Save exact successful vendor build
-        if: success() && steps.vendor-cache.outputs.cache-hit != 'true'
+        if: success() && steps.vendor-cache.outputs.cache-hit != 'true' && steps.vendor-cache-probe.outputs.cache-hit != 'true'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
@@ -537,4 +671,4 @@ jobs:
             source/.asuswrt-full-build-state
             source/.asuswrt-rust-state
             source/.asuswrt-kernel-cache-state
-          key: gt-ax11000-vendor-v1-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.revisions.outputs.vendor_state_sha }}
+          key: gt-ax11000-vendor-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.revisions.outputs.vendor_state_sha }}

@@ -90,6 +90,15 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/nt_center \
 		$(PROFILE_DIR)/fs.install/httpd \
 		$(PROFILE_DIR)/fs.install/rc
+	# fsbuild creates these legacy containers for optional external payloads.
+	# On GT-AX11000 they are empty; leaving them behind only on a repeated
+	# build makes rust-fast rootfs topology differ from the clean reference.
+	# rmdir is deliberately fail-soft so a future non-empty vendor payload is
+	# preserved and will be exposed by the full-rootfs equivalence gate.
+	-rmdir \
+		$(PROFILE_DIR)/fs.install/rom/rom/modules \
+		$(PROFILE_DIR)/fs.install/rom/rom/scripts \
+		$(PROFILE_DIR)/fs.install/rom/rom
 	cd $(PROFILE_DIR)/fs.install; sha256sum \
 		usr/sbin/infosvr \
 		bin/rstats \

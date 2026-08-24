@@ -70,9 +70,10 @@ all five firmware consumers are rebuilt and checksum-bound into the rootfs, and
 the image is repacked and verified. Patch, profile, toolchain, runner-image or
 upstream changes miss the cache and take the normal clean path. The weekly
 scheduled build and a manual `force_clean` dispatch never restore generated
-vendor state, but a successful clean gate still seeds the exact cache for the
-next ordinary run. Restore and save are separate actions so this policy cannot
-accidentally overlay a forced-clean workspace.
+vendor state. A lookup-only probe lets a successful clean gate seed a missing
+exact cache without trying to overwrite an existing immutable key. Restore and
+save are separate actions so this policy cannot accidentally overlay a
+forced-clean workspace.
 
 The cached `httpd` path is intentionally a relink, not a recursive package
 install. It requires every C object from the completed clean build, records
@@ -82,6 +83,18 @@ requires all five stripped firmware consumers to remain byte-identical across
 the fast cycle. This gate caught an earlier generic `httpd-install` shortcut
 that silently rebuilt C objects outside the full router target context; that
 result is excluded from performance claims.
+
+Cache schema v2 also binds the hosted runner image and a centralized effective
+build contract (top-level jobs, preparation jobs, router-package jobs, ccache,
+direct-toolchain mode and clean profile selection). On an exact vendor hit CI
+fetches only the locked upstream commit/tree metadata and restores the already
+gated release tree; it does not materialize 5.6 GiB merely to overwrite it.
+The independent security-overlay job still proves the complete patched diff.
+Before and after every fast build, a normalized archive digest covers the
+entire final rootfs—contents, paths, types, modes and link structure—with only
+the validated generated `rom/etc/image_version` excluded. Rust changes may
+additionally exclude exactly the five consumers already covered by freshness,
+manifest, ISA and QEMU gates.
 
 ## Fast Rust iteration
 

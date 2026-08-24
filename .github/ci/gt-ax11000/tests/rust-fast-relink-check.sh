@@ -15,6 +15,9 @@ grep -Fq '@$(SIZE) httpd' "$httpd_make"
 grep -Fq 'cp httpd $(TOP)/dbgshare/' "$httpd_make"
 grep -Fq 'rust-install: rust-relink' "$httpd_make"
 grep -Fq 'httpd-rust-install' "$repack_make"
+grep -Fq -- '-rmdir \' "$repack_make"
+grep -Fq '$(PROFILE_DIR)/fs.install/rom/rom/modules' "$repack_make"
+grep -Fq '$(PROFILE_DIR)/fs.install/rom/rom/scripts' "$repack_make"
 
 if sed -n '/^rust-relink:/,/^rust-install:/p' "$httpd_make" |
 	grep -Eq '\$\((SIZECHECK|CPTMP)\)'; then

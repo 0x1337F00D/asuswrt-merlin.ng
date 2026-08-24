@@ -128,3 +128,12 @@ object set with the current Rust archive. CI now hashes that object set before
 and after the relink and, for an unchanged Rust state, demands byte-identical
 post-strip binaries for all five consumers. Only a cache-hit run passing those
 new gates is a valid fast-path reference.
+
+The extracted pilot also exposed three empty `rom/rom`, `rom/rom/modules` and
+`rom/rom/scripts` directories that existed only after the repeated repack.
+They are legacy optional-payload containers created by `fsbuild`; the common
+finalizer now removes them only when empty. Cache schema v2 compares a
+timestamp/ownership-normalized archive of the entire final rootfs before and
+after every fast build, including paths, types, modes and link structure. The
+generated and separately validated `rom/etc/image_version` is the sole normal
+exclusion when Rust itself is unchanged.
