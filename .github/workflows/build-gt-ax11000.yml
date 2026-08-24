@@ -339,7 +339,7 @@ jobs:
       - name: Restore exact successful vendor build
         if: github.event_name != 'schedule' && inputs.force_clean != true
         id: vendor-cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             source/release
@@ -523,3 +523,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 6
+
+      # Restore is deliberately separate from save: scheduled/manually forced
+      # clean gates must not overlay generated state before building, but a
+      # successful clean gate should still seed or refresh the exact cache.
+      - name: Save exact successful vendor build
+        if: success() && steps.vendor-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            source/release
+            source/.asuswrt-build-state
+            source/.asuswrt-full-build-state
+            source/.asuswrt-rust-state
+            source/.asuswrt-kernel-cache-state
+          key: gt-ax11000-vendor-v1-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.revisions.outputs.vendor_state_sha }}

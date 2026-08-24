@@ -110,3 +110,21 @@ adds an exact completed-vendor-tree cache and uses the already gated
 removes Clean/Configure/Link work from the common iteration without enabling
 the unsafe package DAG. Scheduled and manually forced clean runs remain the
 release reference.
+
+## Exact vendor-tree cache pilot
+
+The corrected clean seed in GitHub Actions run 45 compiled the firmware in
+41:35 and completed the firmware job in 45:30. Rust, security-overlay, ARM ISA,
+QEMU runtime, manifest, input-lock and artifact gates all passed. Saving the
+roughly 2.2 GiB compressed exact vendor state added 27 seconds after artifact
+upload. The cache remains within the hosted repository cache budget and no
+self-hosted runner is involved.
+
+An earlier five-minute fast-path pilot was deliberately rejected: extracted
+images showed that four Rust consumers matched, while `httpd` had been
+recompiled with a smaller link context. The generic recursive install target
+was replaced by `httpd-rust-install`, which only relinks the complete cached C
+object set with the current Rust archive. CI now hashes that object set before
+and after the relink and, for an unchanged Rust state, demands byte-identical
+post-strip binaries for all five consumers. Only a cache-hit run passing those
+new gates is a valid fast-path reference.

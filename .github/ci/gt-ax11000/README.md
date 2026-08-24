@@ -69,8 +69,19 @@ Rust source. A hit selects `rust-fast`: the current Rust tree is synchronized,
 all five firmware consumers are rebuilt and checksum-bound into the rootfs, and
 the image is repacked and verified. Patch, profile, toolchain, runner-image or
 upstream changes miss the cache and take the normal clean path. The weekly
-scheduled build and a manual `force_clean` dispatch always retain the clean
-release gate.
+scheduled build and a manual `force_clean` dispatch never restore generated
+vendor state, but a successful clean gate still seeds the exact cache for the
+next ordinary run. Restore and save are separate actions so this policy cannot
+accidentally overlay a forced-clean workspace.
+
+The cached `httpd` path is intentionally a relink, not a recursive package
+install. It requires every C object from the completed clean build, records
+their hashes, links only those objects against the current Rust archive and
+fails if any object changes. When the Rust state itself is unchanged, CI also
+requires all five stripped firmware consumers to remain byte-identical across
+the fast cycle. This gate caught an earlier generic `httpd-install` shortcut
+that silently rebuilt C objects outside the full router target context; that
+result is excluded from performance claims.
 
 ## Fast Rust iteration
 
