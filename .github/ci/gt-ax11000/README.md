@@ -100,6 +100,12 @@ Rust changes may
 additionally exclude exactly the five consumers already covered by freshness,
 manifest, ISA and QEMU gates.
 
+The cache contains the expensive compiled vendor prerequisite tree. The common
+`rust-repack.mk` finalizer is deliberately consumed live rather than treated as
+a cache prerequisite: it always reruns, and the complete rootfs gate rejects
+any unexplained path, mode, link or content change. Finalizer-only correctness
+fixes therefore do not force another clean compile.
+
 ## Fast Rust iteration
 
 A clean build is still the release gate after an upstream, patch, toolchain or

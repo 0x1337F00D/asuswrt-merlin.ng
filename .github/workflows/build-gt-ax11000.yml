@@ -242,7 +242,14 @@ jobs:
           vendor_state_sha="$({
             sha256sum overlay/.github/ci/gt-ax11000/build.sh
             sha256sum overlay/.github/ci/gt-ax11000/inputs.lock
-            sha256sum overlay/.github/ci/gt-ax11000/rust-repack.mk
+            # The finalizer is always consumed live from this overlay and is
+            # guarded by the complete before/after rootfs equivalence gate. It
+            # is not an input to the cached compiled vendor prerequisite tree.
+            # Preserve the v2 seed contract so finalizer-only fixes reuse that
+            # expensive, already-gated prerequisite state.
+            printf '%s  %s\n' \
+              9eb1cd4736b640417e5e7bc1f00d684f8baedc1d94c97347d918eb78dae684dc \
+              overlay/.github/ci/gt-ax11000/rust-repack.mk
             sha256sum overlay/.github/ci/gt-ax11000/patches/series
             sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
             printf '%s\n' "$build_contract_sha"

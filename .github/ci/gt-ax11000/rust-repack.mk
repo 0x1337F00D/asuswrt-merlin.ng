@@ -66,7 +66,11 @@ rust-firmware-repack:
 	promote_artifact() { \
 		source_file="$$1"; target_file="$$2"; \
 		if [ -f "$$source_file" ]; then \
-			install -D "$$source_file" "$$target_file"; \
+			test ! -L "$$source_file"; \
+			source_mode="$$(stat -c '%a' "$$source_file")"; \
+			case "$$source_mode" in ''|*[!0-7]*) exit 1;; esac; \
+			install -D -m "$$source_mode" "$$source_file" "$$target_file"; \
+			test "$$(stat -c '%a' "$$target_file")" = "$$source_mode"; \
 		else \
 			test -f "$$target_file"; \
 		fi; \

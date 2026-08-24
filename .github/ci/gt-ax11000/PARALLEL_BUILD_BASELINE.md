@@ -139,3 +139,10 @@ groups and every regular-file digest. This makes any future mismatch directly
 actionable instead of reducing it to one opaque archive hash. The generated
 and separately validated `rom/etc/image_version` is the sole normal exclusion
 when Rust itself is unchanged.
+
+The common finalizer is consumed live on every cache hit and is outside the
+compiled-vendor prerequisite key. Its output is still fail-closed by these
+complete manifests. This permits fixes to promotion, Web assembly or image
+repacking to reuse the expensive clean compile while source-mutating patches,
+build logic, toolchains, runner image and the effective build contract continue
+to invalidate it.
