@@ -6,6 +6,7 @@ fast-parallel-build.patch
 jobserver-recursive-makes.patch
 kernel-cache-reuse.patch
 rust-components.patch
+rust-fast-httpd-relink.patch
 security-hardening.patch
 wps-shell-hardening.patch
 wireless-policy-ui.patch

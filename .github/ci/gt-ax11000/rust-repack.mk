@@ -5,14 +5,14 @@ rust-components-relink:
 	# one versioned set.  Generate that set before rebuilding httpd consumers.
 	+$(MAKE) -C router www-install
 	+$(MAKE) -C router \
-		infosvr-install rstats-install nt_center-install httpd-install rc-install
+		infosvr-install rstats-install nt_center-install httpd-rust-install rc-install
 
 # Short iteration path for changes confined to the authenticated HTTP boundary
 # and its Web UI. Invoking this through the platform Makefile preserves all HND
 # exports that a direct `make -C router` call would miss.
 rust-ui-httpd-relink:
 	+$(MAKE) -C router www-install
-	+$(MAKE) -C router httpd-install
+	+$(MAKE) -C router httpd-rust-install
 
 rust-firmware-repack:
 	+$(MAKE) -C router strips

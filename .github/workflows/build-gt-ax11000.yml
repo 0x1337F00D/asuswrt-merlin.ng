@@ -156,6 +156,8 @@ jobs:
           cp -a "$root/rust/." source/release/src/router/rust-components/
           bash "$root/tests/security-overlay-check.sh" "$GITHUB_WORKSPACE/source"
           bash "$root/tests/network-hardening-check.sh" "$GITHUB_WORKSPACE/source"
+          bash "$root/tests/rust-fast-relink-check.sh" \
+            "$GITHUB_WORKSPACE/source" "$root"
 
   build:
     name: Firmware
@@ -365,6 +367,36 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
           du -sh source toolchains overlay
 
+      - name: Snapshot cached relink state
+        if: steps.vendor-cache.outputs.cache-hit == 'true'
+        id: cache-baseline
+        run: |
+          set -euo pipefail
+          mkdir -p cache-equivalence
+          httpd_dir=source/release/src/router/httpd
+          (
+            cd "$httpd_dir"
+            find . -type f -name '*.o' -print0 | sort -z | xargs -0 sha256sum
+          ) > cache-equivalence/httpd-objects.before
+          test -s cache-equivalence/httpd-objects.before
+          current_rust_state="$(
+            cd overlay/.github/ci/gt-ax11000/rust
+            find . -type f -not -path '*/target/*' -print0 \
+              | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
+          )"
+          cached_rust_state="$(cat source/.asuswrt-rust-state)"
+          same_rust=false
+          if [ "$current_rust_state" = "$cached_rust_state" ]; then
+            same_rust=true
+            root=source/release/src-rt-5.02axhnd/targets/94908HND/fs.install
+            (
+              cd "$root"
+              sha256sum usr/sbin/infosvr bin/rstats \
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc
+            ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
+          fi
+          echo "same-rust=$same_rust" >> "$GITHUB_OUTPUT"
+
       - name: Build firmware
         env:
           AM_TOOLCHAINS: ${{ github.workspace }}/toolchains
@@ -407,6 +439,28 @@ jobs:
           done
           wait "$build_pid"
 
+      - name: Verify cache-preserving Rust relink
+        if: steps.vendor-cache.outputs.cache-hit == 'true'
+        run: |
+          set -euo pipefail
+          httpd_dir=source/release/src/router/httpd
+          (
+            cd "$httpd_dir"
+            find . -type f -name '*.o' -print0 | sort -z | xargs -0 sha256sum
+          ) > cache-equivalence/httpd-objects.after
+          diff -u cache-equivalence/httpd-objects.before \
+            cache-equivalence/httpd-objects.after
+          if [ "${{ steps.cache-baseline.outputs.same-rust }}" = "true" ]; then
+            root=source/release/src-rt-5.02axhnd/targets/94908HND/fs.install
+            (
+              cd "$root"
+              sha256sum usr/sbin/infosvr bin/rstats \
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc
+            ) > cache-equivalence/consumers.after
+            diff -u cache-equivalence/consumers.before \
+              cache-equivalence/consumers.after
+          fi
+
       - name: Verify Rust firmware ISA and runtime
         run: |
           set -euo pipefail
@@ -437,6 +491,7 @@ jobs:
             echo "vendor_cache_exact_hit=${{ steps.vendor-cache.outputs.cache-hit }}"
             echo "kernel_cache_exact_hit=${{ steps.kernel-cache.outputs.cache-hit }}"
             echo "ci_build_mode=${{ steps.vendor-cache.outputs.cache-hit == 'true' && 'rust-fast' || 'clean' }}"
+            echo "same_rust_cache_equivalence=${{ steps.cache-baseline.outputs.same-rust }}"
             echo "prepare_jobs=4"
             echo "router_package_jobs=1"
             echo "input_lock_verification=verified-before-kernel-cache-restore"

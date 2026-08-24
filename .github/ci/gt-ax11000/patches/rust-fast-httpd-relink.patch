@@ -1,0 +1,44 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -3446,6 +3446,9 @@ httpd-install:
+ 	$(MAKE) -C httpd INSTALLDIR=$(INSTALLDIR)/httpd install
+ 
++httpd-rust-install:
++	$(MAKE) -C httpd INSTALLDIR=$(INSTALLDIR)/httpd rust-install
++
+ libcbor-0.11/Makefile: libcbor-0.11/src/CMakeLists.txt
+ 	cd libcbor-0.11 && cmake -DCMAKE_INSTALL_PREFIX=/usr \
+ 	-DCMAKE_BUILD_TYPE=release \
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -459,5 +459,28 @@ install: all
+ 	#@install -m 0755 test_apps $(INSTALLDIR)/usr/sbin
+ 	#@$(STRIP) $(INSTALLDIR)/usr/sbin/test_apps
+ 
++ifneq ($(wildcard $(RUST_HTTPD_MANIFEST)),)
++.PHONY: rust-relink rust-install
++
++# rust-fast must preserve the C objects created by the complete router build.
++# Re-entering the generic install target can rebuild them without all of the
++# parent target's private context and silently remove firmware functionality.
++rust-relink: $(RUST_HTTPD_LIB)
++	@for object in $(OBJS); do \
++		test -f "$$object" || { echo "Missing cached httpd object: $$object" >&2; exit 1; }; \
++	done
++	@echo " [httpd] Rust-only relink $@"
++	$(CC) -o httpd $(OBJS) $(RUST_HTTPD_LINK) $(LIBS) $(EXTRALDFLAGS) -Wl,-z,relro,-z,now
++	$(SIZECHECK)
++	$(CPTMP)
++
++rust-install: rust-relink
++	@echo " [httpd] Installing Rust-only relink to $(INSTALLDIR)"
++	@install -D httpd $(INSTALLDIR)/usr/sbin/httpd
++	$(if $(RTCONFIG_DEBUG),,@$(STRIP) $(INSTALLDIR)/usr/sbin/httpd)
++	@cd $(INSTALLDIR)/usr/sbin/; ln -sf httpd httpds
++	@chmod 0500 $(INSTALLDIR)/usr/sbin/httpd
++endif
++
+ clean:
+ 	rm -f httpd *.o .*.depend test_apps
