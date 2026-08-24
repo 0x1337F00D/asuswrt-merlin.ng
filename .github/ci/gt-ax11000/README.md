@@ -90,9 +90,10 @@ direct-toolchain mode and clean profile selection). On an exact vendor hit CI
 fetches only the locked upstream commit/tree metadata and restores the already
 gated release tree; it does not materialize 5.6 GiB merely to overwrite it.
 The independent security-overlay job still proves the complete patched diff.
-Before and after every fast build, a normalized archive digest covers the
-entire final rootfs—contents, paths, types, modes and link structure—with only
-the validated generated `rom/etc/image_version` excluded. Rust changes may
+Before and after every fast build, normalized, diffable manifests cover the
+entire final rootfs—contents, paths, types, modes, symlinks and hardlink
+groups—with only the validated generated `rom/etc/image_version` excluded.
+Rust changes may
 additionally exclude exactly the five consumers already covered by freshness,
 manifest, ISA and QEMU gates.
 

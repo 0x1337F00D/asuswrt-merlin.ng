@@ -489,20 +489,18 @@ jobs:
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
-          tar_excludes=(--exclude='./rom/etc/image_version')
+          rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
-            tar_excludes+=(
-              --exclude='./usr/sbin/infosvr'
-              --exclude='./bin/rstats'
-              --exclude='./usr/sbin/Notify_Event2NC'
-              --exclude='./usr/sbin/httpd'
-              --exclude='./sbin/rc'
+            rootfs_excludes+=(
+              usr/sbin/infosvr
+              bin/rstats
+              usr/sbin/Notify_Event2NC
+              usr/sbin/httpd
+              sbin/rc
             )
           fi
-          tar --sort=name --format=posix --mtime=@0 --owner=0 --group=0 \
-            --numeric-owner --pax-option=delete=atime,delete=ctime \
-            "${tar_excludes[@]}" -C "$rootfs" -cf - . | sha256sum \
-            > cache-equivalence/rootfs.before
+          bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \
+            "$rootfs" cache-equivalence/rootfs.before "${rootfs_excludes[@]}"
           echo "same-rust=$same_rust" >> "$GITHUB_OUTPUT"
 
       - name: Build firmware
@@ -573,21 +571,19 @@ jobs:
           test -f "$image_version" && test ! -L "$image_version"
           test "$(stat -c '%a' "$image_version")" = 644
           grep -Eq '^HND[0-9]{7}$' "$image_version"
-          tar_excludes=(--exclude='./rom/etc/image_version')
+          rootfs_excludes=(rom/etc/image_version)
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
-            tar_excludes+=(
-              --exclude='./usr/sbin/infosvr'
-              --exclude='./bin/rstats'
-              --exclude='./usr/sbin/Notify_Event2NC'
-              --exclude='./usr/sbin/httpd'
-              --exclude='./sbin/rc'
+            rootfs_excludes+=(
+              usr/sbin/infosvr
+              bin/rstats
+              usr/sbin/Notify_Event2NC
+              usr/sbin/httpd
+              sbin/rc
             )
           fi
-          tar --sort=name --format=posix --mtime=@0 --owner=0 --group=0 \
-            --numeric-owner --pax-option=delete=atime,delete=ctime \
-            "${tar_excludes[@]}" -C "$rootfs" -cf - . | sha256sum \
-            > cache-equivalence/rootfs.after
-          diff -u cache-equivalence/rootfs.before \
+          bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \
+            "$rootfs" cache-equivalence/rootfs.after "${rootfs_excludes[@]}"
+          diff -ru cache-equivalence/rootfs.before \
             cache-equivalence/rootfs.after
 
       - name: Verify Rust firmware ISA and runtime

@@ -132,8 +132,10 @@ new gates is a valid fast-path reference.
 The extracted pilot also exposed three empty `rom/rom`, `rom/rom/modules` and
 `rom/rom/scripts` directories that existed only after the repeated repack.
 They are legacy optional-payload containers created by `fsbuild`; the common
-finalizer now removes them only when empty. Cache schema v2 compares a
-timestamp/ownership-normalized archive of the entire final rootfs before and
-after every fast build, including paths, types, modes and link structure. The
-generated and separately validated `rom/etc/image_version` is the sole normal
-exclusion when Rust itself is unchanged.
+finalizer now removes them only when empty. Cache schema v2 compares explicit,
+timestamp/ownership-normalized manifests of the entire final rootfs before and
+after every fast build: paths, types, modes, sizes, link targets, hardlink
+groups and every regular-file digest. This makes any future mismatch directly
+actionable instead of reducing it to one opaque archive hash. The generated
+and separately validated `rom/etc/image_version` is the sole normal exclusion
+when Rust itself is unchanged.
