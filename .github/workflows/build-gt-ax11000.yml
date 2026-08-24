@@ -375,7 +375,6 @@ jobs:
             gt-ax11000-rust-v3-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
 
       - name: Restore compiler cache
-        if: steps.vendor-cache.outputs.cache-hit != 'true'
         id: ccache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -512,7 +511,7 @@ jobs:
           ASUSWRT_APT_CACHE: ${{ runner.temp }}/asuswrt-apt
           ASUSWRT_BUILD_MODE: ${{ steps.vendor-cache.outputs.cache-hit == 'true' && 'rust-fast' || 'clean' }}
           ASUSWRT_BUILD_WORKTREE: "1"
-          ASUSWRT_CCACHE: ${{ steps.vendor-cache.outputs.cache-hit == 'true' && '0' || steps.inputs.outputs.ccache }}
+          ASUSWRT_CCACHE: ${{ steps.inputs.outputs.ccache }}
           ASUSWRT_CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
           ASUSWRT_CCACHE_MAXSIZE: 2G
           ASUSWRT_DIRECT_TOOLCHAIN: ${{ steps.inputs.outputs.direct_toolchain }}
@@ -603,7 +602,7 @@ jobs:
             "$rootfs" "$toolchain_bin" "$(command -v qemu-arm)"
 
       - name: Show compiler cache statistics
-        if: always() && steps.vendor-cache.outputs.cache-hit != 'true'
+        if: always()
         env:
           CCACHE_DIR: ${{ runner.temp }}/asuswrt-ccache
         run: ccache --show-stats --verbose || true
