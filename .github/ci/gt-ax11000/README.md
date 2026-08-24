@@ -90,6 +90,9 @@ direct-toolchain mode and clean profile selection). On an exact vendor hit CI
 fetches only the locked upstream commit/tree metadata and restores the already
 gated release tree; it does not materialize 5.6 GiB merely to overwrite it.
 The independent security-overlay job still proves the complete patched diff.
+It hydrates only the exact files named by the patch series plus the single
+unmodified configuration file inspected by the hardening gate, instead of a
+second multi-gigabyte vendor checkout.
 Before and after every fast build, normalized, diffable manifests cover the
 entire final rootfs—contents, paths, types, modes, symlinks and hardlink
 groups—with only the validated generated `rom/etc/image_version` excluded.

@@ -137,12 +137,32 @@ jobs:
           expected_diff=$(python3 "$tool" get patched_diff_sha256 --lock "$lock")
           python3 "$tool" patch-set-hash \
             --series "$patch_root/series" --patch-root "$patch_root"
+          patched_paths="$RUNNER_TEMP/security-patched-paths"
+          sparse_patterns="$RUNNER_TEMP/security-sparse-patterns"
+          while IFS= read -r patch_name; do
+            patch_name=${patch_name%%#*}
+            patch_name=${patch_name//[[:space:]]/}
+            test -n "$patch_name" || continue
+            sed -n -e 's#^--- a/##p' -e 's#^+++ b/##p' \
+              "$patch_root/$patch_name"
+          done < "$patch_root/series" > "$patched_paths"
+          # config_base is deliberately inspected by the hardening gate even
+          # though no overlay patch modifies it.
+          printf '%s\n' release/src/router/config_base >> "$patched_paths"
+          LC_ALL=C sort -u -o "$patched_paths" "$patched_paths"
+          test "$(wc -l < "$patched_paths")" -ge 60
+          while IFS= read -r patched_path; do
+            [[ "$patched_path" =~ ^[A-Za-z0-9_./+-]+$ ]]
+            [[ "$patched_path" = release/* ]]
+            printf '/%s\n' "$patched_path"
+          done < "$patched_paths" > "$sparse_patterns"
           git init source
           git -C source remote add origin "$upstream_repo"
-          git -C source sparse-checkout init --cone
-          git -C source sparse-checkout set \
-            release/src release/src-rt release/src-rt-5.02axhnd
-          git -C source fetch --depth=1 --filter=blob:none origin "$upstream_sha"
+          git -C source sparse-checkout init --no-cone
+          git -C source sparse-checkout set --no-cone --stdin \
+            < "$sparse_patterns"
+          git -C source fetch --no-tags --depth=1 --filter=blob:none \
+            origin "$upstream_sha"
           git -C source checkout --detach FETCH_HEAD
           while IFS= read -r patch_name; do
             patch_name=${patch_name%%#*}
