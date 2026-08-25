@@ -1,0 +1,90 @@
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -10452,6 +10452,57 @@ static struct json_object* client_mlo_links_to_json(const CLIENT_DETAIL_INFO_TAB
+ }
+ #endif
+ 
++/*
++ * The closed GT-AX11000 networkmap daemon and the current public header do
++ * not have the same size for CLIENT_DETAIL_INFO_TABLE.  The fixed trailer,
++ * however, is ABI-stable and lives at the end of the SysV segment.  Resolve
++ * it from the kernel-reported segment size so a newer reader neither sees an
++ * empty client count nor writes delete_mac into a client data array.
++ */
++typedef struct {
++	int ip_mac_num;
++	int detail_info_num;
++	int asus_device_num;
++	int commit_no;
++	char delete_mac[13];
++} NETWORKMAP_SHM_TAIL;
++
++static NETWORKMAP_SHM_TAIL *networkmap_shm_tail(void *shared_client_info,
++	int shm_client_info_id)
++{
++	struct shmid_ds shm_info;
++
++	if (!shared_client_info || shared_client_info == (void *)-1)
++		return NULL;
++	if (shmctl(shm_client_info_id, IPC_STAT, &shm_info) != 0 ||
++	    shm_info.shm_segsz < sizeof(NETWORKMAP_SHM_TAIL))
++		return NULL;
++
++	return (NETWORKMAP_SHM_TAIL *)((unsigned char *)shared_client_info +
++		shm_info.shm_segsz - sizeof(NETWORKMAP_SHM_TAIL));
++}
++
++static int networkmap_shm_client_count(void *shared_client_info,
++	int shm_client_info_id, P_CLIENT_DETAIL_INFO_TABLE public_layout)
++{
++	NETWORKMAP_SHM_TAIL *tail = networkmap_shm_tail(shared_client_info,
++		shm_client_info_id);
++	int count = tail ? tail->ip_mac_num : public_layout->ip_mac_num;
++
++	return count >= 0 && count <= MAX_NR_CLIENT_LIST ? count : 0;
++}
++
++static void networkmap_shm_set_delete_mac(void *shared_client_info,
++	int shm_client_info_id, P_CLIENT_DETAIL_INFO_TABLE public_layout,
++	const char *mac)
++{
++	NETWORKMAP_SHM_TAIL *tail = networkmap_shm_tail(shared_client_info,
++		shm_client_info_id);
++	char *delete_mac = tail ? tail->delete_mac : public_layout->delete_mac;
++
++	strlcpy(delete_mac, mac, sizeof(tail->delete_mac));
++}
++
+ //2016.09 Rawny add for new networkmap
+ //static int get_client_detail_info(int eid, webs_t wp, int argc, char_t **argv, key_t shmkey, char *maclist_buf){
+ static int get_client_detail_info(struct json_object *clients, struct json_object *macArray, key_t shmkey){
+@@ -10550,7 +10601,9 @@ static int get_client_detail_info(struct json_object *clients, struct json_objec
+ 
+ 
+ 	p_client_info_tab = (P_CLIENT_DETAIL_INFO_TABLE)shared_client_info;
+-	for(i = 0; i < p_client_info_tab->ip_mac_num; i++) {
++	int client_count = networkmap_shm_client_count(shared_client_info,
++		shm_client_info_id, p_client_info_tab);
++	for(i = 0; i < client_count; i++) {
+ 		memset(dev_name, 0, sizeof(dev_name));
+ 		memset(ipaddr, 0, sizeof(ipaddr));
+ #ifdef RTCONFIG_IPV6
+@@ -19641,7 +19694,8 @@ deleteOfflineClient(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg, char_
+ 	}
+ 
+ 	p_client_info_tab = (P_CLIENT_DETAIL_INFO_TABLE)shared_client_info;
+-	strlcpy(p_client_info_tab->delete_mac, mac_str, sizeof(p_client_info_tab->delete_mac));
++	networkmap_shm_set_delete_mac(shared_client_info, shm_client_info_id,
++		p_client_info_tab, mac_str);
+		shmdt(shared_client_info);
+		file_unlock(lock);
+@@ -24909,6 +24963,7 @@ do_del_client_data_cgi(char *url, FILE *stream) {
+ 		}
+ 
+ 		p_client_info_tab = (P_CLIENT_DETAIL_INFO_TABLE)shared_client_info;
+-		strlcpy(p_client_info_tab->delete_mac, mac_str, sizeof(p_client_info_tab->delete_mac));
++		networkmap_shm_set_delete_mac(shared_client_info, shm_client_info_id,
++			p_client_info_tab, mac_str);
+ 		shmdt(shared_client_info);
+ 		file_unlock(lock);

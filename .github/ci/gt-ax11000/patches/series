@@ -19,3 +19,4 @@ wifi-upstream-security.patch
 firewall-guard-retry.patch
 networkmap-rust-compat.patch
 local-qos-rust.patch
+networkmap-shm-abi.patch
