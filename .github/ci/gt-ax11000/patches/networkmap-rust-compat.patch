@@ -2,10 +2,12 @@ diff --git a/release/src/router/networkmap/Makefile b/release/src/router/network
 index 7e5a6b372f3..78921b785c7 100644
 --- a/release/src/router/networkmap/Makefile
 +++ b/release/src/router/networkmap/Makefile
-@@ -4,6 +4,30 @@ EXEC = networkmap
+@@ -4,6 +4,32 @@ EXEC = networkmap
  OBJS = JSON_checker.o function.o connections.o sm.o download.o shared_func.o protect_name.o networkmap.o
  OBJS += amas/cfg_client_lookup.o
  
++.DEFAULT_GOAL := all
++
 +RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
 +RUST_BWDPI_COMPAT_MANIFEST := $(RUST_COMPONENTS_DIR)/bwdpi-compat/Cargo.toml
 +RUST_TOOLCHAIN ?= 1.85.1
