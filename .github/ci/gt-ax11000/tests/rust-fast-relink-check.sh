@@ -15,6 +15,12 @@ grep -Fq '@$(SIZE) httpd' "$httpd_make"
 grep -Fq 'cp httpd $(TOP)/dbgshare/' "$httpd_make"
 grep -Fq 'rust-install: rust-relink' "$httpd_make"
 grep -Fq 'httpd-rust-install' "$repack_make"
+grep -Fq 'httpd-ui-c-rebuild:' "$repack_make"
+grep -Fq 'rc-c-rebuild:' "$repack_make"
+grep -Fq 'networkmap-rust-compat-rebuild:' "$repack_make"
+grep -Fq '$(MAKE) -C router httpd-install' "$repack_make"
+grep -Fq '$(MAKE) -C router rc-install' "$repack_make"
+grep -Fq '$(MAKE) -C router networkmap-install' "$repack_make"
 grep -Fq 'source_mode="$$(stat -c '\''%a'\'' "$$source_file")"' "$repack_make"
 grep -Fq 'install -D -m "$$source_mode" "$$source_file" "$$target_file"' "$repack_make"
 grep -Fq -- '-rmdir \' "$repack_make"
@@ -27,7 +33,8 @@ if sed -n '/^rust-relink:/,/^rust-install:/p' "$httpd_make" |
 	exit 1
 fi
 
-if grep -Eq '(^|[[:space:]])httpd-install([[:space:]]|$)' "$repack_make"; then
+if sed -n '/^rust-ui-httpd-relink:/,/^httpd-ui-c-rebuild:/p' "$repack_make" |
+	grep -Eq '(^|[[:space:]])httpd-install([[:space:]]|$)'; then
 	echo 'rust-fast must not enter the generic httpd install target' >&2
 	exit 1
 fi

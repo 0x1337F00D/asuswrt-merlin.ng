@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "bwdpi-compat",
     "httpd-parsers",
     "infosvr",
     "nt-event",

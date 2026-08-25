@@ -12,6 +12,7 @@ INPUT_LOCK_TOOL="$SCRIPT_ROOT/tools/input_lock.py"
 PATCH_SERIES="$SCRIPT_ROOT/patches/series"
 SECURITY_OVERLAY_TEST="$SCRIPT_ROOT/tests/security-overlay-check.sh"
 NETWORK_HARDENING_TEST="$SCRIPT_ROOT/tests/network-hardening-check.sh"
+NO_PROPRIETARY_QOS_ROOTFS_TEST="$SCRIPT_ROOT/tests/no-proprietary-qos-rootfs.sh"
 WEB_PAYLOAD_TEST="$SCRIPT_ROOT/tests/verify-web-payload.sh"
 WEB_SYMLINK_TEST="$SCRIPT_ROOT/tests/verify-web-symlinks.sh"
 SOURCE_PREP_VERSION=1
@@ -1137,6 +1138,13 @@ if [ "$build_rc" -eq 0 ]; then
 			build_rc=1
 		fi
 	done
+fi
+
+if [ "$build_rc" -eq 0 ]; then
+	if ! bash "$NO_PROPRIETARY_QOS_ROOTFS_TEST" "$rootfs_dir"; then
+		echo "Rootfs contains proprietary QoS artifacts or lacks the local replacement" >&2
+		build_rc=1
+	fi
 fi
 
 if [ "$build_rc" -eq 0 ]; then

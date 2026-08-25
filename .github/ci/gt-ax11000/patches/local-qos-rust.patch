@@ -1,0 +1,731 @@
+diff --git a/release/src-rt/target.mak b/release/src-rt/target.mak
+--- a/release/src-rt/target.mak
++++ b/release/src-rt/target.mak
+@@ -25,7 +25,7 @@ export GT-AX11000 += BUILD_NAME="GT-AX11000" EXT_PHY="BCM84880" SWITCH2="" NVSIZE="128" DHDAP=y DPSTA=y LACP=y WTFAST=y REPEATER=y \
+ 		PRINTER=y WEBDAV=n SMARTSYNCBASE=n USB="USB" APP="network" PROXYSTA=y DNSMQ=y SHP=n BCMWL6=y BCMWL6A=y \
+ 		DISK_MONITOR=y BTN_WIFITOG=y OPTIMIZE_XBOX=y ODMPID=y LED_BTN=n BCMSMP=y XHCI=y DUALWAN=y NEW_USER_LOW_RSSI=y \
+-		OPENVPN=y TIMEMACHINE=y MDNS=y VPNC=y BRCM_NAND_JFFS2=y JFFS2LOG=y BWDPI=y DUMP_OOPS_MSG=n LINUX_MTD="64" DEBUGFS=y \
++		OPENVPN=y TIMEMACHINE=y MDNS=y VPNC=y BRCM_NAND_JFFS2=y JFFS2LOG=y BWDPI=n DUMP_OOPS_MSG=n LINUX_MTD="64" DEBUGFS=y \
+ 		TEMPROOTFS=n SSH=y EMAIL=y FRS_FEEDBACK=n SYSSTATE=y ROG=y STAINFO=y CLOUDCHECK=n NATNL_AICLOUD=y REBOOT_SCHEDULE=y \
+ 		MULTICASTIPTV=y QUAGGA=y WLCLMLOAD=n BCM_MUMIMO=y LAN50="all" ATCOVER=y GETREALIP=y CFEZ=y ETLAN_LED=y TFAT=y \
+ 		NTFS="tuxera" HFS="tuxera" NEWSSID_REV2=y NEW_APP_ARM=y BONDING=y BONDING_WAN=y NETOOL=y AURALED=y \
+diff --git a/release/src/router/httpd/Makefile b/release/src/router/httpd/Makefile
+--- a/release/src/router/httpd/Makefile
++++ b/release/src/router/httpd/Makefile
+@@ -150,7 +150,7 @@ OBJS += aspbw.o initial_web_hook.o
+ OBJS += apps.o
+ OBJS += sysinfo.o data_arrays.o web-broadcom-am.o
+ ifeq ($(BUILD_NAME),GT-AX11000)
+-OBJS += httpd_compat_stubs.o
++OBJS += httpd_compat_stubs.o local_traffic.o
+ endif
+ 
+ ifeq ($(CONFIG_REALTEK),y)
+diff --git a/release/src/router/httpd/data_arrays.h b/release/src/router/httpd/data_arrays.h
+--- a/release/src/router/httpd/data_arrays.h
++++ b/release/src/router/httpd/data_arrays.h
+@@ -39,6 +39,7 @@ extern void ctvbuf(FILE *f);
+ #endif
+ 
+ extern int ej_bwdpi_conntrack(int eid, webs_t wp, int argc, char **argv_);
++extern int ej_local_traffic_status(int eid, webs_t wp, int argc, char_t **argv);
+ extern int ej_tcfilter_array(int eid, webs_t wp, int argc, char_t **argv);
+ #ifdef RTCONFIG_BWDPI
+ void _fix_TM_ipv6(char* str);
+diff --git a/release/src/router/httpd/local_traffic.c b/release/src/router/httpd/local_traffic.c
+new file mode 100644
+--- /dev/null
++++ b/release/src/router/httpd/local_traffic.c
+@@ -0,0 +1,242 @@
++/* Local, privacy-preserving replacement for BWDPI realtime client counters. */
++#include <arpa/inet.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include <shared.h>
++#include "httpd.h"
++
++#define LOCAL_CLIENT_LIMIT 256
++#define CONNTRACK_LINE_LIMIT 2048
++
++struct rust_conntrack_traffic {
++	char source[48];
++	char destination[48];
++	char protocol[8];
++	uint64_t original_bytes;
++	uint64_t reply_bytes;
++	uint16_t source_port;
++	uint16_t destination_port;
++};
++
++extern int rust_httpd_conntrack_traffic_parse(const char *line, size_t length,
++	struct rust_conntrack_traffic *output);
++
++struct local_client_counter {
++	char ip[INET_ADDRSTRLEN];
++	char mac[18];
++	uint64_t tx;
++	uint64_t rx;
++};
++
++struct persistent_client_counter {
++	char mac[18];
++	uint64_t raw_tx;
++	uint64_t raw_rx;
++	uint64_t total_tx;
++	uint64_t total_rx;
++};
++
++static struct persistent_client_counter persistent[LOCAL_CLIENT_LIMIT];
++static size_t persistent_count;
++
++static uint64_t saturating_add_u64(uint64_t left, uint64_t right)
++{
++	return UINT64_MAX - left < right ? UINT64_MAX : left + right;
++}
++
++static int lookup_client_by_ip(struct local_client_counter *clients,
++	size_t count, const char *ip)
++{
++	size_t i;
++
++	for (i = 0; i < count; ++i) {
++		if (!strcmp(clients[i].ip, ip))
++			return (int)i;
++	}
++	return -1;
++}
++
++static size_t read_arp_clients(struct local_client_counter *clients)
++{
++	FILE *fp;
++	char line[256];
++	char ip[INET_ADDRSTRLEN], hw_type[16], flags[16];
++	char mac[18], mask[32], device[32];
++	struct in_addr parsed_ip;
++	size_t count = 0;
++
++	fp = fopen("/proc/net/arp", "r");
++	if (!fp)
++		return 0;
++	(void)fgets(line, sizeof(line), fp);
++	while (count < LOCAL_CLIENT_LIMIT && fgets(line, sizeof(line), fp)) {
++		if (sscanf(line, "%15s %15s %15s %17s %31s %31s", ip, hw_type,
++		    flags, mac, mask, device) != 6)
++			continue;
++		if (inet_pton(AF_INET, ip, &parsed_ip) != 1 ||
++		    !isValidMacAddress(mac) || !strcmp(mac, "00:00:00:00:00:00"))
++			continue;
++		if (lookup_client_by_ip(clients, count, ip) >= 0)
++			continue;
++		strlcpy(clients[count].ip, ip, sizeof(clients[count].ip));
++		strlcpy(clients[count].mac, mac, sizeof(clients[count].mac));
++		clients[count].tx = 0;
++		clients[count].rx = 0;
++		++count;
++	}
++	fclose(fp);
++	return count;
++}
++
++static FILE *open_conntrack(void)
++{
++	FILE *fp = fopen("/proc/net/nf_conntrack", "r");
++	return fp ? fp : fopen("/proc/net/ip_conntrack", "r");
++}
++
++static void collect_conntrack_counters(struct local_client_counter *clients,
++	size_t count)
++{
++	FILE *fp;
++	char line[CONNTRACK_LINE_LIMIT + 2];
++	struct rust_conntrack_traffic record;
++	int index;
++
++	fp = open_conntrack();
++	if (!fp)
++		return;
++	while (fgets(line, sizeof(line), fp)) {
++		size_t length = strlen(line);
++
++		/* Never feed a truncated kernel record to the parser. */
++		if (length == sizeof(line) - 1 && line[length - 1] != '\n') {
++			int ch;
++			while ((ch = fgetc(fp)) != '\n' && ch != EOF)
++				;
++			continue;
++		}
++		if (!rust_httpd_conntrack_traffic_parse(line, length, &record))
++			continue;
++
++		index = lookup_client_by_ip(clients, count, record.source);
++		if (index >= 0) {
++			clients[index].tx = saturating_add_u64(clients[index].tx,
++				record.original_bytes);
++			clients[index].rx = saturating_add_u64(clients[index].rx,
++				record.reply_bytes);
++			continue;
++		}
++		index = lookup_client_by_ip(clients, count, record.destination);
++		if (index >= 0) {
++			clients[index].rx = saturating_add_u64(clients[index].rx,
++				record.original_bytes);
++			clients[index].tx = saturating_add_u64(clients[index].tx,
++				record.reply_bytes);
++		}
++	}
++	fclose(fp);
++}
++
++static struct persistent_client_counter *persistent_for_mac(const char *mac)
++{
++	size_t i;
++
++	for (i = 0; i < persistent_count; ++i) {
++		if (!strcasecmp(persistent[i].mac, mac))
++			return &persistent[i];
++	}
++	if (persistent_count == LOCAL_CLIENT_LIMIT)
++		return NULL;
++	strlcpy(persistent[persistent_count].mac, mac,
++		sizeof(persistent[persistent_count].mac));
++	return &persistent[persistent_count++];
++}
++
++static void make_monotonic(struct local_client_counter *clients, size_t count)
++{
++	size_t i;
++
++	for (i = 0; i < count; ++i) {
++		struct persistent_client_counter *state =
++			persistent_for_mac(clients[i].mac);
++		uint64_t tx_delta, rx_delta;
++
++		if (!state)
++			continue;
++		tx_delta = clients[i].tx >= state->raw_tx ?
++			clients[i].tx - state->raw_tx : 0;
++		rx_delta = clients[i].rx >= state->raw_rx ?
++			clients[i].rx - state->raw_rx : 0;
++		state->total_tx = saturating_add_u64(state->total_tx, tx_delta);
++		state->total_rx = saturating_add_u64(state->total_rx, rx_delta);
++		state->raw_tx = clients[i].tx;
++		state->raw_rx = clients[i].rx;
++		clients[i].tx = state->total_tx;
++		clients[i].rx = state->total_rx;
++	}
++}
++
++static size_t collect_local_clients(struct local_client_counter *clients)
++{
++	size_t count = read_arp_clients(clients);
++	collect_conntrack_counters(clients, count);
++	make_monotonic(clients, count);
++	return count;
++}
++
++static int write_client_traffic(webs_t wp,
++	const struct local_client_counter *clients, size_t count)
++{
++	int ret = 0;
++	char comma = ' ';
++	size_t i;
++
++	ret += websWrite(wp, "[");
++	for (i = 0; i < count; ++i) {
++		ret += websWrite(wp, "%c[\"%s\",\"%llu\",\"%llu\"]", comma,
++			clients[i].mac, (unsigned long long)clients[i].tx,
++			(unsigned long long)clients[i].rx);
++		comma = ',';
++	}
++	return ret + websWrite(wp, "]");
++}
++
++int ej_local_traffic_status(int eid, webs_t wp, int argc, char_t **argv)
++{
++	struct local_client_counter clients[LOCAL_CLIENT_LIMIT];
++	uint64_t total_tx = 0, total_rx = 0;
++	const char *client;
++	size_t count, i;
++
++	(void)eid;
++	if (argc < 4 || !argv || !argv[0])
++		return websWrite(wp, "[]");
++	client = websGetVar(wp, "client", "");
++	if (*client || (strcmp(argv[0], "traffic") && strcmp(argv[0], "traffic_wan")))
++		return websWrite(wp, "[]");
++
++	memset(clients, 0, sizeof(clients));
++	count = collect_local_clients(clients);
++	if (!strcmp(argv[0], "traffic"))
++		return write_client_traffic(wp, clients, count);
++	for (i = 0; i < count; ++i) {
++		total_tx = saturating_add_u64(total_tx, clients[i].tx);
++		total_rx = saturating_add_u64(total_rx, clients[i].rx);
++	}
++	return websWrite(wp, "[\"%llu\",\"%llu\"]",
++		(unsigned long long)total_tx, (unsigned long long)total_rx);
++}
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -2108,8 +2108,9 @@ ej_get_clientlist_from_json_database(int eid, webs_t wp, int argc, char_t **argv
+ 	if(customList)
+ 		json_object_put(customList);
+-	if(new_never_online_client)
+-		json_object_put(new_never_online_client);
++	/* json_object_object_add() transferred ownership of never-online clients
++	 * to clients; releasing one here would leave a dangling child and make the
++	 * final clients put a double free. */
+ #ifdef RTCONFIG_AMAS
+ 	if(amasList)
+ 		json_object_put(amasList);
+@@ -4267,6 +4267,7 @@ static void clear_residual_bw_qos_state(void);
+ #endif
+ 
+ extern int rust_httpd_wireless_identity_is_readonly(const char *name, size_t length);
++extern int rust_httpd_local_qos_mode_allowed(const char *mode);
++extern int rust_httpd_local_qos_bandwidth_allowed(const char *value);
+ extern int rust_httpd_wlan_security_validate(const char *authentication,
+ 	size_t authentication_length, const char *cipher, size_t cipher_length,
+ 	const char *pmf, size_t pmf_length, const char *wps, size_t wps_length);
+@@ -4369,6 +4370,32 @@ int validate_apply(webs_t wp, json_object *root)
+ 	memset(acc_action_script, 0, sizeof(acc_action_script));
+ 	action_script = check_xss_blacklist(action_script, 0) ? "" : action_script;
+ #endif
++	if (get_cgi_json("qos_type", root) &&
++	    !rust_httpd_local_qos_mode_allowed(get_cgi_json("qos_type", root))) {
++		logmessage("httpd", "rejected proprietary or invalid QoS mode");
++		return 0;
++	}
++	{
++		static const char *const bandwidth_keys[] = {
++			"qos_ibw", "qos_obw", "qos_ibw1", "qos_obw1"
++		};
++		size_t index;
++
++		for (index = 0; index < sizeof(bandwidth_keys) / sizeof(bandwidth_keys[0]);
++		     ++index) {
++			const char *bandwidth = get_cgi_json(bandwidth_keys[index], root);
++
++			/* Disabled controls may submit an empty default.  Reject every
++			 * non-empty value unless Rust proves it is bounded decimal kbit/s. */
++			if (bandwidth && *bandwidth &&
++			    !rust_httpd_local_qos_bandwidth_allowed(bandwidth)) {
++				logmessage("httpd", "rejected invalid local QoS bandwidth");
++				return 0;
++			}
++		}
++	}
+ 	if (!validate_wlan_security_request(root)) {
+ 		logmessage("httpd", "rejected incomplete or insecure WLAN security tuple");
+ 		return 0;
+@@ -10900,11 +10927,21 @@ static int ej_get_clientlist(int eid, webs_t wp, int argc, char_t **argv)
+ 	struct json_object *clients;
+ 	if((nvram_match("refresh_networkmap", "1") || nvram_match("rescan_networkmap", "1")) && (check_if_file_exist(NMP_CACHE_FILE)))
+ 	{
++		struct json_object *cached_maclist = NULL;
+ 		clients = json_object_from_file(NMP_CACHE_FILE);
+-		websWrite(wp, "%s", json_object_to_json_string(clients));
++		/* A partial writer or get_clientlist_ex() used to leave a cache without
++		 * the maclist index required by client_function.js.  Do not turn that
++		 * transient snapshot into an empty/broken client view. */
++		if(clients &&
++		   json_object_object_get_ex(clients, "maclist", &cached_maclist) &&
++		   json_object_is_type(cached_maclist, json_type_array) &&
++		   json_object_array_length(cached_maclist) > 0) {
++			websWrite(wp, "%s", json_object_to_json_string(clients));
++			json_object_put(clients);
++			return 0;
++		}
+ 		if(clients)
+-			json_object_put(clients);	
+-		return 0;
++			json_object_put(clients);
+ 	}
+ 	
+ 	if(!pids("networkmap")){
+@@ -42876,6 +42882,8 @@ struct ej_handler ej_handlers[] = {
+ 	{ "bwdpi_wanStat_detail", ej_bwdpi_wanStat_detail},
+ #endif
+ 	{ "bwdpi_redirect_info", ej_bwdpi_redirect_page_status},
++#else
++	{ "bwdpi_status", ej_local_traffic_status},
+ #endif
+ #if defined(RTCONFIG_DNSQUERY_INTERCEPT)
+ 	{ "dns_appStat", ej_dns_appStat},
+@@ -43341,8 +43378,17 @@ static int get_clientlist_ex(struct json_object **clients)
+ {
+ 	if((nvram_match("refresh_networkmap", "1") || nvram_match("rescan_networkmap", "1")) && (check_if_file_exist(NMP_CACHE_FILE)))
+ 	{
++		struct json_object *cached_maclist = NULL;
+ 		*clients = json_object_from_file(NMP_CACHE_FILE);
+-		return 0;
++		if(*clients &&
++		   json_object_object_get_ex(*clients, "maclist", &cached_maclist) &&
++		   json_object_is_type(cached_maclist, json_type_array) &&
++		   json_object_array_length(cached_maclist) > 0)
++			return 0;
++		if(*clients) {
++			json_object_put(*clients);
++			*clients = NULL;
++		}
+ 	}
+ 
+ 	if(!pids("networkmap")){
+@@ -43394,6 +43440,8 @@ static int get_clientlist_ex(struct json_object **clients)
+ 		get_client_detail_info(*clients, macArray, SHMKEY_CP);
+ 	}
+ #endif
++	json_object_object_add(*clients, "maclist", macArray);
++	json_object_object_add(*clients, "ClientAPILevel", json_object_new_string(CLIENTAPILEVEL));
+ 	json_object_to_file(NMP_CACHE_FILE, *clients);
+ 	return 0;
+ }
+@@ -43407,8 +43455,14 @@ static int get_client_name(char *ipaddr, char *name, size_t name_len){
+ 	get_clientlist_ex(&clients);
+ 	if(clients){
+ 		json_object_object_foreach(clients, key, val) {
+-			json_object_object_get_ex(val, "ip", &ip_obj);
++			if(!json_object_is_type(val, json_type_object))
++				continue;
++			if(!json_object_object_get_ex(val, "ip", &ip_obj))
++				continue;
+ 			ip_string = (char *)json_object_get_string(ip_obj);
++			if(!ip_string)
++				continue;
+ 			if(strcmp(ip_string, ipaddr) == 0)
+ 			{
+ 				strlcpy(name, ipaddr, name_len);
+diff --git a/release/src/router/www/dashboard/js/clientlist.module.js b/release/src/router/www/dashboard/js/clientlist.module.js
+--- a/release/src/router/www/dashboard/js/clientlist.module.js
++++ b/release/src/router/www/dashboard/js/clientlist.module.js
+@@ -435,13 +435,21 @@ export class ClientList {
+             return this.uploadIconList;
+         } else {
+             if (isSupport("usericon")) {
+-                await fetch('/appGet.cgi?hook=get_upload_icon_count_list()')
+-                    .then(data => data.json())
+-                    .then(data => {
+-                        this.uploadIconFetched = true;
+-                        const list = data.get_upload_icon_count_list.upload_icon_list.split(">");
+-                        this.uploadIconList = list.filter(value => value !== '');
+-                    })
++                try {
++                    const response = await fetch('/appGet.cgi?hook=get_upload_icon_count_list()');
++                    if (!response.ok) {
++                        throw new Error(`HTTP ${response.status}`);
++                    }
++                    const data = await response.json();
++                    const rawList = data?.get_upload_icon_count_list?.upload_icon_list;
++                    this.uploadIconList = (typeof rawList === "string")
++                        ? rawList.split(">").filter(value => value !== '')
++                        : [];
++                } catch (error) {
++                    console.warn("Client icons unavailable; continuing without them", error);
++                    this.uploadIconList = [];
++                }
++                this.uploadIconFetched = true;
+             }
+         }
+     }
+@@ -488,26 +496,48 @@ export class ClientList {
+             }
+         }
+ 
+-        const fromNetworkmapd = await httpApi.hookGet("get_clientlist", true)
++        const safeHookGet = async (name) => {
++            try {
++                const value = await httpApi.hookGet(name, true);
++                return value ?? {};
++            } catch (error) {
++                console.warn(`Client-list hook ${name} unavailable`, error);
++                return {};
++            }
++        };
++
++        const fromNetworkmapResult = await safeHookGet("get_clientlist")
++        const fromNetworkmapd = (fromNetworkmapResult && typeof fromNetworkmapResult === "object" &&
++            !Array.isArray(fromNetworkmapResult)) ? fromNetworkmapResult : {};
+         // console.log("fromNetworkmapd", fromNetworkmapd)
+-        const nmpClient = await httpApi.hookGet("get_clientlist_from_json_database", true)
++        const nmpClientResult = await safeHookGet("get_clientlist_from_json_database")
++        const nmpClient = (nmpClientResult && typeof nmpClientResult === "object" &&
++            !Array.isArray(nmpClientResult)) ? nmpClientResult : {};
+         // console.log("nmpClient", nmpClient)
+-        const cfg_clientlist = await httpApi.hookGet("get_cfg_clientlist", true)
++        const cfgClientResult = await safeHookGet("get_cfg_clientlist")
++        const cfg_clientlist = Array.isArray(cfgClientResult)
++            ? cfgClientResult
++            : (Array.isArray(cfgClientResult.cfg_clientlist) ? cfgClientResult.cfg_clientlist : []);
+         // console.log("cfg_clientlist", cfg_clientlist)
+         await this.fetchUploadIconList();
+ 
+-        if (fromNetworkmapd !== undefined && Object.keys(fromNetworkmapd).length > 0 && fromNetworkmapd.maclist !== undefined) {
++        if (Array.isArray(fromNetworkmapd.maclist)) {
+             for (const mac of fromNetworkmapd.maclist) {
+                 const thisClient = fromNetworkmapd[mac];
+-                const thisClientMacAddr = (typeof thisClient.mac === "undefined") ? false : thisClient.mac.toUpperCase();
++                if (!thisClient || typeof thisClient !== "object") {
++                    continue;
++                }
++                const rawMac = (typeof thisClient.mac === "string") ? thisClient.mac : mac;
++                const thisClientMacAddr = (typeof rawMac === "string") ? rawMac.toUpperCase() : false;
+                 if (!thisClientMacAddr) {
+-                    return;
++                    continue;
+                 }
+ 
+                 let showConnectTo = true;
+                 let showBlockInternet = true;
+                 let showTimeScheduling = true;
+-                if (thisClient.name.toLowerCase().includes("aiboard")) {
++                const clientName = (typeof thisClient.name === "string") ? thisClient.name : thisClientMacAddr;
++                if (clientName.toLowerCase().includes("aiboard")) {
+                     showConnectTo = false;
+                     showBlockInternet = false;
+                     showTimeScheduling = false;
+@@ -516,9 +546,9 @@ export class ClientList {
+                 const client = new Client({
+                     ip6: typeof thisClient.ip6 === "undefined" ? "" : thisClient.ip6,
+                     ip6_prefix: typeof thisClient.ip6_prefix === "undefined" ? "" : thisClient.ip6_prefix,
+-                    mac: thisClient.mac.toUpperCase(),
+-                    name: (thisClient.name !== "") ? thisClient.name.trim() : thisClient.mac,
+-                    nickName: thisClient.nickName.trim(),
++                    mac: thisClientMacAddr,
++                    name: (clientName !== "") ? clientName.trim() : thisClientMacAddr,
++                    nickName: (typeof thisClient.nickName === "string") ? thisClient.nickName.trim() : "",
+                     ip: thisClient.ip,
+                     from: thisClient.from,
+                     isGateway: (thisClient.isGateway == "1"),
+@@ -653,10 +683,14 @@ export class ClientList {
+             }
+         }
+ 
+-        if (Object.keys(nmpClient).length > 0) {
++        if (Array.isArray(nmpClient.maclist)) {
+             nmpClient.maclist.forEach(mac => {
+                 const thisClient = nmpClient[mac];
+-                const thisClientMacAddr = (typeof thisClient.mac == "undefined") ? false : thisClient.mac.toUpperCase();
++                if (!thisClient || typeof thisClient !== "object") {
++                    return;
++                }
++                const rawMac = (typeof thisClient.mac === "string") ? thisClient.mac : mac;
++                const thisClientMacAddr = (typeof rawMac === "string") ? rawMac.toUpperCase() : false;
+                 if (!thisClientMacAddr) {
+                     return;
+                 }
+@@ -674,7 +708,7 @@ export class ClientList {
+                         mac: thisClientMacAddr,
+                         name: thisClientName,
+                         nickName: thisClientNickName,
+-                        vendor: thisClient.vendor.trim(),
++                        vendor: (typeof thisClient.vendor === "string") ? thisClient.vendor.trim() : "",
+                         is_wireless: parseInt(thisClient.is_wireless),
+                         from: thisClient.from,
+                         ROG: (thisClient.ROG == "1"),
+diff --git a/release/src/router/www/client_function.js b/release/src/router/www/client_function.js
+--- a/release/src/router/www/client_function.js
++++ b/release/src/router/www/client_function.js
+@@ -245,8 +245,8 @@ var networkmap_fullscan = '<% nvram_get("networkmap_fullscan"); %>';
+ 
+ var originDataTmp;
+ var originData = {
+-	fromNetworkmapd : [httpApi.hookGet("get_clientlist")],
+-	nmpClient : [httpApi.hookGet("get_clientlist_from_json_database")], //Record the client connected to the router before.
++	fromNetworkmapd : [httpApi.hookGet("get_clientlist") || {maclist: []}],
++	nmpClient : [httpApi.hookGet("get_clientlist_from_json_database") || {maclist: []}], //Record the client connected to the router before.
+ 	init: true
+ }
+ 
+@@ -404,9 +404,11 @@ function genClientList(){
+ 			continue;
+ 		totalClientNum.wireless_ifnames[index - 1] = 0;
+ 	}
+-	if(originData.fromNetworkmapd != undefined && originData.fromNetworkmapd.length > 0 && originData.fromNetworkmapd[0].maclist != undefined) {
++	if(originData.fromNetworkmapd != undefined && originData.fromNetworkmapd.length > 0 && originData.fromNetworkmapd[0] && Array.isArray(originData.fromNetworkmapd[0].maclist)) {
+ 		for(var i=0; i<originData.fromNetworkmapd[0].maclist.length; i++){
+ 			var thisClient = originData.fromNetworkmapd[0][originData.fromNetworkmapd[0].maclist[i]];
++			if(!thisClient || typeof thisClient != "object")
++				continue;
+ 			var thisClientMacAddr = (typeof thisClient.mac == "undefined") ? false : thisClient.mac.toUpperCase();
+ 
+ 			if(!thisClientMacAddr){
+@@ -439,11 +441,11 @@ function genClientList(){
+ 			clientList[thisClientMacAddr].ip6_prefix = typeof thisClient.ip6_prefix === "undefined" ? "" : thisClient.ip6_prefix;
+ 			clientList[thisClientMacAddr].mac = thisClient.mac.toUpperCase();
+ 
+-			clientList[thisClientMacAddr].name = thisClient.name.trim();
++			clientList[thisClientMacAddr].name = (typeof thisClient.name == "string") ? thisClient.name.trim() : "";
+ 			if(clientList[thisClientMacAddr].name == ""){
+ 				clientList[thisClientMacAddr].name = clientList[thisClientMacAddr].mac;
+ 			}
+-			clientList[thisClientMacAddr].nickName = thisClient.nickName.trim();
++			clientList[thisClientMacAddr].nickName = (typeof thisClient.nickName == "string") ? thisClient.nickName.trim() : "";
+ 			clientList[thisClientMacAddr].isGateway = (thisClient.isGateway == "1");
+ 			clientList[thisClientMacAddr].isWebServer = (thisClient.isWebServer == "1");
+ 			clientList[thisClientMacAddr].isPrinter = (thisClient.isPrinter == "1");
+@@ -544,9 +546,11 @@ function genClientList(){
+ 	}
+ 
+ 	var nmpCount = 0;
+-	if(originData.nmpClient.length > 0) {
++	if(originData.nmpClient.length > 0 && originData.nmpClient[0] && Array.isArray(originData.nmpClient[0].maclist)) {
+ 		for(var i=0; i<originData.nmpClient[0].maclist.length; i++){
+ 			var thisClient = originData.nmpClient[0][originData.nmpClient[0].maclist[i]];
++			if(!thisClient || typeof thisClient != "object")
++				continue;
+ 			var thisClientMacAddr = (typeof thisClient.mac == "undefined") ? false : thisClient.mac.toUpperCase();
+ 			if(!thisClientMacAddr){
+ 				continue;
+@@ -574,7 +578,7 @@ function genClientList(){
+ 				clientList[thisClientMacAddr].mac = thisClientMacAddr;
+ 				clientList[thisClientMacAddr].name = thisClientName;
+ 				clientList[thisClientMacAddr].nickName = thisClientNickName;
+-				clientList[thisClientMacAddr].vendor = thisClient.vendor.trim();
++				clientList[thisClientMacAddr].vendor = (typeof thisClient.vendor == "string") ? thisClient.vendor.trim() : "";
+ 				clientList[thisClientMacAddr].is_wireless = parseInt(thisClient.is_wireless);
+ 				if(isSupport("amas")) {
+ 					clientList[thisClientMacAddr].amesh_isRe = thisClientReNode;
+diff --git a/release/src/router/www/Makefile b/release/src/router/www/Makefile
+index c4e1faf0162..22f0e2907e9 100644
+--- a/release/src/router/www/Makefile
++++ b/release/src/router/www/Makefile
+@@ -645,6 +645,11 @@ endif
+ 
+ ifneq ($(RTCONFIG_BWDPI)$(RTCONFIG_BWDPI_DEP),y)
+ ifneq ($(RTCONFIG_HNS),y)
++	# GT-AX11000 local QoS must not ship a dead Trend Micro license path even
++	# when another feature keeps the generic DNS-query pages enabled.
++ifeq ($(BUILD_NAME),GT-AX11000)
++	rm -f $(INSTALLDIR)/www/mobile/pages/tmtos_page.html
++endif
+ ifneq ($(RTCONFIG_DNSQUERY_INTERCEPT),y)
+ 	rm -rf $(INSTALLDIR)/www/AdaptiveQoS_Bandwidth_Monitor.asp
+ 	rm -rf $(INSTALLDIR)/www/AdaptiveQoS_WebHistory.asp
+diff --git a/release/src/router/www/QoS_EZQoS.asp b/release/src/router/www/QoS_EZQoS.asp
+index 74e539f6e0a..85fe7f5e5b2 100644
+--- a/release/src/router/www/QoS_EZQoS.asp
++++ b/release/src/router/www/QoS_EZQoS.asp
+@@ -440,7 +440,12 @@
+             const _nvram = httpApi.nvramGet(['qos_enable', 'ark_qoe_enable', 'qos_type'], true);
+             const qos_enable = _nvram.qos_enable == "1";
+             const ark_qoe_enable = _nvram.ark_qoe_enable == "1";
+-            const qos_type = (_nvram.qos_type == "1" && ark_qoe_support) ? 4 : _nvram.qos_type;
++            // This model deliberately ships only local Traditional QoS and
++            // Bandwidth Limiter. Never resurrect proprietary/unknown modes
++            // from stale NVRAM in the browser.
++            const qos_type = (_nvram.qos_type == "2") ? "2" : "0";
++            document.form.qos_type.value = qos_type;
++            document.form.qos_type_orig.value = qos_type;
+ 
+             let iphoneSwitchStatus = qos_enable;
+             if (ark_qoe_support) {
+@@ -1077,6 +1082,9 @@
+         }
+ 
+         function change_qos_type(value) {
++            value = String(value);
++            if (value !== "0" && value !== "2")
++                value = "0";
+             /* MODELDEP */
+             if (!ark_qoe_support && value == 4) {
+                 value = 1;
+@@ -2191,7 +2199,7 @@
+                                                             for="qoe_type"><#Adaptive_QoE#></label>
+                                                         <input id="int_type" name="qos_type_radio" value="1"
+                                                                onClick="change_qos_type(this.value);"
+-                                                               style="display:none;" type="radio" <% nvram_match("qos_type", "1","checked"); %>><a id="int_type_link"
++                                                               style="display:none;" type="radio" disabled><a id="int_type_link"
+                                                                                                       class="hintstyle"
+                                                                                                       style="display:none;"
+                                                                                                       href="javascript:void(0);"
+diff --git a/release/src/router/rc/init.c b/release/src/router/rc/init.c
+--- a/release/src/router/rc/init.c
++++ b/release/src/router/rc/init.c
+@@ -26528,6 +26528,22 @@ void sync_boot_state()
+ 
+ #endif
+ 
++#if defined(GTAX11000)
++extern int rust_local_qos_mode_allowed(const char *mode);
++
++static void migrate_local_qos_mode(void)
++{
++	const char *mode = nvram_safe_get("qos_type");
++
++	if (rust_local_qos_mode_allowed(mode))
++		return;
++	/* Mode 1 selected the removed Trend Micro/BWDPI engine.  Preserve the
++	 * user's enable and bandwidth/rule settings, changing only the backend. */
++	nvram_set("qos_type", "0");
++	nvram_commit();
++	logmessage("qos", "migrated unsupported QoS mode to local HTB/fq_codel");
++}
++#endif
++
+ int init_main(int argc, char *argv[])
+ {
+ 	int state, i;
+@@ -27012,6 +27028,7 @@ int init_main(int argc, char *argv[])
+ #if defined(GTAX11000)
+ 			/* Re-derive every driver-facing country/DFS/power value from the
+ 			 * single persisted country before the wireless interfaces start. */
++			migrate_local_qos_mode();
+ 			apply_regulatory_testlab_profile();
+ #endif
+ 
+diff --git a/release/src/router/rc/rc_compat_stubs.c b/release/src/router/rc/rc_compat_stubs.c
+--- a/release/src/router/rc/rc_compat_stubs.c
++++ b/release/src/router/rc/rc_compat_stubs.c
+@@ -125,6 +125,50 @@ void update_ntp_ts(time_t bf_time, int ntp_diff_ts)
+ {
+ 	(void)bf_time;
+ 	(void)ntp_diff_ts;
+ }
++
++/* Proprietary BWDPI/Trend entry points retained by prebuilt AiMesh and mail
++ * objects. Status checks report disabled; data and mutation APIs fail closed. */
++int check_tdts_module_exist(void)
++{
++	return 0;
++}
++
++int check_bwdpi_nvram_setting(void)
++{
++	return 0;
++}
++
++int check_wrs_switch(void)
++{
++	return 0;
++}
++
++int get_fw_mesh_extender(void **output, unsigned int *used_length)
++{
++	if (output)
++		*output = NULL;
++	if (used_length)
++		*used_length = 0;
++	errno = ENOTSUP;
++	return -1;
++}
++
++int mesh_set_extender(char *mac, unsigned char action)
++{
++	(void)mac;
++	(void)action;
++	errno = ENOTSUP;
++	return -1;
++}
++
++int get_fw_user_list(void **output, unsigned int *used_length)
++{
++	if (output)
++		*output = NULL;
++	if (used_length)
++		*used_length = 0;
++	errno = ENOTSUP;
++	return -1;
++}

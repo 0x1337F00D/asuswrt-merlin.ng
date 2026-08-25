@@ -16,3 +16,6 @@ wireless-service-testlab-stability.patch
 network-hardening.patch
 runtime-hardening-2026.patch
 wifi-upstream-security.patch
+firewall-guard-retry.patch
+networkmap-rust-compat.patch
+local-qos-rust.patch

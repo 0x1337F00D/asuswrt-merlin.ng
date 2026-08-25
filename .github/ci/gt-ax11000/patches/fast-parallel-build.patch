@@ -1,7 +1,7 @@
 diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
-@@ -2101,7 +2101,38 @@
+@@ -2101,7 +2101,42 @@
  ifeq ($(HND_ROUTER),y)
 -all: clean-build kernel_header version fsbuild $(obj-y)
 +ROUTER_PACKAGE_JOBS ?= 1
@@ -23,6 +23,10 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 +# shares one GNU Make jobserver without allowing a consumer to outrun its staged
 +# producer.
 +libnetfilter_cttimeout-1.0.0: libmnl-1.0.4
++hub-ctrl: libusb10
++email-3.1.3/Makefile: nt_center sqlite
++aws-iot: nvram$(BCMEX)$(EX7) libwebapi $(if $(HND_ROUTER),wlcsm) $(if $(RTCONFIG_CFGSYNC),cfg_mnt)
++usbmuxd-1.1.1: libimobiledevice-1.3.0
 +libdisk: shared nvram$(BCMEX)$(EX7)
 +
 +ROUTER_FOUNDATION_TARGETS := openssl shared nvram$(BCMEX)$(EX7) \
@@ -41,6 +45,15 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  else
  all: clean-build kernel_header libc version obj_prelibs kernel $(obj-y)
  endif
+@@ -9946,7 +9981,7 @@ appx:
+ .PHONY : appx
+ 
+ asusnatnl: openssl
+-	$(MAKE) -C $@ $(shell if [[ "$(HND_ROUTER)" = "y" ]] ; then echo "LD="""; else echo ""; fi)
++	$(MAKE) -j1 -C $@ $(shell if [[ "$(HND_ROUTER)" = "y" ]] ; then echo "LD="""; else echo ""; fi)
+ 
+ asusnatnl-clean:
+ 	$(MAKE) -C asusnatnl clean
 diff --git a/release/src/router/libdisk/Makefile b/release/src/router/libdisk/Makefile
 --- a/release/src/router/libdisk/Makefile
 +++ b/release/src/router/libdisk/Makefile

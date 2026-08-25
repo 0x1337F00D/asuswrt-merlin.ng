@@ -1,0 +1,46 @@
+diff --git a/release/src/router/networkmap/Makefile b/release/src/router/networkmap/Makefile
+index 7e5a6b372f3..78921b785c7 100644
+--- a/release/src/router/networkmap/Makefile
++++ b/release/src/router/networkmap/Makefile
+@@ -4,6 +4,30 @@ EXEC = networkmap
+ OBJS = JSON_checker.o function.o connections.o sm.o download.o shared_func.o protect_name.o networkmap.o
+ OBJS += amas/cfg_client_lookup.o
+ 
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_BWDPI_COMPAT_MANIFEST := $(RUST_COMPONENTS_DIR)/bwdpi-compat/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifeq ($(BUILD_NAME),GT-AX11000)
++ifneq ($(wildcard $(RUST_BWDPI_COMPAT_MANIFEST)),)
++RUST_BWDPI_COMPAT_SO := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libbwdpi_compat.so
++
++.PHONY: $(RUST_BWDPI_COMPAT_SO)
++$(RUST_BWDPI_COMPAT_SO):
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS) -Clink-arg=-Wl,-soname,libbwdpi.so" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_BWDPI_COMPAT_MANIFEST)" \
++			-p bwdpi-compat --release --target "$(RUST_TARGET)" --locked --offline
++
++all: $(RUST_BWDPI_COMPAT_SO)
++install: $(RUST_BWDPI_COMPAT_SO)
++endif
++endif
++
+ CFLAGS += -I$(TOP)/networkmap/amas
+ 
+ ifeq ($(HND_ROUTER),y)
+@@ -232,6 +256,10 @@ endif
+ install:
+ 	install -D $(EXEC) $(INSTALLDIR)/usr/sbin/$(EXEC)
+ 	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)/usr/sbin/$(EXEC))
++ifneq ($(RUST_BWDPI_COMPAT_SO),)
++	install -D -m 0755 $(RUST_BWDPI_COMPAT_SO) $(INSTALLDIR)/usr/lib/libbwdpi.so
++	$(STRIP) $(INSTALLDIR)/usr/lib/libbwdpi.so
++endif
+ ifneq ($(AC2900),y)
+ 	install -D asusdiscovery $(INSTALLDIR)/usr/sbin/asusdiscovery
+ 	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)/usr/sbin/asusdiscovery)

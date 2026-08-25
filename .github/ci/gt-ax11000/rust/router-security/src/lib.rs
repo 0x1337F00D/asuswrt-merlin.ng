@@ -9,6 +9,24 @@ use std::path::Path;
 
 use router_policy::testlab::TestlabRequest;
 
+/// Accept only QoS modes implemented by the local kernel/userspace stack.
+/// Mode 1 is the removed Trend Micro/BWDPI adaptive path.
+///
+/// # Safety
+///
+/// `mode` must address a NUL-terminated string for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_local_qos_mode_allowed(mode: *const c_char) -> c_int {
+    if mode.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    unsafe { CStr::from_ptr(mode) }
+        .to_str()
+        .is_ok_and(router_policy::qos::local_qos_mode_allowed)
+        .into()
+}
+
 const MAX_WIREGUARD_CONFIG_SIZE: u64 = 65_536;
 const MAX_FIREWALL_RULESET_SIZE: u64 = 128 * 1024;
 const O_NOFOLLOW: i32 = 0o400000;

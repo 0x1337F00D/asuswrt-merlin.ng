@@ -8,6 +8,40 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - The known baseline is active and persistently selected on partition 2:
   `BOOT_SET_PART2_IMAGE`, version `3.0.0.6/102.8/4`. The latest partition-1
   candidate is not promoted.
+- The newest local client-view/local-QoS candidate is
+  `GT-AX11000_3006_102.8_4_ubi.w`, SHA-256
+  `ebfdaeb58bddbb26f6f5424aabb3f211771c444c0953984e324293bc9c3b115d`
+  (75,759,636 bytes). It was repacked entirely on `/tmp` tmpfs on 2026-08-25
+  and passed a fallback-protected one-shot partition-1 hardware trial on the
+  same day. Both IPv4 and IPv6 installed `CODEX_WAN_GUARD` as the first WAN
+  INPUT jump with all seven management-port drops and a terminal RETURN;
+  forwarding, local DNS and HTTPS remained healthy and no guard exhaustion or
+  ruleset-validation error was logged. The router was explicitly returned to
+  the known persistent partition-2 baseline after the trial; the tested image
+  remains intact on partition 1 but is not promoted.
+- In that trial, the closed ASUS `networkmap` process loaded the local Rust ABI
+  provider and survived both boot and a `SIGUSR1` rescan with a stable PID. Its
+  174,964-byte LAN shared-memory segment reported 10 live clients and the
+  persistent JSON database retained 105 records. The shipped
+  `/www/client_function.js` contained both malformed-response array guards.
+  No Trend Micro process or mobile EULA page was present.
+- Candidate `531a3a5c9326f3688a7300b00e6d0bf764ddef9e374353bcfe3ba939b153192d`
+  passed its short one-shot Internet/firewall test: both first-rule WAN guards,
+  forwarding, DNS and HTTPS were healthy. It is nevertheless rejected because
+  the prebuilt `networkmap` has an unconditional `DT_NEEDED libbwdpi.so`; after
+  removal of the proprietary library the process could not start, so the live
+  client view remained unavailable. The replacement candidate supplies only a
+  three-symbol fail-closed Rust ABI library and gates its SONAME, exports and
+  absence of proprietary strings.
+- Candidate `a5c33ad4f63983eff1a3a04213c63ff58972ee20bbbce3a08a129607739bc16d`
+  is rejected. Its one-shot partition-1 run stayed alive for roughly eight
+  hours, but the post-hook WAN guard hit an iptables update race, entered the
+  intentional fail-closed path and left forwarding disabled. This explains
+  the overnight Internet outage; there was no kernel crash. A later reboot
+  consumed the one-shot selection and restored the known partition-2 baseline.
+  The replacement retries only fixed-argv guard operations for a bounded
+  sub-second interval, removes stale duplicate hooks and logs the exact failed
+  family/stage while retaining fail-closed behavior for persistent errors.
 - The corrected partition-1 candidate is
   `GT-AX11000_3006_102.8_4_ubi.w`, SHA-256
   `d8ace55818c5b9577875d9e01b2ae5934218d5f51aeb91b33ebd4f1795bd2080`
@@ -64,6 +98,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   authenticated browser session. Static/runtime markers and persisted NVRAM
   values passed, but Windows browser automation was unavailable during the
   final hardware trial.
+- [x] One-shot-test candidate `ebfdaeb5...115d` and require successful
+  `CODEX_WAN_GUARD` installation in both `iptables-save` outputs, enabled IPv4
+  forwarding, client DNS/HTTPS, a stable `networkmap` PID and non-empty live
+  client data, and no guard retry exhaustion during boot. The live Network Map
+  backend exposed 10 clients through the exact shared-memory segment consumed
+  by `httpd`; browser rendering still needs the authenticated UI check above.
+- [ ] Repeat WAN/firewall restarts under load and run a longer monitored soak
+  before any permanent promotion. Require both guard families, forwarding,
+  DNS/HTTPS and the Network Map PID to remain healthy after every restart.
 - [x] Build from current upstream `088512a1296e361d65e5429e7d8d61ef3fdf4c86`,
   which includes miniupnpd 2.3.11 and its 2026 heap-overflow fix; no candidate
   from the older `d2701f4e238c` base may be promoted.
@@ -187,6 +230,65 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [ ] Measure memory, CPU, startup time, and crash/restart behavior of all five
   Rust ports on the router.
 
+## Local client view and QoS debt
+
+- [x] Disable the GT-AX11000 `BWDPI`/Trend Micro feature set at profile and
+  kernel configuration level. Adaptive QoS, Traffic Analyzer and proprietary
+  application classification must not be exposed as working local features.
+- [x] Preserve the dashboard's existing `bwdpi_status("traffic", ...)` hook
+  contract with a bounded local implementation backed by `/proc/net/arp` and
+  `/proc/net/nf_conntrack`. Conntrack records are parsed in Rust; the C bridge
+  uses fixed buffers, bounded client state and no shell execution.
+- [x] Restrict accepted QoS modes to local Traditional QoS and Bandwidth
+  Limiter values. Reject the removed proprietary Adaptive QoS mode in the Web
+  apply path and migrate a persisted unsupported mode to Traditional QoS once
+  during boot without deleting bandwidth or client rules.
+- [x] Make the dashboard client list tolerate an unavailable icon hook,
+  malformed hook responses and individual stale Network Map records without
+  discarding every valid client. Fix the JSON-C ownership error which could
+  double-free a never-online custom client in
+  `get_clientlist_from_json_database()`.
+- [x] Fix the actually shipped legacy client page and HTTP backend as well as
+  the optional dashboard module. Empty or structurally incomplete
+  `/tmp/nmp_cache.js` snapshots no longer override live Network Map data;
+  generated cache objects include `maclist` and `ClientAPILevel`; metadata is
+  type-checked before dereference; missing client strings and malformed records
+  are skipped instead of aborting the complete view.
+- [x] Confirm on the running router that `networkmap` and its persistent JSON
+  database are alive while the generated Web snapshot incorrectly contains an
+  empty `maclist`; a normal `SIGUSR1` Network Map refresh repopulates the live
+  neighbor scan without rebooting or writing NVRAM.
+- [x] Confirm the replacement image's complete live Network Map backend on
+  GT-AX11000 hardware: the Rust ABI provider exports only the three gated
+  compatibility symbols, `networkmap` survives a rescan, shared memory reports
+  10 live clients, and the persistent database retains 105 historical records.
+- [ ] Exercise the Network Map/client-list traffic view and both retained QoS
+  modes on GT-AX11000 hardware. Verify monotonically increasing per-client
+  counters, shaping, reboot persistence and bounded memory/CPU under a full
+  conntrack table before promotion.
+- [ ] Add IPv6 neighbor resolution and fixtures for IPv6-only clients. The
+  initial local compatibility hook maps IPv4 conntrack addresses through the
+  ARP table and therefore cannot attribute an IPv6-only client to a MAC.
+- [ ] Decide whether a transparent local L7 classifier is worth the attack
+  surface and CPU cost. The current replacement intentionally provides local
+  L3/L4 accounting, HTB/fq_codel shaping and per-client limits, but does not
+  claim proprietary application/category recognition.
+- [x] Remove the shipped Trend Micro mobile EULA, proprietary engine/service
+  binaries and `libbwdpi`/`libshn`/`libtdts` libraries, and disable the hidden
+  Adaptive-QoS radio in the GT-AX11000 page. Both browser and authenticated
+  server apply paths normalize/reject every QoS mode except Traditional (0)
+  and Bandwidth Limiter (2); bandwidth values pass a bounded Rust decimal
+  policy before NVRAM mutation.
+- [ ] Replace the remaining prebuilt ASUS Network Map consumers. The closed
+  `networkmap` executable requires the `libbwdpi.so` SONAME even with BWDPI
+  disabled; a local Rust ABI provider now exports only a constant-disabled
+  feature probe, a zeroing no-data lookup and a build marker. No proprietary
+  process or implementation is present, but `networkmap`, `arpstorm`,
+  `asusdiscovery`, and `find_cap` remain vendor binaries. The retained
+  `usr/networkmap/nmp_bwdpi_type.js` is a 2.4-KiB static JSON keyword-to-device-
+  type mapping, not executable DPI code; rename or replace it during a future
+  Rust Network Map port.
+
 ## Build and CI debt
 
 - [x] Replace moving upstream/toolchain inputs with exact commits in
@@ -209,14 +311,30 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   retimestamps generated headers. Reuse must be gated by a successful full
   contract and a kernel-artifact fingerprint; preserving `.config` alone was
   tested and is insufficient.
+- [ ] Continue converting serial-order assumptions into explicit package-DAG
+  edges. Clean parallel trials have already exposed and fixed `hub-ctrl ->
+  libusb10`, `email-3.1.3/Makefile -> nt_center + sqlite`, `aws-iot ->
+  nvram/libwebapi/wlcsm/cfg_mnt`, and `usbmuxd-1.1.1 ->
+  libimobiledevice-1.3.0`; retain a clean CI build as the promotion gate
+  because more hidden vendor staging dependencies may remain.
+- [x] Constrain `asusnatnl`/pjproject 1.12 to one shared job token. Its pjnath
+  makefile declares test binaries as depending on library files for which it
+  has no file-producing rule and relies on serial target order; parallelizing
+  that legacy subgraph races `pjnath-test` ahead of `libpjnath`.
+- [x] Fail the post-build gate if the flat rootfs contains Trend/BWDPI service
+  binaries or libraries, or if the local QoS/client-view replacement and its
+  fail-soft dashboard code are absent. This gate runs locally and in Actions
+  before an image can be published.
 - [x] Record worktree preparation, source adaptation, vendor build and
   post-build gate timings separately in `BUILD-STATE.txt`, in addition to the
   end-to-end duration.
 - [x] Add an idempotent `rust-ui-httpd-relink` path that rebuilds only `httpd`
   and `www`, promotes exact artifacts into the flat rootfs, removes package
   staging duplicates, and repacks without rebuilding kernel or drivers.
-- [ ] Make local ccache optional without a failed pilot attempt, or provision a
-  checksummed RAM-local ccache binary. Never write the cache to SSD.
+- [ ] Auto-disable local ccache before source preparation when no executable is
+  available, or provision a checksummed RAM-local ccache binary. The current
+  wrapper discovers the missing host command only after source adaptation;
+  never write the cache to SSD.
 - [x] Keep top-level orchestration at `-j1` and provide an opt-in GNU Make 4.4
   package DAG with one shared jobserver, an explicit serial foundation and a
   transitive `.WAIT` barrier. A 16-token build completed with a reference-

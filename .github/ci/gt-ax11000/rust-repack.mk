@@ -1,4 +1,4 @@
-.PHONY: rust-components-relink rust-ui-httpd-relink rust-firmware-repack
+.PHONY: rust-components-relink rust-ui-httpd-relink httpd-ui-c-rebuild rc-c-rebuild networkmap-rust-compat-rebuild rust-firmware-repack
 
 rust-components-relink:
 	# AUTODICT rewrites the complete compressed Web tree and its dictionaries as
@@ -13,6 +13,25 @@ rust-components-relink:
 rust-ui-httpd-relink:
 	+$(MAKE) -C router www-install
 	+$(MAKE) -C router httpd-rust-install
+
+# Changes to web.c or another C object need the normal package target so Make
+# can refresh the affected objects before linking.  Keep that explicit: the
+# Rust-only path above intentionally preserves every cached C object.
+httpd-ui-c-rebuild:
+	+$(MAKE) -C router www-install
+	+$(MAKE) -C router httpd
+	+$(MAKE) -C router httpd-install
+
+# Preserve the platform exports while refreshing a C change in rc.  A direct
+# make -C router invocation lacks the HND platform definitions.
+rc-c-rebuild:
+	+$(MAKE) -C router rc
+	+$(MAKE) -C router rc-install
+
+# Reinstall the prebuilt Network Map together with its proprietary-free Rust
+# ABI provider after changing only the compatibility crate.
+networkmap-rust-compat-rebuild:
+	+$(MAKE) -C router networkmap-install
 
 rust-firmware-repack:
 	+$(MAKE) -C router strips
@@ -84,16 +103,21 @@ rust-firmware-repack:
 	promote_artifact $(PROFILE_DIR)/fs.install/httpd/usr/sbin/httpd \
 		$(PROFILE_DIR)/fs.install/usr/sbin/httpd; \
 	promote_artifact $(PROFILE_DIR)/fs.install/rc/sbin/rc \
-		$(PROFILE_DIR)/fs.install/sbin/rc
+		$(PROFILE_DIR)/fs.install/sbin/rc; \
+	promote_artifact $(PROFILE_DIR)/fs.install/networkmap/usr/sbin/networkmap \
+		$(PROFILE_DIR)/fs.install/usr/sbin/networkmap; \
+	promote_artifact $(PROFILE_DIR)/fs.install/networkmap/usr/lib/libbwdpi.so \
+		$(PROFILE_DIR)/fs.install/usr/lib/libbwdpi.so
 	# Package install targets stage their complete payload below a package-named
-	# directory. The five selected artifacts have now been promoted into the
+	# directory. The selected artifacts have now been promoted into the
 	# flat firmware tree, so remove only those known duplicate staging roots.
 	rm -rf \
 		$(PROFILE_DIR)/fs.install/infosvr \
 		$(PROFILE_DIR)/fs.install/rstats \
 		$(PROFILE_DIR)/fs.install/nt_center \
 		$(PROFILE_DIR)/fs.install/httpd \
-		$(PROFILE_DIR)/fs.install/rc
+		$(PROFILE_DIR)/fs.install/rc \
+		$(PROFILE_DIR)/fs.install/networkmap
 	# fsbuild creates these legacy containers for optional external payloads.
 	# On GT-AX11000 they are empty; leaving them behind only on a repeated
 	# build makes rust-fast rootfs topology differ from the clean reference.
@@ -108,7 +132,9 @@ rust-firmware-repack:
 		bin/rstats \
 		usr/sbin/Notify_Event2NC \
 		usr/sbin/httpd \
-		sbin/rc > $(RUST_CONSUMER_MANIFEST)
+		sbin/rc \
+		usr/sbin/networkmap \
+		usr/lib/libbwdpi.so > $(RUST_CONSUMER_MANIFEST)
 	cd $(TARGETS_DIR); ./buildFS
 	cd $(TARGETS_DIR); ./buildFS2
 	+$(MAKE) buildimage_final

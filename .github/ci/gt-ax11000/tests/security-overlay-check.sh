@@ -8,6 +8,7 @@ fi
 
 root=$(readlink -f "$1")
 router="$root/release/src/router"
+router_makefile="$router/Makefile"
 
 require_text() {
 	local file=$1
@@ -42,17 +43,28 @@ openvpn="$router/libovpn/openvpn_options.c"
 openvpn_setup="$router/libovpn/openvpn_setup.c"
 rstats_makefile="$router/rstats/Makefile"
 router_config_base="$router/config_base"
+target_mak="$root/release/src-rt/target.mak"
+local_traffic="$router/httpd/local_traffic.c"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
 security_rust="$router/rust-components/router-security/src/lib.rs"
 policy_rust="$router/rust-components/router-policy/src/vpn.rs"
+qos_policy_rust="$router/rust-components/router-policy/src/qos.rs"
 wireless_ui="$router/www/Advanced_WAdvanced_Content.asp"
+clientlist_ui="$router/www/dashboard/js/clientlist.module.js"
+clientlist_shipped="$router/www/client_function.js"
+qos_ui="$router/www/QoS_EZQoS.asp"
+www_makefile="$router/www/Makefile"
+networkmap_makefile="$router/networkmap/Makefile"
+bwdpi_compat="$router/rust-components/bwdpi-compat/src/lib.rs"
 wifi_base="$root/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools"
 
 for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$services" "$watchdog" "$ipsec" \
 	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
-	"$policy_rust" "$wireless_ui" "$openvpn_setup" \
-	"$rstats_makefile" "$router_config_base" \
+	"$policy_rust" "$wireless_ui" "$clientlist_ui" "$clientlist_shipped" "$openvpn_setup" \
+	"$rstats_makefile" "$router_config_base" "$target_mak" \
+	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
+	"$networkmap_makefile" "$bwdpi_compat" \
 	"$wifi_base/hostapd/src/common/sae.c" \
 	"$wifi_base/hostapd/src/radius/radius.c" \
 	"$wifi_base/hostapd/src/rsn_supp/wpa.c" \
@@ -61,6 +73,56 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$wifi_base/wpa_supplicant/src/rsn_supp/wpa.c"; do
 	test -f "$file" || { echo "security input is missing: $file" >&2; exit 1; }
 done
+
+# GT-AX11000 ships no Trend Micro/BWDPI engine. The compatibility hook is
+# backed by bounded local conntrack/ARP counters parsed in Rust, and crafted
+# requests cannot re-enable the proprietary adaptive mode.
+require_text "$target_mak" 'JFFS2LOG=y BWDPI=n DUMP_OOPS_MSG=n'
+require_text "$local_traffic" 'rust_httpd_conntrack_traffic_parse'
+require_text "$local_traffic" 'CONNTRACK_LINE_LIMIT 2048'
+require_text "$local_traffic" 'fopen("/proc/net/nf_conntrack", "r")'
+reject_text "$local_traffic" 'system('
+reject_text "$local_traffic" 'popen('
+require_text "$web" '{ "bwdpi_status", ej_local_traffic_status}'
+require_text "$web" 'rust_httpd_local_qos_mode_allowed'
+require_text "$web" 'rust_httpd_local_qos_bandwidth_allowed'
+require_text "$web" '"qos_ibw", "qos_obw", "qos_ibw1", "qos_obw1"'
+require_text "$init" 'migrate_local_qos_mode();'
+require_text "$init" 'rust_local_qos_mode_allowed(mode)'
+require_text "$httpd_rust" 'pub unsafe extern "C" fn rust_httpd_conntrack_traffic_parse'
+require_text "$httpd_rust" 'pub unsafe extern "C" fn rust_httpd_local_qos_mode_allowed'
+require_text "$httpd_rust" 'pub unsafe extern "C" fn rust_httpd_local_qos_bandwidth_allowed'
+require_text "$security_rust" 'pub unsafe extern "C" fn rust_local_qos_mode_allowed'
+require_text "$qos_policy_rust" 'Mode 1 is deliberately absent'
+require_text "$rc_stubs" 'int check_tdts_module_exist(void)'
+require_text "$rc_stubs" 'int check_bwdpi_nvram_setting(void)'
+require_text "$rc_stubs" 'int check_wrs_switch(void)'
+require_text "$rc_stubs" 'int get_fw_mesh_extender(void **output, unsigned int *used_length)'
+require_text "$rc_stubs" 'int get_fw_user_list(void **output, unsigned int *used_length)'
+require_text "$router_makefile" 'hub-ctrl: libusb10'
+require_text "$router_makefile" 'email-3.1.3/Makefile: nt_center sqlite'
+require_text "$router_makefile" 'aws-iot: nvram$(BCMEX)$(EX7) libwebapi $(if $(HND_ROUTER),wlcsm) $(if $(RTCONFIG_CFGSYNC),cfg_mnt)'
+require_text "$router_makefile" 'usbmuxd-1.1.1: libimobiledevice-1.3.0'
+require_text "$router_makefile" '$(MAKE) -j1 -C $@ $(shell if [[ "$(HND_ROUTER)" = "y" ]]'
+require_text "$clientlist_ui" 'const safeHookGet = async (name) => {'
+require_text "$clientlist_ui" 'if (Array.isArray(fromNetworkmapd.maclist)) {'
+require_text "$clientlist_ui" 'Client icons unavailable; continuing without them'
+require_text "$clientlist_shipped" 'Array.isArray(originData.fromNetworkmapd[0].maclist)'
+require_text "$clientlist_shipped" 'httpApi.hookGet("get_clientlist") || {maclist: []}'
+require_text "$web" 'json_object_array_length(cached_maclist) > 0'
+require_text "$web" 'json_object_object_add(*clients, "maclist", macArray);'
+require_text "$web" 'json_object_is_type(val, json_type_object)'
+require_text "$web" 'json_object_object_add() transferred ownership of never-online clients'
+reject_text "$web" 'json_object_put(new_never_online_client);'
+require_text "$qos_ui" 'const qos_type = (_nvram.qos_type == "2") ? "2" : "0";'
+require_text "$qos_ui" 'if (value !== "0" && value !== "2")'
+require_text "$qos_ui" 'style="display:none;" type="radio" disabled'
+require_text "$www_makefile" 'rm -f $(INSTALLDIR)/www/mobile/pages/tmtos_page.html'
+require_text "$networkmap_makefile" 'RUST_BWDPI_COMPAT_MANIFEST := $(RUST_COMPONENTS_DIR)/bwdpi-compat/Cargo.toml'
+require_text "$networkmap_makefile" '$(INSTALLDIR)/usr/lib/libbwdpi.so'
+require_text "$bwdpi_compat" 'pub extern "C" fn check_bwdpi_nvram_setting() -> c_int'
+require_text "$bwdpi_compat" 'pub unsafe extern "C" fn bwdpi_client_info('
+require_text "$bwdpi_compat" 'pub extern "C" fn rust_bwdpi_compat_v1() -> c_int'
 
 # Compatibility gaps must fail closed instead of reporting successful work.
 require_text "$rc_stubs" 'return rust_validate_apply_input_value(name, value);'
@@ -144,6 +206,9 @@ done
 require_text "$firewall" 'rust_validate_effective_firewall_policy_files'
 require_text "$firewall" '#define CODEX_WAN_GUARD "CODEX_WAN_GUARD"'
 require_text "$firewall" 'install_wan_admin_guard(wan_if)'
+require_text "$firewall" '#define WAN_GUARD_COMMAND_ATTEMPTS 10'
+require_text "$firewall" 'run_wan_guard_command(tool, "input-hook"'
+require_text "$firewall" 'WAN guard %s/%s failed after %u attempts'
 require_text "$firewall" 'firewall_enter_fail_closed();'
 custom_line=$(grep -nF 'run_custom_script("firewall-start"' "$firewall" | tail -1 | cut -d: -f1)
 guard_line=$(grep -nF '!install_wan_admin_guard(wan_if)' "$firewall" | tail -1 | cut -d: -f1)
