@@ -1,7 +1,7 @@
 diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
 --- a/release/src/router/httpd/web.c
 +++ b/release/src/router/httpd/web.c
-@@ -10452,6 +10452,57 @@ static struct json_object* client_mlo_links_to_json(const CLIENT_DETAIL_INFO_TAB
+@@ -10452,6 +10452,117 @@
  }
  #endif
  
@@ -19,6 +19,66 @@ diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
 +	int commit_no;
 +	char delete_mac[13];
 +} NETWORKMAP_SHM_TAIL;
++
++/*
++ * The GT-AX11000 binary networkmap daemon still exports the Wi-Fi 6 layout
++ * that predates the public header's IPv6 and dhcp_flag additions.  Keep this
++ * reader private to httpd and select it only when the model and exact segment
++ * size agree.  This prevents later arrays from being interpreted through the
++ * wrong offsets while leaving every other model on the public ABI.
++ */
++typedef struct {
++	unsigned char ip_addr[MAX_NR_CLIENT_LIST][4];
++	unsigned char mac_addr[MAX_NR_CLIENT_LIST][6];
++	unsigned char user_define[MAX_NR_CLIENT_LIST][16];
++	unsigned char vendor_name[MAX_NR_CLIENT_LIST][128];
++	unsigned char device_name[MAX_NR_CLIENT_LIST][32];
++	unsigned char apple_model[MAX_NR_CLIENT_LIST][16];
++	unsigned char device_type[MAX_NR_CLIENT_LIST][32];
++	unsigned char vendorClass[MAX_NR_CLIENT_LIST][32];
++	unsigned char os_type[MAX_NR_CLIENT_LIST];
++	unsigned char sdn_idx[MAX_NR_CLIENT_LIST];
++	unsigned char online[MAX_NR_CLIENT_LIST];
++	unsigned char type[MAX_NR_CLIENT_LIST];
++	unsigned char ipMethod[MAX_NR_CLIENT_LIST][7];
++	unsigned char opMode[MAX_NR_CLIENT_LIST];
++	unsigned char device_flag[MAX_NR_CLIENT_LIST];
++	unsigned char wireless[MAX_NR_CLIENT_LIST];
++	unsigned char is_wireless[MAX_NR_CLIENT_LIST];
++	int conn_ts[MAX_NR_CLIENT_LIST];
++	int offline_time[MAX_NR_CLIENT_LIST];
++	char ssid[MAX_NR_CLIENT_LIST][32];
++	char txrate[MAX_NR_CLIENT_LIST][7];
++	char rxrate[MAX_NR_CLIENT_LIST][10];
++	unsigned int rssi[MAX_NR_CLIENT_LIST];
++	char conn_time[MAX_NR_CLIENT_LIST][12];
++	char bwdpi_host[MAX_NR_CLIENT_LIST][32];
++	char bwdpi_vendor[MAX_NR_CLIENT_LIST][100];
++	char bwdpi_type[MAX_NR_CLIENT_LIST][100];
++	char bwdpi_device[MAX_NR_CLIENT_LIST][100];
++	NETWORKMAP_SHM_TAIL tail;
++} GT_AX11000_NETWORKMAP_TABLE;
++
++typedef char gt_ax11000_networkmap_table_size_must_match[
++	(MAX_NR_CLIENT_LIST != 255 ||
++	 sizeof(GT_AX11000_NETWORKMAP_TABLE) == 174964) ? 1 : -1];
++
++#define NETWORKMAP_CLIENT_FIELD(public_layout, legacy_layout, field, index) \
++	((legacy_layout) ? (legacy_layout)->field[(index)] : \
++		(public_layout)->field[(index)])
++
++static GT_AX11000_NETWORKMAP_TABLE *networkmap_gt_ax11000_table(
++	void *shared_client_info, int shm_client_info_id)
++{
++	struct shmid_ds shm_info;
++
++	if (strcmp(nvram_safe_get("productid"), "GT-AX11000") != 0 ||
++	    shmctl(shm_client_info_id, IPC_STAT, &shm_info) != 0 ||
++	    shm_info.shm_segsz != sizeof(GT_AX11000_NETWORKMAP_TABLE))
++		return NULL;
++
++	return (GT_AX11000_NETWORKMAP_TABLE *)shared_client_info;
++}
 +
 +static NETWORKMAP_SHM_TAIL *networkmap_shm_tail(void *shared_client_info,
 +	int shm_client_info_id)
@@ -59,27 +119,180 @@ diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
  //2016.09 Rawny add for new networkmap
  //static int get_client_detail_info(int eid, webs_t wp, int argc, char_t **argv, key_t shmkey, char *maclist_buf){
  static int get_client_detail_info(struct json_object *clients, struct json_object *macArray, key_t shmkey){
-@@ -10550,7 +10601,9 @@ static int get_client_detail_info(struct json_object *clients, struct json_objec
+@@ -10466,6 +10577,7 @@
+ 	char ip6_prefix[50];
+ #endif
+ 	P_CLIENT_DETAIL_INFO_TABLE p_client_info_tab;
++	GT_AX11000_NETWORKMAP_TABLE *gt_ax11000_client_info_tab;
+ 	int lock;
+ 	char devname[LINE_SIZE], character;
+ 	int j, len;
+@@ -10550,7 +10662,11 @@
  
  
  	p_client_info_tab = (P_CLIENT_DETAIL_INFO_TABLE)shared_client_info;
 -	for(i = 0; i < p_client_info_tab->ip_mac_num; i++) {
++	gt_ax11000_client_info_tab = networkmap_gt_ax11000_table(shared_client_info,
++		shm_client_info_id);
 +	int client_count = networkmap_shm_client_count(shared_client_info,
 +		shm_client_info_id, p_client_info_tab);
 +	for(i = 0; i < client_count; i++) {
  		memset(dev_name, 0, sizeof(dev_name));
  		memset(ipaddr, 0, sizeof(ipaddr));
  #ifdef RTCONFIG_IPV6
-@@ -19641,7 +19694,8 @@ deleteOfflineClient(webs_t wp, char_t *urlPrefix, char_t *webDir, int arg, char_
+@@ -10582,7 +10698,8 @@
+ 			strlcpy(dev_name, (const char *)p_client_info_tab->device_name[i], sizeof(dev_name));
+ 
+ #ifndef RTCONFIG_AMAS
+-		if(p_client_info_tab->device_flag[i]&(1<<FLAG_EXIST)) {
++		if(NETWORKMAP_CLIENT_FIELD(p_client_info_tab,
++			gt_ax11000_client_info_tab, device_flag, i) & (1<<FLAG_EXIST)) {
+ #endif
+ 			len = strlen(dev_name);
+ 			for (j = 0; (j < len) && (j < LINE_SIZE-1); j++) {
+@@ -10597,8 +10714,10 @@
+ 			snprintf(ipaddr, sizeof(ipaddr), "%d.%d.%d.%d", p_client_info_tab->ip_addr[i][0],p_client_info_tab->ip_addr[i][1],
+ 			p_client_info_tab->ip_addr[i][2],p_client_info_tab->ip_addr[i][3]);
+ #ifdef RTCONFIG_IPV6
+-			snprintf(ip6addr, sizeof(ip6addr), "%s", p_client_info_tab->ip6_addr[i]);
+-			snprintf(ip6_prefix, sizeof(ip6_prefix), "%s", p_client_info_tab->ip6_prefix[i]);
++			if (!gt_ax11000_client_info_tab) {
++				snprintf(ip6addr, sizeof(ip6addr), "%s", p_client_info_tab->ip6_addr[i]);
++				snprintf(ip6_prefix, sizeof(ip6_prefix), "%s", p_client_info_tab->ip6_prefix[i]);
++			}
+ #endif
+ 			snprintf(mac_buf, sizeof(mac_buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+ 			p_client_info_tab->mac_addr[i][0],p_client_info_tab->mac_addr[i][1],
+@@ -10614,20 +10733,27 @@
+ 			}
+ #endif	/* RTCONFIG_AMAS */
+ #ifdef RTCONFIG_MULTILAN_CFG
+-			snprintf(sdn_idx, sizeof(sdn_idx), "%d", p_client_info_tab->sdn_idx[i]);
+-			snprintf(sdn_type, sizeof(sdn_type), "%s", p_client_info_tab->sdn_type[i]);
+-			snprintf(vlan_id, sizeof(vlan_id), "%d", p_client_info_tab->vlan_id[i]);
++			if (gt_ax11000_client_info_tab) {
++				snprintf(sdn_idx, sizeof(sdn_idx), "%d", gt_ax11000_client_info_tab->sdn_idx[i]);
++				sdn_type[0] = '\0';
++				strlcpy(vlan_id, "0", sizeof(vlan_id));
++			} else {
++				snprintf(sdn_idx, sizeof(sdn_idx), "%d", p_client_info_tab->sdn_idx[i]);
++				snprintf(sdn_type, sizeof(sdn_type), "%s", p_client_info_tab->sdn_type[i]);
++				snprintf(vlan_id, sizeof(vlan_id), "%d", p_client_info_tab->vlan_id[i]);
++			}
+ #endif
+ #ifdef RTCONFIG_MLO
+-			snprintf(mlo, sizeof(mlo), "%d", p_client_info_tab->mlo[i]);
++			if (!gt_ax11000_client_info_tab)
++				snprintf(mlo, sizeof(mlo), "%d", p_client_info_tab->mlo[i]);
+ #endif
+-			snprintf(online, sizeof(online), "%d", p_client_info_tab->online[i]);
+-			snprintf(type, sizeof(type), "%d", p_client_info_tab->type[i]);
+-			snprintf(defaultType, sizeof(defaultType), "%d", p_client_info_tab->type[i]);
++			snprintf(online, sizeof(online), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, online, i));
++			snprintf(type, sizeof(type), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, type, i));
++			snprintf(defaultType, sizeof(defaultType), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, type, i));
+ 			snprintf(macRepeat, sizeof(macRepeat), "%d", check_macrepeat(macArray, mac_buf));
+-			snprintf(opMode, sizeof(opMode), "%d", p_client_info_tab->opMode[i]);
+-			snprintf(rssi, sizeof(rssi), "%d", p_client_info_tab->rssi[i]);
+-			snprintf(wireless, sizeof(wireless), "%d", p_client_info_tab->wireless[i]);
++			snprintf(opMode, sizeof(opMode), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, opMode, i));
++			snprintf(rssi, sizeof(rssi), "%d", (int)NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, rssi, i));
++			snprintf(wireless, sizeof(wireless), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, wireless, i));
+ 
+ 			client = json_object_new_object();
+ #ifdef RTCONFIG_MULTILAN_CFG
+@@ -10638,7 +10764,8 @@
+ #ifdef RTCONFIG_MLO
+ 			json_object_object_add(client, "mlo", json_object_new_string(mlo));
+ 
+-			struct json_object *mlo_links_obj = client_mlo_links_to_json(p_client_info_tab, i);
++			struct json_object *mlo_links_obj = gt_ax11000_client_info_tab ? NULL :
++				client_mlo_links_to_json(p_client_info_tab, i);
+ 			if (mlo_links_obj)
+ 				json_object_object_add(client, "mlo_links", mlo_links_obj);
+ 
+@@ -10656,23 +10783,25 @@
+ 			json_object_object_add(client, "from", json_object_new_string("networkmapd"));
+ 			json_object_object_add(client, "macRepeat", json_object_new_string(macRepeat));
+ 			json_object_object_add(client, "isGateway", json_object_new_string(!strcmp(nvram_safe_get("lan_ipaddr"), ipaddr) ? "1" : "0"));
+-			json_object_object_add(client, "isASUS", json_object_new_string((p_client_info_tab->device_flag[i] & (1<<FLAG_ASUS)) ? "1" : "0"));
+-			json_object_object_add(client, "isWebServer", json_object_new_string((p_client_info_tab->device_flag[i] & (1<<FLAG_HTTP)) ? "1" : "0"));
+-			json_object_object_add(client, "isPrinter", json_object_new_string((p_client_info_tab->device_flag[i] & (1<<FLAG_PRINTER)) ? "1" : "0"));
+-			json_object_object_add(client, "isITunes", json_object_new_string((p_client_info_tab->device_flag[i] & (1<<FLAG_ITUNE)) ? "1" : "0"));
+-			json_object_object_add(client, "isAiBoard", json_object_new_string((p_client_info_tab->device_flag[i] & (1<<FLAG_AIBOARD)) ? "1" : "0"));
++			unsigned char client_device_flag = NETWORKMAP_CLIENT_FIELD(p_client_info_tab,
++				gt_ax11000_client_info_tab, device_flag, i);
++			json_object_object_add(client, "isASUS", json_object_new_string((client_device_flag & (1<<FLAG_ASUS)) ? "1" : "0"));
++			json_object_object_add(client, "isWebServer", json_object_new_string((client_device_flag & (1<<FLAG_HTTP)) ? "1" : "0"));
++			json_object_object_add(client, "isPrinter", json_object_new_string((client_device_flag & (1<<FLAG_PRINTER)) ? "1" : "0"));
++			json_object_object_add(client, "isITunes", json_object_new_string((client_device_flag & (1<<FLAG_ITUNE)) ? "1" : "0"));
++			json_object_object_add(client, "isAiBoard", json_object_new_string((client_device_flag & (1<<FLAG_AIBOARD)) ? "1" : "0"));
+ 			json_object_object_add(client, "dpiType", json_object_new_string(""));
+ 			json_object_object_add(client, "dpiDevice", json_object_new_string((const char *) p_client_info_tab->apple_model[i]));
+ 			json_object_object_add(client, "vendor", json_object_new_string((const char *) p_client_info_tab->vendor_name[i]));
+ 			json_object_object_add(client, "isWL", json_object_new_string(wireless));
+-			json_object_object_add(client, "isGN", json_object_new_string(p_client_info_tab->guest_network[i]));
++			json_object_object_add(client, "isGN", json_object_new_string(gt_ax11000_client_info_tab ? "" : p_client_info_tab->guest_network[i]));
+ #ifndef RTCONFIG_AMAS
+  			json_object_object_add(client, "isOnline", json_object_new_string("1"));
+ 			json_object_array_add(macArray, json_object_new_string(mac_buf));
+ #else
+ 			json_object_object_add(client, "isOnline", json_object_new_string(online));
+ #endif
+-			json_object_object_add(client, "ssid", json_object_new_string(p_client_info_tab->ssid[i]));
++			json_object_object_add(client, "ssid", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, ssid, i)));
+ 			if(!strcmp(ipaddr, nvram_safe_get("login_ip_str"))){
+ 				json_object_object_add(client, "isLogin", json_object_new_string("1"));
+ 			}
+@@ -10683,18 +10812,18 @@
+ 
+ 			//wireless hook
+ 			json_object_object_add(client, "rssi", json_object_new_string(rssi));
+-			json_object_object_add(client, "curTx", json_object_new_string(p_client_info_tab->txrate[i]));
+-			json_object_object_add(client, "curRx", json_object_new_string(p_client_info_tab->rxrate[i]));
++			json_object_object_add(client, "curTx", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, txrate, i)));
++			json_object_object_add(client, "curRx", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, rxrate, i)));
+ 			json_object_object_add(client, "totalTx", json_object_new_string(""));
+ 			json_object_object_add(client, "totalRx", json_object_new_string(""));
+-			json_object_object_add(client, "wlConnectTime", json_object_new_string(p_client_info_tab->conn_time[i]));
+-			json_object_object_add(client, "wlAuth", json_object_new_string(p_client_info_tab->wireless_auth[i]));
++			json_object_object_add(client, "wlConnectTime", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, conn_time, i)));
++			json_object_object_add(client, "wlAuth", json_object_new_string(gt_ax11000_client_info_tab ? "" : p_client_info_tab->wireless_auth[i]));
+ #if defined(BRTAC828)
+ 			json_object_object_add(client, "wlInterface", json_object_new_string(&p_client_info_tab->subunit[i]));
+ #endif
+ 
+ 			//ipMethod
+-			json_object_object_add(client, "ipMethod", json_object_new_string((const char *) p_client_info_tab->ipMethod[i]));
++			json_object_object_add(client, "ipMethod", json_object_new_string((const char *)NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, ipMethod, i)));
+ 
+ 			//check rog clientlist
+ 			if (strstr(nvram_safe_get("rog_clientlist"), mac_buf)) {
+@@ -10811,11 +10940,11 @@
+ #if defined(RTCONFIG_AMAS) || defined(RTCONFIG_WIFI_SON)
+ 			if(is_amas_support()) {
+ 
+-			if(strcmp(p_client_info_tab->is_re[i], "1") == 0) {
++			if(!gt_ax11000_client_info_tab && strcmp(p_client_info_tab->is_re[i], "1") == 0) {
+ 				json_object_object_add(client, "amesh_isRe", json_object_new_string("1"));
+ 			}
+ 
+-			if(isMAC(p_client_info_tab->pap_mac[i]))  {
++			if(!gt_ax11000_client_info_tab && isMAC(p_client_info_tab->pap_mac[i]))  {
+ 				json_object_object_add(client, "amesh_isReClient", json_object_new_string("1"));
+ 				json_object_object_add(client, "amesh_papMac", json_object_new_string(p_client_info_tab->pap_mac[i]));
+ 				CLIENT_DPRINTF("check amesh_isReClient finish\n");
+@@ -19641,7 +19770,8 @@
  	}
  
  	p_client_info_tab = (P_CLIENT_DETAIL_INFO_TABLE)shared_client_info;
 -	strlcpy(p_client_info_tab->delete_mac, mac_str, sizeof(p_client_info_tab->delete_mac));
 +	networkmap_shm_set_delete_mac(shared_client_info, shm_client_info_id,
 +		p_client_info_tab, mac_str);
-		shmdt(shared_client_info);
-		file_unlock(lock);
-@@ -24909,6 +24963,7 @@ do_del_client_data_cgi(char *url, FILE *stream) {
+ 	shmdt(shared_client_info);
+ 	file_unlock(lock);
+ 
+@@ -24909,7 +25039,8 @@
  		}
  
  		p_client_info_tab = (P_CLIENT_DETAIL_INFO_TABLE)shared_client_info;
