@@ -18,6 +18,8 @@ for path in \
 	usr/sbin/shn_ctrl \
 	usr/sbin/tdts_rule_agent \
 	usr/sbin/sample.bin \
+	usr/bin/asd \
+	usr/lib/libasd.so \
 	sbin/bwdpi \
 	sbin/bwdpi_check \
 	sbin/bwdpi_wred_alive \

@@ -5,9 +5,13 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Current router state and latest hardware-tested candidate
 
-- The known baseline is active and persistently selected on partition 2:
-  `BOOT_SET_PART2_IMAGE`, version `3.0.0.6/102.8/4`. The latest partition-1
-  candidate is not promoted.
+- The known baseline is currently active and persistently selected on
+  partition 1: `BOOT_SET_PART1_IMAGE`, version `3.0.0.6/102.8/4`. The next
+  candidate must therefore use partition 2 as a one-shot slot and retain
+  partition 1 as the fallback until every live gate and soak check passes.
+- The 2026-09-07 baseline check found two signal-11 crashes from proprietary
+  ASUS `asd` during the current boot. The GT-AX11000 overlay now sets `ASD=n`,
+  and the final-rootfs gate rejects both `/usr/bin/asd` and `libasd.so`.
 - The newest local client-view/local-QoS candidate is
   `GT-AX11000_3006_102.8_4_ubi.w`, SHA-256
   `ebfdaeb58bddbb26f6f5424aabb3f211771c444c0953984e324293bc9c3b115d`
@@ -107,6 +111,8 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [ ] Repeat WAN/firewall restarts under load and run a longer monitored soak
   before any permanent promotion. Require both guard families, forwarding,
   DNS/HTTPS and the Network Map PID to remain healthy after every restart.
+- [ ] Verify on hardware that the `ASD=n` image boots without new fatal-signal
+  records and that removing `asd` does not regress ordinary router services.
 - [x] Build from current upstream `088512a1296e361d65e5429e7d8d61ef3fdf4c86`,
   which includes miniupnpd 2.3.11 and its 2026 heap-overflow fix; no candidate
   from the older `d2701f4e238c` base may be promoted.
@@ -258,6 +264,14 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   database are alive while the generated Web snapshot incorrectly contains an
   empty `maclist`; a normal `SIGUSR1` Network Map refresh repopulates the live
   neighbor scan without rebooting or writing NVRAM.
+- [x] Decode the exact 174,964-byte legacy GT-AX11000 Network Map ABI only when
+  both model and segment size match. The compatibility view restores the real
+  online, radio, type, rate, RSSI and timing offsets while newer/public layouts
+  continue through their normal structure; a compile-time size assertion and
+  security-overlay checks prevent silent drift.
+- [ ] Hardware-check that the legacy client page receives a non-empty
+  `maclist`, preserves wired/wireless classification and does not restart
+  `httpd` or `networkmap` during repeated refreshes.
 - [x] Confirm the replacement image's complete live Network Map backend on
   GT-AX11000 hardware: the Rust ABI provider exports only the three gated
   compatibility symbols, `networkmap` survives a rescan, shared memory reports

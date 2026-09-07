@@ -78,6 +78,7 @@ done
 # backed by bounded local conntrack/ARP counters parsed in Rust, and crafted
 # requests cannot re-enable the proprietary adaptive mode.
 require_text "$target_mak" 'JFFS2LOG=y BWDPI=n DUMP_OOPS_MSG=n'
+require_text "$target_mak" 'OPEN_NAT=y AHS=n ASD=n FRS_LIVE_UPDATE=n'
 require_text "$local_traffic" 'rust_httpd_conntrack_traffic_parse'
 require_text "$local_traffic" 'CONNTRACK_LINE_LIMIT 2048'
 require_text "$local_traffic" 'fopen("/proc/net/nf_conntrack", "r")'
