@@ -5,10 +5,38 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Current router state and latest hardware-tested candidate
 
-- The known baseline is currently active and persistently selected on
-  partition 1: `BOOT_SET_PART1_IMAGE`, version `3.0.0.6/102.8/4`. The next
-  candidate must therefore use partition 2 as a one-shot slot and retain
-  partition 1 as the fallback until every live gate and soak check passes.
+- The current hardware-tested and persistently selected image is on partition
+  2: `BOOT_SET_PART2_IMAGE`, version `3.0.0.6/102.8/4`. The exact candidate is
+  `GT-AX11000_3006_102.8_4_ubi.w`, SHA-256
+  `01d7bde5aafd628265bb6075ff629c3e336fd14d6a7cbc934c49e6a12860e7ba`
+  (74,711,060 bytes), built and tested from tmpfs on 2026-09-07. Partition 1
+  remains unchanged as the known rollback image.
+- The candidate first booted from partition 2 through
+  `BOOT_SET_PART2_IMAGE_ONCE`, which correctly consumed to the partition-1
+  fallback before promotion. Two complete router-health gates and a 15-minute
+  soak passed: WAN, local DNS, all three radios, IPv4/IPv6 terminal drops,
+  OpenVPN, malformed HTTP requests, all Rust runtime self-tests, and the PIDs
+  of `httpd`, `dnsmasq`, `wanduck`, `infosvr`, `rstats`, `nt_monitor`,
+  `networkmap`, `openvpn`, and all three `hostapd` instances stayed healthy.
+  The fresh kernel log contained no fault, oops, panic, illegal instruction,
+  or fatal signal.
+- Proprietary `asd` is absent as both process and rootfs artifact on the live
+  candidate. The Network Map cache exposed nine online clients with three
+  wireless classifications, survived an explicit refresh with stable
+  `networkmap` and `httpd` PIDs, and the three radios retained the atomic `ALL`
+  profile (`#a`, 500 driver request) and WPA2/SAE, AES, and PMF settings. The
+  known TV-box addresses `.37` and `.100` were not associated or present in
+  the neighbor/cache tables during the trial, so that device-specific path
+  could not be exercised.
+- The read-only live `infosvr` suite passed exact GETINFO, GETINFO_EX2 and
+  FIND_CAP transactions and rejected invalid opcodes and 511/513-byte PDUs.
+  Local gates additionally passed the immutable input lock, all Rust workspace
+  tests, Clippy with warnings denied, ARMv7 cross-check, C ABI fixtures,
+  750,000 deterministic fuzz iterations, six ARM/EABI5 consumer inspections,
+  and three QEMU runtime paths.
+- Before the current promotion, the known baseline was active and persistently
+  selected on partition 1. It was retained unchanged while partition 2 was
+  exercised as a one-shot slot and remains available for manual rollback.
 - The 2026-09-07 baseline check found two signal-11 crashes from proprietary
   ASUS `asd` during the current boot. The GT-AX11000 overlay now sets `ASD=n`,
   and the final-rootfs gate rejects both `/usr/bin/asd` and `libasd.so`.
@@ -111,7 +139,7 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [ ] Repeat WAN/firewall restarts under load and run a longer monitored soak
   before any permanent promotion. Require both guard families, forwarding,
   DNS/HTTPS and the Network Map PID to remain healthy after every restart.
-- [ ] Verify on hardware that the `ASD=n` image boots without new fatal-signal
+- [x] Verify on hardware that the `ASD=n` image boots without new fatal-signal
   records and that removing `asd` does not regress ordinary router services.
 - [x] Build from current upstream `088512a1296e361d65e5429e7d8d61ef3fdf4c86`,
   which includes miniupnpd 2.3.11 and its 2026 heap-overflow fix; no candidate
@@ -269,7 +297,7 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   online, radio, type, rate, RSSI and timing offsets while newer/public layouts
   continue through their normal structure; a compile-time size assertion and
   security-overlay checks prevent silent drift.
-- [ ] Hardware-check that the legacy client page receives a non-empty
+- [x] Hardware-check that the legacy client page receives a non-empty
   `maclist`, preserves wired/wireless classification and does not restart
   `httpd` or `networkmap` during repeated refreshes.
 - [x] Confirm the replacement image's complete live Network Map backend on

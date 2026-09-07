@@ -44,6 +44,7 @@ openvpn_setup="$router/libovpn/openvpn_setup.c"
 rstats_makefile="$router/rstats/Makefile"
 router_config_base="$router/config_base"
 target_mak="$root/release/src-rt/target.mak"
+src_rt_makefile="$root/release/src-rt/Makefile"
 local_traffic="$router/httpd/local_traffic.c"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
 security_rust="$router/rust-components/router-security/src/lib.rs"
@@ -62,7 +63,7 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$services" "$watchdog" "$ipsec" \
 	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
 	"$policy_rust" "$wireless_ui" "$clientlist_ui" "$clientlist_shipped" "$openvpn_setup" \
-	"$rstats_makefile" "$router_config_base" "$target_mak" \
+	"$rstats_makefile" "$router_config_base" "$target_mak" "$src_rt_makefile" \
 	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
 	"$networkmap_makefile" "$bwdpi_compat" \
 	"$wifi_base/hostapd/src/common/sae.c" \
@@ -78,7 +79,8 @@ done
 # backed by bounded local conntrack/ARP counters parsed in Rust, and crafted
 # requests cannot re-enable the proprietary adaptive mode.
 require_text "$target_mak" 'JFFS2LOG=y BWDPI=n DUMP_OOPS_MSG=n'
-require_text "$target_mak" 'OPEN_NAT=y AHS=n ASD=n FRS_LIVE_UPDATE=n'
+require_text "$target_mak" 'OPEN_NAT=y AHS=n ASD=n LIBASC=y FRS_LIVE_UPDATE=n'
+require_text "$src_rt_makefile" 'if [ "$(LIBASC)" = "y" ]; then'
 require_text "$local_traffic" 'rust_httpd_conntrack_traffic_parse'
 require_text "$local_traffic" 'CONNTRACK_LINE_LIMIT 2048'
 require_text "$local_traffic" 'fopen("/proc/net/nf_conntrack", "r")'
