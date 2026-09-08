@@ -109,6 +109,19 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   candidate. The radio-service quarantine is now built and hardware-tested.
   The candidate is deliberately not promoted permanently until a substantially
   longer monitored soak passes.
+- On 2026-09-07 the overlay was re-locked from upstream
+  `088512a1296e361d65e5429e7d8d61ef3fdf4c86` to
+  `6be5bc84b50ea37be7b5d4307c5042771c3cf95b` (3006.102.9 alpha1: OpenSSL 3.5,
+  OpenVPN 2.7.7, tzdata 2026c). Only `gt-ax11000-wsl.patch` needed
+  regenerating (its `release/src/router/Makefile` and `libcap-ng/configure`
+  hunks had drifted); the other 19 patches apply unchanged. `inputs.lock` now
+  records `patched_diff_sha256`
+  `0477c9575c580ff905b27261f4e53a25469289c9206d8c0543ae3d959891684e`, which two
+  independent sparse `--no-cone` replays of the 20-patch series over the 76
+  patched paths and the workflow's own `input_lock.py diff-hash` reproduced;
+  `HEAD:release` still equals `6be5bc84b50:release`
+  (`aa9d4e00acf0566f2f1ccb87a897e5264bf37dbb`). No firmware has been built or
+  flashed from the new lock; every candidate and measurement above predates it.
 
 ## Release blockers
 
@@ -144,6 +157,14 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Build from current upstream `088512a1296e361d65e5429e7d8d61ef3fdf4c86`,
   which includes miniupnpd 2.3.11 and its 2026 heap-overflow fix; no candidate
   from the older `d2701f4e238c` base may be promoted.
+- [ ] Build, gate and one-shot-test a candidate from the re-locked upstream
+  `6be5bc84b50ea37be7b5d4307c5042771c3cf95b`. The 2026-09-07 rebase was
+  verified only by patch replay, the locked diff hash and the three grep-based
+  overlay checks. The OpenSSL 3.5 switch (upstream now links `httpd`, `rc` and
+  `infosvr` through `openssl11-compat` 1.1-ABI shims built inside the `rc`
+  recipe), OpenVPN 2.7.7 parsing of the hardened directive set, and the
+  overlay's parallel DAG ordering of `openssl11-compat` before the `httpd`
+  relink all still need a real build and a hardware run.
 
 ## Security debt
 
@@ -206,6 +227,10 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Add a build-time security-overlay gate covering authenticated routing,
   country-only mutation, raw calibration-key denial, firewall ordering,
   OpenVPN imports, IPsec cleanup, WireGuard and WPS argv execution.
+  - 2026-09-07: the firewall ordering check now fails on a missing
+    `custom`/`guard`/`validate`/`enable_ip_forward` anchor instead of comparing
+    empty line numbers. Verified against the patched replay tree at
+    `6be5bc84b50` (`security overlay invariants verified`, exit 0).
 - [x] Add executable Rust policy fixtures for OpenVPN compression, legacy
   ciphers/digests, script/route/`pull-filter` injection, malformed bounds and
   complete custom blocks.
@@ -223,10 +248,55 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `argv` execution and ensure credentials never enter a shell command line or
   log. Rust policy can validate inputs, but cannot make an unsafe C shell
   boundary safe by itself.
+  - Audit SEC-6a (2026-09-07, source scan at `6be5bc84b50`, no build or
+    hardware run): `shared/wlif_utils_ax.c` has 25 `system`/`popen` sites with
+    non-literal command strings. 17 sit in `wl_wlif_apply_creds_to_supplicant`,
+    which interpolates the `<ifname>_ssid`, `<ifname>_wpa_psk` and DPP
+    connector/C-sign NVRAM values into `wpa_cli ... set_network` shell lines and
+    prints every complete command through `dprintf`; that function is guarded
+    by `WIFI7_SDK_20250506 || WIFI8_SDK_20251126` and is therefore not compiled
+    for the HND-94908 GT-AX11000 profile. The remaining eight are
+    `get_wpacli_status` (`popen`), `wl_wlif_update_hapd_bh_creds`,
+    `wl_wlif_parse_hapd_config` and the WPS PBC/stop handlers under
+    `CONFIG_HOSTAPD`, `wl_wlif_wpa_supplicant_update_ap_scan` and
+    `wl_wlif_select_bhsta_from_bsslist` under `MULTIAP`, and one WiFi 7 MLO site
+    that is compiled out. Whether `CONFIG_HOSTAPD` and `MULTIAP` are active
+    for this profile was not established, so the item stays open.
 - [ ] Re-audit every remaining `system`, `popen`, shell-script generation, and
   NVRAM-to-command path. Prefer fixed argv execution and typed Rust parsers.
+  - Audit SEC-6a inventory (2026-09-07, `rc`, `shared`, `httpd`, `libdisk`,
+    `libwebapi`, `rstats` and `infosvr` sources at `6be5bc84b50`): 2,080
+    `system`/`doSystem`/`popen` call-site lines, 653 of them passing
+    non-literal command strings. Concentrations by file and enclosing function:
+    `rc/sysdeps/init-broadcom.c` 111 (`set_wan_tag` 44, `init_switch_pre` 44,
+    `vlan_forwarding` 10; switch/VLAN setup from NVRAM), `rc/services.c` 39
+    (`radiusd_updateDB`, `start_spcmd`, `start_wps`, `start_amas_lldpd`),
+    `shared/aura_rgb.c` 37, `rc/ate.c` 27, `shared/wlif_utils_ax.c` 25 (above),
+    `rc/watchdog.c` 24, `httpd/web.c` 24 (`ej_netdev`, `sys_script`,
+    `ej_dump`, `apply_cgi`, `do_upgrade_cgi`, `get_ipsec_conn_info`, ...),
+    `rc/rc_ipsec.c`, `rc/rc.c`, `rc/firewall_sdn.c` and `rc/ai_service.c` 17
+    each, `rc/wan.c` and `rc/sysdeps/wps-broadcom.c` 15 each. The existing
+    overlay patches replace only the `wps-broadcom.c` (`stop_wps_method`,
+    `start_wps_enr`, `hapd_cli_run`) and `services.c` `start_wps` paths and add
+    `validate_wlan_security_request` in `web.c`. The scan does not decide which
+    sites are compiled for this profile or reachable from the authenticated
+    Web boundary; that classification is the remaining work.
 - [ ] Review proprietary prebuilt objects/libraries borrowed from other ASUS
   models. A successful ARM link does not prove runtime ABI compatibility.
+  - Audit SEC-7a (2026-09-07, tree at `6be5bc84b50`): 41 packages ship a
+    `prebuild/GT-AX11000/` directory out of 49 with per-model prebuilt trees;
+    the router Makefile copies the `httpd`, `rc` and `shared` sets by
+    `BUILD_NAME`. Exactly four objects are borrowed from other models, and all
+    four are wired by the overlay's own `gt-ax11000-wsl.patch`:
+    `httpd/prebuild/GT-AXE11000/web-broadcom.o` (added unconditionally to the
+    `httpd` objects), `rc/prebuild/RT-BE86U/tpvpn.o` (fallback under
+    `RTCONFIG_TPVPN=y`, which `config_base` enables),
+    `shared/prebuild/RT-BE86U/uu_utils.o` and
+    `nmp-api/networkmap/prebuild/RT-BE86U/libnmpapi.so` (fallbacks when no
+    GT-AX11000 copy exists). The audit's extracted copies match the vendor
+    blobs by SHA-256. No symbol-level or struct-layout comparison against the
+    GT-AX11000 headers was recorded; the only runtime evidence remains the
+    hardware trials above, so the item stays open.
 
 ## Wireless test-lab debt
 
@@ -255,8 +325,21 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   Cargo may reuse fingerprints, but Make must never silently reuse a stale
   final binary from a broad cache restore. Firmware recipes are forced targets;
   Cargo performs the incremental fingerprint decision.
-- [ ] Add packet fixtures and router captures for `infosvr`, including AiMesh
-  group-ID and `GETINFO_EX2` compatibility.
+- [x] Add byte-level wire fixtures for the Rust `infosvr` port, including the
+  AiMesh group-ID TLV and `GETINFO_EX2`. `rust/infosvr/tests/wire_fixtures.rs`
+  holds 27 const-built fixtures whose offsets were re-derived from the
+  `#pragma pack(1)` structs in `shared/iboxcom.h` and from `infosvr/common.c`,
+  `storage.c`, `packet.c` and `infosvr.c` at `6be5bc84b50`: GETINFO,
+  `GETINFO_EX2` (transaction ID plus `<fstype>:<free MiB>!$`), FIND_CAP with
+  the group ID present, truncated and absent, and rejected opcodes and
+  511/513-byte PDUs. NVRAM parsing became stricter on the way: `parse_mac`
+  rejects `+0`-style octets and `decode_group_id` requires 40 hex digits.
+  Verified locally on 2026-09-07 with `cargo +1.85.1 test --workspace
+  --locked` (138 passed), Clippy with warnings denied and the ARMv7 check.
+- [ ] Add router captures for `infosvr`. Only the read-only `infosvr-live.py`
+  transactions have been exercised on hardware; no packet capture backs the
+  fixtures, and the port's `ui_sw_mode` and WebDAV `HostName` handling differ
+  from `shared.h`/`storage.c` in cases the fixtures do not cover.
 - [x] Gate the `rstats` ISP-meter behavior with the model build configuration;
   GT-AX11000 does not enable the legacy ISP-meter feature.
 - [x] Expand fuzz/property tests for HTTP query and multipart parsing, NVRAM
@@ -340,6 +423,14 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `upstream-sync/<sha>` pull request instead of merging `main`, and run separate
   required `Rust`, `Security overlay` and `Firmware` checks for vendor,
   overlay, workflow and lock changes.
+  - 2026-09-07: a conflicting merge now aborts, creates or updates one
+    `upstream-sync conflict <sha>` issue listing the conflicting paths and
+    fails the run; an upstream already contained in `main` only refreshes a
+    stale lock; an unchanged lock exits without a PR. The push uses
+    `SYNC_UPSTREAM_TOKEN` when provisioned, because PRs opened with
+    `GITHUB_TOKEN` receive no checks; the PR body states which case applies.
+    Verified by YAML parse, `bash -n` and a local git replay with a stub `gh`;
+    no Actions run and no token has been provisioned yet.
 - [x] Protect GitHub `main` with separate active rulesets: Rust, Security
   overlay and Firmware checks from GitHub Actions are mandatory without a
   bypass; deletion and force-push are blocked. A second rule requires a PR,
@@ -373,17 +464,86 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Add an idempotent `rust-ui-httpd-relink` path that rebuilds only `httpd`
   and `www`, promotes exact artifacts into the flat rootfs, removes package
   staging duplicates, and repacks without rebuilding kernel or drivers.
-- [ ] Auto-disable local ccache before source preparation when no executable is
-  available, or provision a checksummed RAM-local ccache binary. The current
-  wrapper discovers the missing host command only after source adaptation;
-  never write the cache to SSD.
+- [x] Auto-disable local ccache before source preparation when no executable is
+  available. `build.sh` probes `command -v ccache` right after validating
+  `ASUSWRT_CCACHE`, before the GNU Make bootstrap, the tmpfs checks and the
+  worktree/source adaptation; a missing executable warns, sets
+  `CCACHE_ENABLED=0`, records
+  `ccache_status=auto-disabled-missing-executable` next to `ccache_enabled` in
+  `BUILD-STATE.txt`, and both values pass through to the inner build shell.
+  `ASUSWRT_CCACHE_STATUS` is internal: only the worktree re-exec may carry the
+  auto-disable reason, and a stray `enabled` can never be reported while
+  `ASUSWRT_CCACHE=0`. CI compares the recorded status with the `ccache=1`
+  build contract right after the build and fails closed on a mismatch.
+  Nothing is written to the cache in that case. The alternative of a
+  checksummed RAM-local ccache binary was not pursued.
+  Verified on 2026-09-08 by running the extracted block for the cases
+  (`ccache=1` without an executable, `ccache=0`, stray status, inner
+  passthrough, fake `ccache` on `PATH`) plus `bash -n`; no firmware build.
 - [x] Keep top-level orchestration at `-j1` and provide an opt-in GNU Make 4.4
   package DAG with one shared jobserver, an explicit serial foundation and a
   transitive `.WAIT` barrier. A 16-token build completed with a reference-
   equivalent rootfs, but was 5.4% slower overall, so the default remains one.
-- [ ] Add phase-local timing around kernel, package foundation, parallel package
-  remainder and image assembly; then benchmark only a small `2/4/8` token
-  sweep. Do not spend full builds testing every package combination.
+- [x] Add phase-local timing around kernel, package foundation, parallel package
+  remainder and image assembly. `BUILD-STATE.txt` now records
+  `vendor_prebuild_seconds`, `kernel_build_seconds`, `kernel_modules_seconds`,
+  `router_foundation_seconds`, `router_packages_seconds`,
+  `image_assembly_seconds`, `rust_relink_seconds` and
+  `firmware_repack_seconds`. The first six are inferred after the fact from
+  artifact timestamps (`.pre_kernelbuild`, `vmlinux`, the newest installed
+  `.ko`, the newest serial-foundation library, the runtime libraries that
+  `make -C router reinstall` copies into `fs.install/lib` after the last
+  package install, and the firmware image) relative to the build-start marker;
+  the last two come from the inner build log. The vendor `image` link is not a
+  boundary: it is recreated before `make buildimage`, which contains the
+  kernel, package and image phases. Known folds: host tools/DTBs/CFE into
+  `kernel_modules`, `clean-build`/`kernel_header` into `router_foundation`,
+  package installs/`rootprep` into `router_packages`,
+  `libcreduction`/`strips`/`buildFS`/manifests into `image_assembly`; a
+  kernel-cache hit or `rust-fast` reports 0 for the skipped phases. Verified
+  on 2026-09-08 with a synthetic-tree harness and `bash -n` only; not yet
+  observed on a real build.
+- [ ] Benchmark only a small `2/4/8` token sweep with the new phase fields. Do
+  not spend full builds testing every package combination. The
+  `PARALLEL_BUILD_BASELINE.md` numbers were measured at
+  `088512a1296e361d65e5429e7d8d61ef3fdf4c86`; no A/B run exists at the new lock.
+- [x] Give every parallel `sha256sum` batch of the rootfs equivalence manifest
+  its own output file before the final sort, so writes above `PIPE_BUF` can no
+  longer interleave in one shared stdout. The interleaving did not reproduce
+  in three runs of the old script on the local host; the fix rests on the
+  documented pipe semantics and repeated deterministic output of the new one.
+- [x] Derive the expected AUTODICT dictionary set from the payload's own
+  `www/Lang_Hdr.txt` (`LANG_<code>=` lines minus `LANG_select*`) instead of a
+  hardcoded count of 25, compare names and count exactly, and make the sentinel
+  lookups fail closed inside command substitution. Verified against fixtures
+  and the vendor `LnxDictPrep`, which appends to an existing `Lang_Hdr.txt`;
+  CI builds from a fresh install directory, so the exact-set check holds there.
+- [x] Compute every cache key component (`overlay_sha`, `vendor_state_sha`,
+  `build_contract_sha`) before the first cache restore, bind the `rust-fast`
+  same-Rust equivalence gate to the seven manifested consumers (`infosvr`,
+  `rstats`, `Notify_Event2NC`, `httpd`, `rc`, `networkmap`, `libbwdpi.so`)
+  while a changed Rust state may alter only the five relinked binaries
+  (`networkmap` and `libbwdpi.so` are not rebuilt by `rust-fast`, so the
+  freshness gate and the rootfs exclusions cover just those five), give the
+  firmware job its own Rust cache key, pin `upload-artifact` to v4.6.2 and skip
+  the upload on a cancelled run. Verified on 2026-09-07 by YAML parse and
+  review only; `actionlint` is unavailable and no Actions run has executed the
+  changed workflow.
+- [ ] Close the `bwdpi-compat` staleness gap on the vendor-cache-hit path. An
+  exact vendor cache hit selects `rust-fast`, which relinks only the five
+  consumers and never runs `networkmap-install`, while the vendor cache key
+  excludes `rust/`. A change confined to `rust/bwdpi-compat` therefore ships
+  the cached `libbwdpi.so` and CI stays green (the rootfs equivalence gate
+  sees it unchanged because nothing rebuilt it). Pre-existing before the
+  2026-09-08 consumer split, which only documents it. Either hash
+  `rust/bwdpi-compat` separately in "Snapshot cached relink state" and fail
+  closed, or make `rust-fast` also run `networkmap-rust-compat-rebuild` and
+  treat all seven consumers as relinked.
+- [x] Let Dependabot propose weekly pinned-SHA bumps for GitHub Actions and
+  lockfile-only Cargo bumps for `rust/`; each lands as a normal PR through the
+  same checks. The workspace currently has no external crates, and the vendor
+  build runs Cargo `--offline`, so the first external crate will need a fetch
+  step before the firmware build.
 - [x] Make one code path own patch application. CI applies the canonical
   `patches/series` exactly once to its prepared source tree; `build.sh` then
   verifies the complete actual source diff (including added files) against
@@ -417,6 +577,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Add a persistent, fail-safe promotion-hold marker for host-driven soaks;
   the guard must keep partition 2 selected without rebooting the running
   candidate or permitting an automatic 120-second promotion.
+- [x] Run the trial controller's fake-transport unit tests as a separate
+  `Trial controller` job in Actions on the exact overlay commit. It never
+  contacts a router and is deliberately not a firmware gate. The exact job
+  invocation passed locally on 2026-09-07 (22 tests); the job itself has not
+  run on GitHub yet.
 
 ## Known build annoyances
 
