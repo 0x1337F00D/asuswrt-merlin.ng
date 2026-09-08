@@ -157,14 +157,19 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Build from current upstream `088512a1296e361d65e5429e7d8d61ef3fdf4c86`,
   which includes miniupnpd 2.3.11 and its 2026 heap-overflow fix; no candidate
   from the older `d2701f4e238c` base may be promoted.
-- [ ] Build, gate and one-shot-test a candidate from the re-locked upstream
-  `6be5bc84b50ea37be7b5d4307c5042771c3cf95b`. The 2026-09-07 rebase was
-  verified only by patch replay, the locked diff hash and the three grep-based
-  overlay checks. The OpenSSL 3.5 switch (upstream now links `httpd`, `rc` and
-  `infosvr` through `openssl11-compat` 1.1-ABI shims built inside the `rc`
-  recipe), OpenVPN 2.7.7 parsing of the hardened directive set, and the
-  overlay's parallel DAG ordering of `openssl11-compat` before the `httpd`
-  relink all still need a real build and a hardware run.
+- [ ] One-shot-test a candidate from the re-locked upstream
+  `6be5bc84b50ea37be7b5d4307c5042771c3cf95b` on hardware. The build half is
+  done: hosted run 34234225299 (2026-09-08, push of `d701b63eb87`) passed
+  every job (`Rust`, `Security overlay`, `Trial controller`, `Firmware`) and
+  produced `GT-AX11000_3006_102.9_alpha1_ubi.w`
+  (`e6de3eea7bb6df67352bc72d9cba5e3889c4b4785e7523f94a4bc3d6a9ddf04f`) from a
+  clean vendor-cache miss in 2790 s with `ccache_status=enabled` and all seven
+  Rust consumers hash-verified, so the OpenSSL 3.5 / `openssl11-compat` link
+  order works under the serial `make_jobs=1` contract and the post-build
+  gates. Still open: OpenVPN 2.7.7 runtime parsing of the hardened directive
+  set, the parallel DAG ordering of `openssl11-compat` (not exercised, the CI
+  contract is serial), and the hardware one-shot itself; no candidate from
+  the new lock has been flashed.
 
 ## Security debt
 
@@ -501,8 +506,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   package installs/`rootprep` into `router_packages`,
   `libcreduction`/`strips`/`buildFS`/manifests into `image_assembly`; a
   kernel-cache hit or `rust-fast` reports 0 for the skipped phases. Verified
-  on 2026-09-08 with a synthetic-tree harness and `bash -n` only; not yet
-  observed on a real build.
+  on 2026-09-08 with a synthetic-tree harness and `bash -n`, then observed on
+  hosted run 34234225299 (clean, serial): `vendor_prebuild` 656 s,
+  `kernel_build` 47 s, `kernel_modules` 34 s, `router_foundation` 1589 s,
+  `router_packages` 55 s, `image_assembly` 120 s, `firmware_repack` 138 s of
+  `vendor_build` 2660 s. The foundation/packages split is not credible on a
+  serial clean build: a foundation product is evidently re-touched late in
+  the package phase, so nearly the whole router build lands in
+  `router_foundation`. Treat the two fields as one until the boundary is
+  re-derived from a real build log (see the next item).
 - [ ] Benchmark only a small `2/4/8` token sweep with the new phase fields. Do
   not spend full builds testing every package combination. The
   `PARALLEL_BUILD_BASELINE.md` numbers were measured at
