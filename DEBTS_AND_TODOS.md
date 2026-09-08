@@ -26,8 +26,9 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `networkmap` and `httpd` PIDs, and the three radios retained the atomic `ALL`
   profile (`#a`, 500 driver request) and WPA2/SAE, AES, and PMF settings. The
   known TV-box addresses `.37` and `.100` were not associated or present in
-  the neighbor/cache tables during the trial, so that device-specific path
-  could not be exercised.
+  the neighbor/cache tables during that trial, so that recorded gate did not
+  exercise the device-specific path. The user subsequently confirmed the
+  TV-box connectivity issue resolved; it is no longer an active blocker.
 - The read-only live `infosvr` suite passed exact GETINFO, GETINFO_EX2 and
   FIND_CAP transactions and rejected invalid opcodes and 511/513-byte PDUs.
   Local gates additionally passed the immutable input lock, all Rust workspace
@@ -220,9 +221,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   The first WAN INPUT jump and the exact IPv4/IPv6 management-port DROP rules
   are now verified after VPN/custom hooks, together with the terminal INPUT
   and FORWARD policy (including `logdrop -> LOG; DROP`).
-- [ ] Integrate per-profile VPN kill-switch requirements into semantic
-  effective-rule inspection. This still needs representative real-router
-  ruleset fixtures for each OpenVPN and WireGuard client mode.
+- [x] Implement bounded, fail-closed per-profile OpenVPN/WireGuard inbound-rule
+  and policy-route kill-switch inspection in Rust, expose it through an
+  additive C ABI, and cover the vendor-derived shapes plus adversarial decoys
+  with unit, integration and C-ABI fixtures.
+- [ ] Wire the per-profile VPN validator into the running firewall using an
+  exact typed derivation of enabled NVRAM profiles, then capture representative
+  real-router `iptables-save`, `ip6tables-save` and `ip rule show` fixtures for
+  every OpenVPN and WireGuard client mode. W9 deliberately does not change the
+  existing live firewall call site before those hardware fixtures exist.
 - [x] Move imported OpenVPN custom-directive validation from ad-hoc C into a
   bounded Rust allowlist. Weak ciphers/digests, compression, scripts, routes,
   pull filters, unknown directives and malformed numeric values fail closed.

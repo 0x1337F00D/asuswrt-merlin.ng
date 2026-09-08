@@ -512,6 +512,130 @@ pub unsafe extern "C" fn rust_validate_effective_firewall_policy_files(
     .into()
 }
 
+const MAX_POLICY_ROUTES_SIZE: u64 = 64 * 1024;
+const MAX_VPN_CLIENT_PROFILE_LIST_SIZE: usize = 1024;
+
+fn parse_vpn_client_profiles(
+    value: &str,
+) -> Option<Vec<router_policy::firewall::VpnClientProfile>> {
+    if value.is_empty() || value.len() > MAX_VPN_CLIENT_PROFILE_LIST_SIZE || !value.is_ascii() {
+        return None;
+    }
+    value
+        .split(',')
+        .map(|entry| router_policy::firewall::VpnClientProfile::parse(entry).ok())
+        .collect()
+}
+
+/// Validate the per-profile VPN client contract on top of the terminal DROP
+/// invariant: the vendor inbound-block chain rules for every profile
+/// flagged `fw` and the VPN Director kill-switch policy routes for every
+/// profile flagged `ks`. `profiles` is a comma-separated list of
+/// `KIND:UNIT[:INTERFACE]:FLAGS` entries such as `openvpn:1:fw+ks` or
+/// `wireguard:2:wgc2:ks`. `policy_routes_path` holds `ip rule show` output
+/// and may be NULL only while no profile requests `ks`. This complements
+/// `rust_validate_effective_firewall_policy_files`, which is unchanged.
+///
+/// `fw` passes only when the vendor client rules are reachable: nothing
+/// ahead of the `OVPNCI`/`WGCI` and `OVPNCF`/`WGCF` hooks (rc/firewall.c
+/// :5332/:5343/:6172/:6180; dual-WAN `filter_setting2` :7129/:7140/:8050/
+/// :8058) or ahead of the client's rules inside those chains may be able
+/// to admit tunnel traffic.
+///
+/// `ks` is narrower than "the kill switch is on". It is IPv4 only (`ip
+/// rule`, never `ip -6 rule`), so it says nothing about IPv6 LAN traffic
+/// even with `require_ipv6`. For OpenVPN `rgw=2` and every WireGuard
+/// profile the vendor installs one `from SRC prohibit` per enabled VPN
+/// Director source (libovpn/amvpn_routing.c:923, :987); one such entry at
+/// the slot proves that some source is enforced, not every enabled one,
+/// because the VPN Director list is not an input. OpenVPN `rgw=0` and
+/// `rgw=3` install no vendor rule at all (:902-929), so callers must
+/// request `ks` only for `rgw` in {1, 2}. The slot must also not be
+/// shadowed by any lower-numbered rule other than the vendor's own
+/// (`router_policy::firewall::FirewallManifest::add_effective_policy_routes`).
+///
+/// # Safety
+///
+/// All required pointers must address NUL-terminated strings for this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_validate_effective_vpn_client_files(
+    ipv4_path: *const c_char,
+    ipv6_path: *const c_char,
+    require_ipv6: c_int,
+    policy_routes_path: *const c_char,
+    lan_interface: *const c_char,
+    profiles: *const c_char,
+) -> c_int {
+    if ipv4_path.is_null()
+        || lan_interface.is_null()
+        || profiles.is_null()
+        || (require_ipv6 != 0 && ipv6_path.is_null())
+    {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires readable NUL-terminated strings.
+    let (Ok(ipv4_path), Ok(lan_interface), Ok(profiles)) = (
+        unsafe { CStr::from_ptr(ipv4_path) }.to_str(),
+        unsafe { CStr::from_ptr(lan_interface) }.to_str(),
+        unsafe { CStr::from_ptr(profiles) }.to_str(),
+    ) else {
+        return 0;
+    };
+    let Some(profiles) = parse_vpn_client_profiles(profiles) else {
+        return 0;
+    };
+    let requirements = router_policy::firewall::VpnClientRequirements {
+        profiles,
+        lan_interface: lan_interface.to_owned(),
+    };
+    let Some(ipv4) = read_regular_ascii_file(Path::new(ipv4_path), MAX_FIREWALL_RULESET_SIZE)
+    else {
+        return 0;
+    };
+    let ipv6 = if require_ipv6 != 0 {
+        // SAFETY: The non-null path is required above for enabled IPv6.
+        let Ok(path) = unsafe { CStr::from_ptr(ipv6_path) }.to_str() else {
+            return 0;
+        };
+        match read_regular_ascii_file(Path::new(path), MAX_FIREWALL_RULESET_SIZE) {
+            Some(value) => Some(value),
+            None => return 0,
+        }
+    } else {
+        None
+    };
+    let policy_routes = if requirements
+        .profiles
+        .iter()
+        .any(|profile| profile.kill_switch)
+    {
+        if policy_routes_path.is_null() {
+            return 0;
+        }
+        // SAFETY: The pointer was checked for null and the ABI contract
+        // requires a readable NUL-terminated string.
+        let Ok(path) = unsafe { CStr::from_ptr(policy_routes_path) }.to_str() else {
+            return 0;
+        };
+        match read_regular_ascii_file(Path::new(path), MAX_POLICY_ROUTES_SIZE) {
+            Some(value) => Some(value),
+            None => return 0,
+        }
+    } else {
+        None
+    };
+
+    router_policy::firewall::validate_effective_vpn_client_policy(
+        &ipv4,
+        ipv6.as_deref(),
+        require_ipv6 != 0,
+        policy_routes.as_deref(),
+        &requirements,
+    )
+    .is_ok()
+    .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,5 +957,97 @@ mod tests {
 
         fs::remove_file(ipv4).unwrap();
         fs::remove_file(ipv6).unwrap();
+    }
+
+    #[test]
+    fn effective_vpn_client_ffi_requires_chain_rules_and_policy_routes() {
+        // Vendor shapes: firewall.c:5332/5343/6172/6180 hooks,
+        // openvpn_setup.c:965-967 and wireguard.c:697-699 client rules.
+        // The dual-WAN filter_setting2 emits the same hooks at
+        // firewall.c:7129/7140/8050/8058.
+        let rules = "*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:WGCI - [0:0]\n:WGCF - [0:0]\n:OVPNCI - [0:0]\n:OVPNCF - [0:0]\n-A INPUT -j WGCI\n-A INPUT -j OVPNCI\n-A INPUT -j DROP\n-A FORWARD -j WGCF\n-A FORWARD -j OVPNCF\n-A FORWARD -j DROP\n-A OVPNCI -i tun11 -j DROP\n-A OVPNCF -o tun11 -j ACCEPT\n-A OVPNCF -i tun11 -j DROP\n-A WGCI -i wgc2 -j DROP\n-A WGCF -o wgc2 -j ACCEPT\n-A WGCF -i wgc2 -j DROP\nCOMMIT\n";
+        // amvpn_routing.c:903 (priority 12210) and :987 (priority 12216).
+        let routes = "0:\tfrom all lookup local\n12210:\tfrom all iif br0 prohibit\n12216:\tfrom 192.168.50.20 prohibit\n32766:\tfrom all lookup main\n";
+        let ipv4 = temporary_path("iptables-vpn-save");
+        let ipv6 = temporary_path("ip6tables-vpn-save");
+        let policy_routes = temporary_path("ip-rule-show");
+        let missing = temporary_path("missing-ip-rule-show");
+        fs::write(&ipv4, rules).unwrap();
+        fs::write(&ipv6, rules).unwrap();
+        fs::write(&policy_routes, routes).unwrap();
+        let ipv4_c = CString::new(ipv4.as_os_str().as_encoded_bytes()).unwrap();
+        let ipv6_c = CString::new(ipv6.as_os_str().as_encoded_bytes()).unwrap();
+        let routes_c = CString::new(policy_routes.as_os_str().as_encoded_bytes()).unwrap();
+        let missing_c = CString::new(missing.as_os_str().as_encoded_bytes()).unwrap();
+        let lan = CString::new("br0").unwrap();
+        let other_lan = CString::new("br1").unwrap();
+        let both = CString::new("openvpn:1:fw+ks,wireguard:2:wgc2:fw+ks").unwrap();
+        let inbound_only = CString::new("openvpn:1:fw,wireguard:2:fw").unwrap();
+        let uncovered = CString::new("openvpn:1:fw+ks,wireguard:3:ks").unwrap();
+        let malformed = CString::new("openvpn:1:fw+ks,").unwrap();
+
+        // SAFETY: All C strings and files remain valid for these calls.
+        unsafe {
+            for (ipv6_ptr, require_ipv6) in [(ipv6_c.as_ptr(), 1), (core::ptr::null(), 0)] {
+                assert_eq!(
+                    rust_validate_effective_vpn_client_files(
+                        ipv4_c.as_ptr(),
+                        ipv6_ptr,
+                        require_ipv6,
+                        routes_c.as_ptr(),
+                        lan.as_ptr(),
+                        both.as_ptr(),
+                    ),
+                    1
+                );
+                assert_eq!(
+                    rust_validate_effective_vpn_client_files(
+                        ipv4_c.as_ptr(),
+                        ipv6_ptr,
+                        require_ipv6,
+                        core::ptr::null(),
+                        lan.as_ptr(),
+                        inbound_only.as_ptr(),
+                    ),
+                    1
+                );
+            }
+            for (routes_ptr, lan_ptr, profiles_ptr) in [
+                (core::ptr::null(), lan.as_ptr(), both.as_ptr()),
+                (missing_c.as_ptr(), lan.as_ptr(), both.as_ptr()),
+                (routes_c.as_ptr(), other_lan.as_ptr(), both.as_ptr()),
+                (routes_c.as_ptr(), lan.as_ptr(), uncovered.as_ptr()),
+                (routes_c.as_ptr(), lan.as_ptr(), malformed.as_ptr()),
+                (routes_c.as_ptr(), core::ptr::null(), both.as_ptr()),
+                (routes_c.as_ptr(), lan.as_ptr(), core::ptr::null()),
+            ] {
+                assert_eq!(
+                    rust_validate_effective_vpn_client_files(
+                        ipv4_c.as_ptr(),
+                        ipv6_c.as_ptr(),
+                        1,
+                        routes_ptr,
+                        lan_ptr,
+                        profiles_ptr,
+                    ),
+                    0
+                );
+            }
+            assert_eq!(
+                rust_validate_effective_vpn_client_files(
+                    ipv4_c.as_ptr(),
+                    core::ptr::null(),
+                    1,
+                    routes_c.as_ptr(),
+                    lan.as_ptr(),
+                    both.as_ptr(),
+                ),
+                0
+            );
+        }
+
+        fs::remove_file(ipv4).unwrap();
+        fs::remove_file(ipv6).unwrap();
+        fs::remove_file(policy_routes).unwrap();
     }
 }
