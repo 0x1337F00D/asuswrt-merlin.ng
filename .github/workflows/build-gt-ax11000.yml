@@ -6,6 +6,8 @@ on:
       - main
       - codex/rust-porting
       - codex/network-hardening-2026
+      - codex/gt-ax11000-parallel-dag-ci
+      - codex/gt-ax11000-parallel-dag-v2
     paths:
       - release/**
       - .github/ci/gt-ax11000/**
@@ -183,6 +185,31 @@ jobs:
           bash "$root/tests/rust-fast-relink-check.sh" \
             "$GITHUB_WORKSPACE/source" "$root"
 
+  # Host-side fake-transport regression suite for the one-shot trial
+  # controller. It never contacts a router and is not a firmware gate, so it
+  # deliberately stays outside the build job's needs.
+  trial:
+    name: Trial controller
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact overlay
+        run: |
+          set -euo pipefail
+          git init overlay
+          git -C overlay remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C overlay sparse-checkout init --cone
+          git -C overlay sparse-checkout set .github/ci/gt-ax11000
+          git -C overlay fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
+          git -C overlay checkout --detach FETCH_HEAD
+          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Run trial controller unit tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover \
+            -s overlay/.github/ci/gt-ax11000/trial -p 'test_*.py' -v
+
   build:
     name: Firmware
     needs:
@@ -246,7 +273,10 @@ jobs:
             # guarded by the complete before/after rootfs equivalence gate. It
             # is not an input to the cached compiled vendor prerequisite tree.
             # Preserve the v2 seed contract so finalizer-only fixes reuse that
-            # expensive, already-gated prerequisite state.
+            # expensive, already-gated prerequisite state: this is the digest
+            # of rust-repack.mk as of c440bd04f8a ("ci: attest and accelerate
+            # exact vendor reuse"), the commit that seeded the v2 key. Verify:
+            #   git show c440bd04f8a:.github/ci/gt-ax11000/rust-repack.mk | sha256sum
             printf '%s  %s\n' \
               9eb1cd4736b640417e5e7bc1f00d684f8baedc1d94c97347d918eb78dae684dc \
               overlay/.github/ci/gt-ax11000/rust-repack.mk
@@ -255,6 +285,15 @@ jobs:
             printf '%s\n' "$build_contract_sha"
           } | sha256sum | cut -d' ' -f1)"
           printf 'vendor_state_sha=%s\n' "$vendor_state_sha" >> "$GITHUB_OUTPUT"
+          # Every cache key component is emitted here, before the first
+          # restore, so restore and save always bind the same provenance.
+          overlay_sha="$({
+            sha256sum overlay/.github/ci/gt-ax11000/build.sh
+            sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
+            find overlay/.github/ci/gt-ax11000/rust -type f \
+              -not -path '*/target/*' -print0 | sort -z | xargs -0 sha256sum
+          } | sha256sum | cut -d' ' -f1)"
+          printf 'overlay_sha=%s\n' "$overlay_sha" >> "$GITHUB_OUTPUT"
 
       - name: Record runner capacity
         id: runner
@@ -262,7 +301,7 @@ jobs:
           set -euo pipefail
           image_version="${ImageVersion:?GitHub runner ImageVersion is required}"
           test "$image_version" != unknown
-          printf 'logical_cpus=%s\n' "$(nproc)"
+          printf 'logical_cpus=%s\n' "$(nproc)" >> "$GITHUB_OUTPUT"
           printf 'image_version=%s\n' "$image_version" >> "$GITHUB_OUTPUT"
           free -h
           df -h "$GITHUB_WORKSPACE"
@@ -288,7 +327,8 @@ jobs:
       # This state contains the completed vendor userspace, kernel, profile and
       # rootfs trees.  It is exact (no restore prefix), immutable, and saved
       # only after all firmware gates pass. Rust source is deliberately outside
-      # the key because rust-fast replaces and verifies all five consumers.
+      # the key because rust-fast relinks the five Rust-built consumers and
+      # hash-verifies all seven manifested ones.
       - name: Restore exact successful vendor build
         if: github.event_name != 'schedule' && inputs.force_clean != true
         id: vendor-cache
@@ -350,8 +390,9 @@ jobs:
           git -C toolchains checkout --detach FETCH_HEAD
           test "$(git -C toolchains rev-parse HEAD)" = "$TOOLCHAINS_SHA"
 
+      # Every cache key binds the locked inputs recorded above; this only
+      # asserts that the materialized trees are those inputs.
       - name: Record input revisions
-        id: revisions
         run: |
           set -euo pipefail
           test "$(git -C source rev-parse HEAD)" = \
@@ -362,19 +403,6 @@ jobs:
           # byte-for-byte the tree from the locked RMerl commit.
           test "$(git -C overlay rev-parse HEAD:release)" = \
             "$(git -C source rev-parse HEAD:release)"
-          echo "upstream_sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "ci_contract_sha=${{ steps.inputs.outputs.build_contract_sha }}" \
-            >> "$GITHUB_OUTPUT"
-          overlay_sha="$({
-            sha256sum overlay/.github/ci/gt-ax11000/build.sh
-            sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
-            find overlay/.github/ci/gt-ax11000/rust -type f -not -path '*/target/*' \
-              -print0 | sort -z | xargs -0 sha256sum
-          } | sha256sum | cut -d' ' -f1)"
-          echo "overlay_sha=$overlay_sha" >> "$GITHUB_OUTPUT"
-          echo "vendor_state_sha=${{ steps.inputs.outputs.vendor_state_sha }}" \
-            >> "$GITHUB_OUTPUT"
 
       - name: Install host dependencies
         run: |
@@ -393,23 +421,27 @@ jobs:
             --target "${{ steps.inputs.outputs.rust_target }}"
           rustc +"${{ steps.inputs.outputs.rust_toolchain }}" --version --verbose
 
+      # The rust job already saves its host test/check artifacts under the plain
+      # v3 key. This job stores the cross-compiled firmware release profile, so
+      # it needs its own '-fw' key: an exact hit on the rust job's key would
+      # otherwise stop actions/cache from ever saving these artifacts.
       - name: Restore Rust build cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/asuswrt-rust-target
-          key: gt-ax11000-rust-v3-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.revisions.outputs.overlay_sha }}
+          key: gt-ax11000-rust-v3-fw-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.overlay_sha }}
           restore-keys: |
-            gt-ax11000-rust-v3-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
+            gt-ax11000-rust-v3-fw-${{ runner.os }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-
 
       - name: Restore compiler cache
         id: ccache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/asuswrt-ccache
-          key: gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.revisions.outputs.overlay_sha }}
+          key: gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.overlay_sha }}
           restore-keys: |
-            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-
-            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.revisions.outputs.toolchains_sha }}-
+            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-
+            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-
 
       - name: Apply local CI overlay
         if: steps.vendor-cache.outputs.cache-hit != 'true'
@@ -474,7 +506,7 @@ jobs:
             source/release/src-rt-5.02axhnd/kernel
             source/release/src-rt-5.02axhnd/targets/94908HND/modules
             source/.asuswrt-kernel-cache-state
-          key: gt-ax11000-kernel-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.patched_diff_sha256 }}-${{ steps.revisions.outputs.overlay_sha }}-${{ steps.revisions.outputs.ci_contract_sha }}
+          key: gt-ax11000-kernel-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.patched_diff_sha256 }}-${{ steps.inputs.outputs.overlay_sha }}-${{ steps.inputs.outputs.build_contract_sha }}
 
       - name: Show disk usage before build
         run: |
@@ -510,14 +542,21 @@ jobs:
           if [ "$current_rust_state" = "$cached_rust_state" ]; then
             same_rust=true
             root=source/release/src-rt-5.02axhnd/targets/94908HND/fs.install
+            # Keep this list identical to the Rust consumer manifest written
+            # by rust-repack.mk.
             (
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
-                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
+                usr/sbin/networkmap usr/lib/libbwdpi.so
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
+            # rust-fast relinks only these five (rust-repack.mk
+            # rust-components-relink). networkmap and libbwdpi.so are carried
+            # from the cached tree, so they stay inside the equivalence gate
+            # and must not change even when the Rust state differs.
             rootfs_excludes+=(
               usr/sbin/infosvr
               bin/rstats
@@ -555,7 +594,7 @@ jobs:
           ASUSWRT_SOURCE_REPO: ${{ github.workspace }}/source
           ASUSWRT_SOURCE_ROOT: ${{ github.workspace }}/source
           ASUSWRT_TOOLCHAIN_VIEW: ${{ runner.temp }}/asuswrt-toolchain-view/brcm-arm-hnd
-          ASUSWRT_TOOLCHAINS_STATE: ${{ steps.revisions.outputs.toolchains_sha }}
+          ASUSWRT_TOOLCHAINS_STATE: ${{ steps.inputs.outputs.toolchains_sha }}
           # The vendor obj-y list encodes undocumented serial ordering. Keep
           # full-DAG parallelism out of required CI until a safe whitelist is
           # proven; the exact kernel cache supplies the reliable speedup.
@@ -571,6 +610,23 @@ jobs:
             sleep 60
           done
           wait "$build_pid"
+
+      # build.sh downgrades a missing ccache executable to a warning locally.
+      # Both exact cache keys bind ccache=1 through build_contract_sha, so CI
+      # must fail closed when the recorded state contradicts that contract.
+      - name: Verify compiler cache contract
+        run: |
+          set -euo pipefail
+          test -s output/BUILD-STATE.txt
+          ccache_status="$(sed -n 's/^ccache_status=//p' output/BUILD-STATE.txt)"
+          case "${{ steps.inputs.outputs.ccache }}" in
+            1) expected_status=enabled ;;
+            *) expected_status=disabled ;;
+          esac
+          if [ "$ccache_status" != "$expected_status" ]; then
+            echo "build contract ccache=${{ steps.inputs.outputs.ccache }} but BUILD-STATE.txt reports ccache_status=${ccache_status:-missing}" >&2
+            exit 1
+          fi
 
       - name: Verify cache-preserving Rust relink
         if: steps.vendor-cache.outputs.cache-hit == 'true'
@@ -588,7 +644,8 @@ jobs:
             (
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
-                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
+                usr/sbin/networkmap usr/lib/libbwdpi.so
             ) > cache-equivalence/consumers.after
             diff -u cache-equivalence/consumers.before \
               cache-equivalence/consumers.after
@@ -600,6 +657,9 @@ jobs:
           grep -Eq '^HND[0-9]{7}$' "$image_version"
           rootfs_excludes=(rom/etc/image_version)
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
+            # Keep this list identical to the snapshot step: only the five
+            # relinked consumers may differ; networkmap and libbwdpi.so are
+            # not rebuilt on the cached path.
             rootfs_excludes+=(
               usr/sbin/infosvr
               bin/rstats
@@ -633,6 +693,7 @@ jobs:
       - name: Record build metadata
         if: success()
         run: |
+          set -euo pipefail
           {
             echo "upstream_sha=$(git -C source rev-parse HEAD)"
             echo "toolchains_sha=$(git -C toolchains rev-parse HEAD)"
@@ -656,21 +717,25 @@ jobs:
             echo "rust_target_cpu=${{ steps.inputs.outputs.rust_target_cpu }}"
             cat input-lock-state.txt
           } > output/BUILD-METADATA.txt
-          (cd output && sha256sum GT-AX11000*.w | tee SHA256SUMS)
+          # build.sh already writes output/SHA256SUMS; only prove it is there.
+          test -s output/SHA256SUMS
           find output -maxdepth 1 -type f -printf '%s %f\n' | sort -n
 
       - name: Collect failure log
         if: failure()
         run: |
+          set -euo pipefail
           mkdir -p output
           printf 'GitHub Actions run: %s\nCommit: %s\n' \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
             "$GITHUB_SHA" > output/CI-FAILURE.txt
           cp -f source/release/src-rt-5.02axhnd/output-gt-ax11000-wsl.log output/ 2>/dev/null || true
 
+      # Collect failure log does not run on cancel, so output/ may not exist;
+      # with if-no-files-found: error that would turn a cancel into a failure.
       - name: Upload firmware and log
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && !cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # A job rerun belongs to the same run number. Include the attempt so
           # upload-artifact never collides with the retained pilot artifact.
@@ -693,4 +758,4 @@ jobs:
             source/.asuswrt-full-build-state
             source/.asuswrt-rust-state
             source/.asuswrt-kernel-cache-state
-          key: gt-ax11000-vendor-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.revisions.outputs.toolchains_sha }}-${{ steps.revisions.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.revisions.outputs.vendor_state_sha }}
+          key: gt-ax11000-vendor-v2-${{ runner.os }}-${{ steps.runner.outputs.image_version }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.rust_toolchain }}-${{ steps.inputs.outputs.rust_target }}-${{ steps.inputs.outputs.rust_target_cpu }}-${{ steps.inputs.outputs.vendor_state_sha }}
