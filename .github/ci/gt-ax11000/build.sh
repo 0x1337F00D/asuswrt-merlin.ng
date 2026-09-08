@@ -38,6 +38,7 @@ Environment overrides:
   ROUTER_PACKAGE_JOBS=N                       shared package-DAG job tokens; default: 1
   ASUSWRT_PREPARE_JOBS=N                      parallel Autotools preparation, default: 4
   ASUSWRT_CCACHE=0|1                          cache HND cross-compiler output, default: 0
+                                              (auto-disabled when no ccache executable exists)
   ASUSWRT_CCACHE_DIR=/path                    default: /tmp/asuswrt-ccache
   ASUSWRT_CCACHE_MAXSIZE=size                 default: 2G
   ASUSWRT_KERNEL_CACHE_RESTORE=0|1            trust an exact successful CI kernel cache
@@ -220,11 +221,19 @@ ensure_gnu_make() {
 	require_cmd curl
 	require_cmd tar
 	if [ ! -f "$archive" ]; then
-		curl --fail --location --silent --show-error "$GNU_MAKE_URL" --output "$archive"
+		# Download to a partial file so an interrupted transfer never masquerades
+		# as a complete archive on the next run; the checksum below stays pinned.
+		curl --fail --location --silent --show-error \
+			--retry 3 --retry-all-errors --connect-timeout 20 --max-time 300 \
+			"$GNU_MAKE_URL" --output "$archive.part"
+		mv -f "$archive.part" "$archive"
 	fi
 	actual_sha256="$(sha256sum "$archive" | awk '{print $1}')"
 	if [ "$actual_sha256" != "$GNU_MAKE_SHA256" ]; then
 		echo "GNU Make archive checksum mismatch: $actual_sha256" >&2
+		# Never leave the rejected archive behind: the next run would skip the
+		# download and fail on the same bytes forever.
+		rm -f -- "$archive"
 		exit 1
 	fi
 
@@ -365,6 +374,145 @@ hash_file_or_missing() {
 		sha256sum "$path" | awk '{print $1}'
 	else
 		printf 'missing'
+	fi
+}
+
+fresh_build_mtime() {
+	local path="$1"
+	local mtime
+
+	# Report an artifact's modification epoch only when this build refreshed
+	# it: a reused kernel cache or rust-fast leaves older artifacts in place.
+	# Symlinks report themselves so a dangling link cannot abort the scan.
+	if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+		return
+	fi
+	mtime="$(stat -c '%Y' "$path")"
+	if [ "$mtime" -ge "$build_started_epoch" ]; then
+		printf '%s' "$mtime"
+	fi
+}
+
+newest_fresh_build_mtime() {
+	local newest=""
+	local mtime
+	local path
+
+	for path in "$@"; do
+		mtime="$(fresh_build_mtime "$path")"
+		if [ -n "$mtime" ] && { [ -z "$newest" ] || [ "$mtime" -gt "$newest" ]; }; then
+			newest="$mtime"
+		fi
+	done
+	printf '%s' "$newest"
+}
+
+vendor_phase_seconds() {
+	local name="$1"
+	local boundary="$2"
+
+	# Phases are sequential under the -j1 top-level orchestration, so each one
+	# spans from the previous observed boundary. An unobserved phase reports 0
+	# and its span folds into the next observed one.
+	if [ -n "$boundary" ] && [ "$boundary" -ge "$vendor_phase_prev" ]; then
+		printf -v "$name" '%s' "$((boundary - vendor_phase_prev))"
+		vendor_phase_prev="$boundary"
+	else
+		printf -v "$name" '0'
+	fi
+}
+
+log_stage_seconds() {
+	local value
+
+	value="$(sed -n "s/^$1=//p" "$LOG_FILE" 2>/dev/null | tail -n 1 || true)"
+	if [[ "$value" =~ ^[0-9]+$ ]]; then
+		printf '%s' "$value"
+	else
+		printf '0'
+	fi
+}
+
+compute_vendor_phase_timings() {
+	local kernel_dir="$SDK_DIR/kernel/linux-4.1"
+	local router_dir="$ROOT/release/src/router"
+	local install_dir="$SDK_DIR/targets/$PROFILE/fs.install"
+	local image_path="${1:-}"
+	local kernel_prepared=""
+	local kernel_linked=""
+	local modules_installed=""
+	local foundation_built=""
+	local router_installed=""
+	local image_built=""
+	# Build products of the serial router foundation (fast-parallel-build.patch)
+	# whose newest member marks the .WAIT barrier before the package remainder.
+	local -a foundation_artifacts=(
+		"$router_dir"/openssl*/libssl.so*
+		"$router_dir"/shared/libshared.so
+		"$router_dir"/libdisk/libdisk.so
+		"$router_dir"/libnfnetlink-*/src/.libs/libnfnetlink.so
+		"$router_dir"/libmnl-*/src/.libs/libmnl.so
+		"$router_dir"/libnetfilter_conntrack-*/src/.libs/libnetfilter_conntrack.so
+		"$router_dir"/libnetfilter_cttimeout-*/src/.libs/libnetfilter_cttimeout.so
+	)
+	# Toolchain runtime libraries that `make -C router reinstall` copies with
+	# fresh timestamps (install -D) after every package install, still inside
+	# the vendor `make buildimage` and before libcreduction, strips, buildFS and
+	# the image tools run. Neither libcreduction (it only adds libraries that
+	# are still missing) nor the manifest-bound repack rewrites them.
+	local -a router_install_artifacts=(
+		"$install_dir"/lib/libc.so.6
+		"$install_dir"/lib/libpthread.so.0
+		"$install_dir"/lib/libdl.so.2
+		"$install_dir"/lib/libgcc_s.so.1
+		"$install_dir"/lib/aarch64/libc.so.6
+		"$install_dir"/lib/aarch64/libnss_files.so.2
+	)
+
+	# Sub-phase boundaries are observed from artifact timestamps after the fact
+	# instead of instrumenting the vendor Makefiles. The inner build shell
+	# already logs the Rust relink and manifest-bound repack stage durations.
+	rust_relink_seconds="$(log_stage_seconds RUST_RELINK_SECONDS)"
+	firmware_repack_seconds="$(log_stage_seconds FIRMWARE_REPACK_SECONDS)"
+	vendor_prebuild_seconds=0
+	kernel_build_seconds=0
+	kernel_modules_seconds=0
+	router_foundation_seconds=0
+	router_packages_seconds=0
+	image_assembly_seconds=0
+	if [ "$BUILD_MODE" = "rust-fast" ]; then
+		return
+	fi
+
+	kernel_prepared="$(fresh_build_mtime "$kernel_dir/.pre_kernelbuild")"
+	kernel_linked="$(fresh_build_mtime "$kernel_dir/vmlinux")"
+	# A build that failed before modules_install has no modules directory yet;
+	# that must not abort the driver under pipefail before the failure report.
+	modules_installed="$(
+		find "$SDK_DIR/targets/$PROFILE/modules" -type f -name '*.ko' \
+			-newer "$build_started_marker" -printf '%T@\n' 2>/dev/null \
+			| sort -n | tail -n 1 | cut -d. -f1 || true
+	)"
+	foundation_built="$(newest_fresh_build_mtime "${foundation_artifacts[@]}")"
+	# The vendor `image` link is not a usable boundary: the top-level recipe
+	# recreates it before `make buildimage`, which then runs the kernel, the
+	# router packages and the image assembly. The last router step observable
+	# after the package remainder is the reinstall of the runtime libraries.
+	router_installed="$(newest_fresh_build_mtime "${router_install_artifacts[@]}")"
+	if [ -n "$image_path" ]; then
+		image_built="$(fresh_build_mtime "$image_path")"
+	fi
+
+	vendor_phase_prev="$build_started_epoch"
+	vendor_phase_seconds vendor_prebuild_seconds "$kernel_prepared"
+	vendor_phase_seconds kernel_build_seconds "$kernel_linked"
+	vendor_phase_seconds kernel_modules_seconds "$modules_installed"
+	vendor_phase_seconds router_foundation_seconds "$foundation_built"
+	vendor_phase_seconds router_packages_seconds "$router_installed"
+	vendor_phase_seconds image_assembly_seconds "$image_built"
+	# The image span ends after the common repack, which is timed separately.
+	if [ "$image_assembly_seconds" -ge "$firmware_repack_seconds" ]; then
+		image_assembly_seconds=$((image_assembly_seconds - firmware_repack_seconds))
 	fi
 }
 
@@ -747,6 +895,26 @@ case "$CCACHE_ENABLED" in
 		;;
 esac
 
+# Discover a missing ccache executable here, before the GNU Make bootstrap
+# and source adaptation, instead of failing minutes later inside the toolchain
+# view wrapper. Disabling keeps the cache RAM-only: nothing is written at all.
+# ASUSWRT_CCACHE_STATUS is internal: the worktree re-exec below passes the
+# downgrade reason to the inner driver. It is never trusted to claim more than
+# CCACHE_ENABLED allows, so a stray value cannot report an enabled cache.
+CCACHE_STATUS=disabled
+if [ "$CCACHE_ENABLED" = "1" ]; then
+	if command -v ccache >/dev/null 2>&1; then
+		CCACHE_STATUS=enabled
+	else
+		echo "Warning: ASUSWRT_CCACHE=1 but no ccache executable is available; continuing without the HND compiler cache" >&2
+		CCACHE_ENABLED=0
+		CCACHE_STATUS=auto-disabled-missing-executable
+	fi
+elif [ -n "${ASUSWRT_BUILD_WORKTREE:-}" ] &&
+	[ "${ASUSWRT_CCACHE_STATUS:-}" = "auto-disabled-missing-executable" ]; then
+	CCACHE_STATUS=auto-disabled-missing-executable
+fi
+
 case "$KERNEL_CACHE_RESTORE" in
 	0|1)
 		;;
@@ -810,6 +978,8 @@ if [ -z "${ASUSWRT_BUILD_WORKTREE:-}" ]; then
 		ASUSWRT_WORKTREE_PREP_SECONDS="$WORKTREE_PREP_SECONDS" \
 		ASUSWRT_BUILD_WORKTREE=1 \
 		ASUSWRT_BUILD_MODE="$BUILD_MODE" \
+		ASUSWRT_CCACHE="$CCACHE_ENABLED" \
+		ASUSWRT_CCACHE_STATUS="$CCACHE_STATUS" \
 		ASUSWRT_FORCE_PROFILE="$FORCE_PROFILE" \
 		ASUSWRT_FAST_REUSE_HIT="$ASUSWRT_FAST_REUSE_HIT" \
 		ASUSWRT_SOURCE_STATE_ID="$ASUSWRT_SOURCE_STATE_ID" \
@@ -979,6 +1149,7 @@ find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
 	-name "$IMAGE_GLOB" -delete 2>/dev/null || true
 build_started_marker="$(mktemp --tmpdir asuswrt-build-start.XXXXXX)"
 touch "$build_started_marker"
+build_started_epoch="$(stat -c '%Y' "$build_started_marker")"
 vendor_build_started=$SECONDS
 set +e
 "${build_shell[@]}" <<'EOF'
@@ -1110,6 +1281,7 @@ mapfile -d '' built_images < <(
 	find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
 		-name "$IMAGE_GLOB" -newer "$build_started_marker" -print0 2>/dev/null
 )
+compute_vendor_phase_timings "${built_images[0]:-}"
 
 if [ "$build_rc" -eq 0 ] && [ "${#built_images[@]}" -ne 1 ]; then
 	echo "Build produced ${#built_images[@]} fresh firmware images; expected exactly one" >&2
@@ -1124,15 +1296,29 @@ fi
 
 rootfs_dir="$SDK_DIR/targets/$PROFILE/fs"
 dict_enum_file=$(find "$SDK_DIR" -type f -path '*/src/image/dictenum.txt' -print -quit)
-rust_consumers=(
+# The five Rust-built binaries are what rust-components-relink (rust-repack.mk)
+# reinstalls in rust-fast mode. The closed networkmap and its Rust libbwdpi.so
+# provider are only built by networkmap-install, which a full build runs and
+# rust-fast does not: there they are carried from the cached tree with their
+# old timestamps and are bound only by the manifest hash check below.
+rust_relinked_consumers=(
 	usr/sbin/infosvr
 	bin/rstats
 	usr/sbin/Notify_Event2NC
 	usr/sbin/httpd
 	sbin/rc
 )
+rust_consumers=(
+	"${rust_relinked_consumers[@]}"
+	usr/sbin/networkmap
+	usr/lib/libbwdpi.so
+)
+fresh_consumers=("${rust_consumers[@]}")
+if [ "$BUILD_MODE" = "rust-fast" ]; then
+	fresh_consumers=("${rust_relinked_consumers[@]}")
+fi
 if [ "$build_rc" -eq 0 ]; then
-	for consumer in "${rust_consumers[@]}"; do
+	for consumer in "${fresh_consumers[@]}"; do
 		if [ ! -f "$rootfs_dir/$consumer" ] || [ ! "$rootfs_dir/$consumer" -nt "$build_started_marker" ]; then
 			echo "Rust consumer was not freshly installed by this build: $rootfs_dir/$consumer" >&2
 			build_rc=1
@@ -1226,6 +1412,8 @@ if [ "$build_rc" -eq 0 ]; then
 		echo "gnu_make_sha256=$GNU_MAKE_SHA256"
 		echo "router_package_jobs=$ROUTER_PACKAGE_JOBS"
 		echo "kernel_cache_reuse=$KERNEL_CACHE_REUSE"
+		echo "ccache_enabled=$CCACHE_ENABLED"
+		echo "ccache_status=$CCACHE_STATUS"
 		echo "build_mode=$BUILD_MODE"
 		echo "force_profile=$FORCE_PROFILE"
 		echo "firmware_sha256=$(sha256sum "$output_image" | awk '{print $1}')"
@@ -1236,6 +1424,14 @@ if [ "$build_rc" -eq 0 ]; then
 		echo "worktree_prepare_seconds=$WORKTREE_PREP_SECONDS"
 		echo "source_adapt_seconds=$source_adapt_seconds"
 		echo "vendor_build_seconds=$vendor_build_seconds"
+		echo "vendor_prebuild_seconds=$vendor_prebuild_seconds"
+		echo "kernel_build_seconds=$kernel_build_seconds"
+		echo "kernel_modules_seconds=$kernel_modules_seconds"
+		echo "router_foundation_seconds=$router_foundation_seconds"
+		echo "router_packages_seconds=$router_packages_seconds"
+		echo "image_assembly_seconds=$image_assembly_seconds"
+		echo "rust_relink_seconds=$rust_relink_seconds"
+		echo "firmware_repack_seconds=$firmware_repack_seconds"
 		echo "post_build_gate_seconds=$((SECONDS - post_build_gate_started))"
 		echo "duration_seconds=$(($(date +%s) - BUILD_STARTED_EPOCH))"
 	} > "$OUTPUT_DIR/BUILD-STATE.txt"
