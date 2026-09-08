@@ -95,10 +95,17 @@ find_args=(. -type f)
 for path in "${!excluded[@]}"; do
 	find_args+=( ! -path "./$path" )
 done
+# Parallel sha256sum batches must not share one stdout: writes above PIPE_BUF
+# interleave and corrupt lines. Each batch writes its own file and the pieces
+# are concatenated before the final sort, which fixes the order.
+digest_dir=$(mktemp -d)
+trap 'rm -rf -- "$digest_dir"' EXIT
 (
 	cd "$rootfs"
 	find "${find_args[@]}" -print0 | LC_ALL=C sort -z \
-		| xargs -0 -r -P "$(nproc)" -n 64 sha256sum -- \
+		| xargs -0 -r -P "$(nproc)" -n 64 \
+			sh -c 'sha256sum -- "$@" > "$(mktemp -p "$0" batch.XXXXXX)"' "$digest_dir"
+	find "$digest_dir" -mindepth 1 -type f -exec cat -- {} + \
 		| sed 's/  /\t/' | LC_ALL=C sort -t $'\t' -k2,2
 ) > "$output/content.sha256"
 file_count=$(wc -l < "$output/content.sha256")
