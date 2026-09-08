@@ -234,6 +234,11 @@ custom_line=$(grep -nF 'run_custom_script("firewall-start"' "$firewall" | tail -
 guard_line=$(grep -nF '!install_wan_admin_guard(wan_if)' "$firewall" | tail -1 | cut -d: -f1)
 validation_line=$(grep -nF '!validate_effective_firewall_policy()' "$firewall" | tail -1 | cut -d: -f1)
 forward_line=$(grep -nF $'\t\tenable_ip_forward();' "$firewall" | tail -1 | cut -d: -f1)
+if [ -z "$custom_line" ] || [ -z "$guard_line" ] || [ -z "$validation_line" ] || \
+   [ -z "$forward_line" ]; then
+	echo "firewall validation/forwarding anchor missing" >&2
+	exit 1
+fi
 if ! [ "$custom_line" -lt "$guard_line" ] || ! [ "$guard_line" -lt "$validation_line" ] || \
    ! [ "$validation_line" -lt "$forward_line" ]; then
 	echo "firewall validation/forwarding order is unsafe" >&2

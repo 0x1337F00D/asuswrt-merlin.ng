@@ -6,6 +6,13 @@ kernel configuration SHA-256
 `ccc88a96d4c5e9f20865eed2fc255231b639b46e71b71a6432c368f0608ee1ba`,
 Rust 1.85.1 and the same local toolchain state.
 
+All numbers and digests below are historical: they were measured at upstream
+`088512a1296e361d65e5429e7d8d61ef3fdf4c86`. The overlay has since been
+re-locked on `6be5bc84b50ea37be7b5d4307c5042771c3cf95b` (3006.102.9 alpha1
+with OpenSSL 3.5, OpenVPN 2.7.7 and tzdata 2026c), which changes the vendor
+package set and therefore the timings, rootfs counts and manifest digests. No
+A/B run has been repeated against the new lock yet.
+
 | Build | Router tokens | Vendor time | End-to-end | Result |
 |---|---:|---:|---:|---|
 | Stable v4 | 1 | 678 s | 682 s | reference |

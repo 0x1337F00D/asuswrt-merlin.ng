@@ -1,9 +1,9 @@
 format = 1
 upstream_repo = "https://github.com/RMerl/asuswrt-merlin.ng.git"
-upstream_sha = "088512a1296e361d65e5429e7d8d61ef3fdf4c86"
+upstream_sha = "6be5bc84b50ea37be7b5d4307c5042771c3cf95b"
 toolchains_repo = "https://github.com/RMerl/am-toolchains.git"
 toolchains_sha = "d1af80e6b6686a4edc680386c09a8361453dd5c1"
 rust_toolchain = "1.85.1"
 rust_target = "armv7-unknown-linux-gnueabi"
 rust_target_cpu = "cortex-a9"
-patched_diff_sha256 = "18e6fdc3f140ae2da8f8cd09740d1ddb0495911cef98b9e422fbe8f5c68cffa7"
+patched_diff_sha256 = "0477c9575c580ff905b27261f4e53a25469289c9206d8c0543ae3d959891684e"
