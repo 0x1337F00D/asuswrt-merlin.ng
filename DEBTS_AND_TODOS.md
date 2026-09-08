@@ -399,6 +399,12 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   GT-AX11000 hardware: the Rust ABI provider exports only the three gated
   compatibility symbols, `networkmap` survives a rescan, shared memory reports
   10 live clients, and the persistent database retains 105 historical records.
+- [ ] Repeat the authenticated browser rendering check on the promoted
+  `102.9 alpha1` image. Its live backend is healthy (14 current JSON objects,
+  106 persistent objects, a stable `networkmap` PID, and the expected
+  `update_clients.asp`/render hooks), but the Windows Computer-Use bridge could
+  not attach from the WSL-bound promotion task. No empty-backend condition was
+  reproduced.
 - [ ] Exercise the Network Map/client-list traffic view and both retained QoS
   modes on GT-AX11000 hardware. Verify monotonically increasing per-client
   counters, shaping, reboot persistence and bounded memory/CPU under a full
@@ -599,8 +605,13 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Run the trial controller's fake-transport unit tests as a separate
   `Trial controller` job in Actions on the exact overlay commit. It never
   contacts a router and is deliberately not a firmware gate. The exact job
-  invocation passed locally on 2026-09-07 (22 tests); the job itself has not
-  run on GitHub yet.
+  invocation passed locally on 2026-09-07 (22 tests) and on GitHub run
+  `34243633067` for commit `dc4452af234`.
+- [x] Bind the persistent hardware guard to the promoted image identity
+  (`3.0.0.6/102.9/alpha1`) and its immutable Web manifest hashes. A new
+  read-only `check` action runs the same complete health predicate without
+  changing boot state; a source test rejects future boot-state or state-file
+  mutation in that action.
 
 ## Known build annoyances
 
@@ -645,3 +656,16 @@ image-boot blocker.
 - Web payload identity manifests are stored under immutable
   `/usr/share/codex`; `/etc` is a volatile `/tmp/etc` link on this platform and
   cannot carry reboot-persistent firmware identity.
+- On 2026-09-08, GitHub-hosted run `34243633067` was fully green and produced
+  the exact commit-`dc4452af234` GT-AX11000 image with SHA-256
+  `46a16a7c1fa42d5aef1a02b41747556f4fab827eb525eae71af512a14778432f`.
+  The router booted it on partition 1 as `3.0.0.6/102.9/alpha1`; repeated
+  hardware gates passed Rust self-tests, WAN/DNS, all radios, Web malformed-
+  request survival, IPv4/IPv6 terminal drops, kernel-fault scanning, daemon
+  PID stability and the live `infosvr` protocol fixtures. The seven installed
+  Rust-consumer hashes exactly matched the artifact manifest.
+- The final persistence reboot exercised the complete guard state machine:
+  `arm` selected the untouched `102.8/4` partition 2 for one fallback boot,
+  the delayed health gate passed, and `promote` restored partition 1 as the
+  permanent boot target. Partition 2 remains available as the known-good
+  rollback image.

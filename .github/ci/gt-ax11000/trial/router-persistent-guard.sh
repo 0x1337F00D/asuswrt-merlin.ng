@@ -8,7 +8,10 @@ TRIAL_DIR=/data/firmware-trial-rollback
 STATE_FILE="$TRIAL_DIR/state"
 LOG_FILE="$TRIAL_DIR/guard.log"
 PROMOTION_HOLD_FILE="$TRIAL_DIR/hold-promotion"
-WEB_PAYLOAD_MANIFEST_SHA256=194837804834e2e9078452ec3d039d2caa260f8989fa582619a2855f315ac627
+EXPECTED_FIRMVER=3.0.0.6
+EXPECTED_BUILDNO=102.9
+EXPECTED_EXTENDNO=alpha1
+WEB_PAYLOAD_MANIFEST_SHA256=7d4e623cde8c177acc66607ed70c8fa87956b8d8f4409d93047008cfe37957c9
 WEB_SYMLINK_MANIFEST_SHA256=e651541e58c5ae985d833ccc6782752281b2c4f6f8d0b2782bf0000fc5f6b0bf
 
 # This guard deliberately has asymmetric roles. The known-good image remains
@@ -78,9 +81,9 @@ verify_web_symlinks() {
 
 is_candidate_identity() {
 	[ "$(nvram get productid)" = "GT-AX11000" ] &&
-	[ "$(nvram get firmver)" = "3.0.0.6" ] &&
-	[ "$(nvram get buildno)" = "102.8" ] &&
-	[ "$(nvram get extendno)" = "4" ] &&
+	[ "$(nvram get firmver)" = "$EXPECTED_FIRMVER" ] &&
+	[ "$(nvram get buildno)" = "$EXPECTED_BUILDNO" ] &&
+	[ "$(nvram get extendno)" = "$EXPECTED_EXTENDNO" ] &&
 	/bin/bcm_bootstate 2>/dev/null | grep -q "Booted Partition: $CANDIDATE_BOOT_LABEL" &&
 	grep -Fq 'id="regulatory_lab_country"' /www/Advanced_WAdvanced_Content.asp &&
 	grep -Fq 'regulatory_lab_store_acknowledgement' /www/Advanced_WAdvanced_Content.asp &&
@@ -129,6 +132,14 @@ healthy() {
 }
 
 case "${1:-}" in
+	check)
+		if healthy; then
+			printf '%s\n' 'RESULT=PASS'
+			exit 0
+		fi
+		printf '%s\n' 'RESULT=FAIL'
+		exit 1
+		;;
 	arm)
 		is_candidate_identity || exit 0
 		if bootstate_has "$CANDIDATE_STATE"; then
