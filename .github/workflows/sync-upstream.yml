@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 concurrency:
@@ -21,11 +22,20 @@ jobs:
     steps:
       - name: Create or update an upstream-sync branch and PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          # GitHub never runs workflows for pushes, PRs or issues created with
+          # GITHUB_TOKEN, so a sync PR opened with the github.token fallback
+          # gets no checks until somebody pushes to its branch or closes and
+          # reopens it. SYNC_UPSTREAM_TOKEN is a repo-owner-provided PAT or
+          # App token with contents, issues and pull-requests write access.
+          GH_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN || github.token }}
+          SYNC_TOKEN_PROVIDED: ${{ secrets.SYNC_UPSTREAM_TOKEN != '' }}
         run: |
           set -euo pipefail
           gh repo clone "$GITHUB_REPOSITORY" repo -- \
             --filter=blob:none --no-checkout
+          # gh leaves the https origin without credentials; the push needs them.
+          git -C repo remote set-url origin \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git -C repo sparse-checkout init --cone
           git -C repo sparse-checkout set .github/ci/gt-ax11000
           git -C repo checkout main
@@ -41,17 +51,43 @@ jobs:
           git -C repo remote add upstream "$upstream_repo"
           git -C repo fetch --no-tags upstream main
           upstream_sha=$(git -C repo rev-parse upstream/main)
-          if [ "$upstream_sha" = "$locked_upstream" ] && \
-            git -C repo merge-base --is-ancestor "$upstream_sha" origin/main
-          then
-            echo "Fork already locks and contains upstream $upstream_sha"
-            exit 0
-          fi
-
           short_sha=${upstream_sha:0:12}
           branch="upstream-sync/$short_sha"
           git -C repo checkout -B "$branch" origin/main
-          git -C repo merge --no-edit --no-ff "$upstream_sha"
+          if git -C repo merge-base --is-ancestor "$upstream_sha" origin/main; then
+            if [ "$upstream_sha" = "$locked_upstream" ]; then
+              echo "Fork already locks and contains upstream $upstream_sha"
+              exit 0
+            fi
+            # Nothing to merge; only the stale lock needs regenerating.
+            echo "Fork already contains upstream $upstream_sha; refreshing the stale lock"
+          elif ! git -C repo merge --no-edit --no-ff "$upstream_sha"; then
+            conflicts=$(git -C repo diff --name-only --diff-filter=U)
+            git -C repo merge --abort
+            if [ -n "$conflicts" ]; then
+              conflicts=$(printf '%s\n' "$conflicts" | sed 's/.*/- `&`/')
+            else
+              conflicts='- (no conflicting paths reported; see the workflow log)'
+            fi
+            issue_title="upstream-sync conflict $short_sha"
+            issue_body=$(printf '%s\n\n%s\n\n%s\n%s\n' \
+              "Merging upstream \`$upstream_sha\` into \`main\` conflicts in:" \
+              "$conflicts" \
+              'Resolve the merge by hand, then re-run the Sync upstream workflow.' \
+              "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")
+            existing_issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search "\"$issue_title\" in:title" --json number,title \
+              --jq "first(.[] | select(.title == \"$issue_title\") | .number) // empty")
+            if [ -n "$existing_issue" ]; then
+              gh issue edit "$existing_issue" --repo "$GITHUB_REPOSITORY" \
+                --body "$issue_body"
+            else
+              gh issue create --repo "$GITHUB_REPOSITORY" \
+                --title "$issue_title" --body "$issue_body"
+            fi
+            echo "::error::Merging upstream $upstream_sha into main conflicts; see issue '$issue_title'"
+            exit 1
+          fi
           test "$(git -C repo rev-parse HEAD:release)" = \
             "$(git -C repo rev-parse "$upstream_sha:release")"
 
@@ -79,14 +115,23 @@ jobs:
           if ! git -C repo diff --cached --quiet; then
             git -C repo commit -m "Lock GT-AX11000 inputs to upstream $short_sha"
           fi
+          if [ "$(git -C repo rev-parse HEAD)" = "$(git -C repo rev-parse origin/main)" ]; then
+            echo "Nothing to sync: upstream $upstream_sha is merged and the lock is unchanged"
+            exit 0
+          fi
 
           git -C repo push --force-with-lease origin "$branch"
           title="Sync RMerl/main to $short_sha"
+          if [ "$SYNC_TOKEN_PROVIDED" = true ]; then
+            checks='- Required Rust, security-overlay and firmware checks run on this PR and must pass before review.'
+          else
+            checks='- Opened with GITHUB_TOKEN, so no checks run automatically: push to the branch or close and reopen this PR to run the required Rust, security-overlay and firmware checks, which must pass before review.'
+          fi
           body=$(printf '%s\n\n%s\n%s\n%s\n' \
             'Automated upstream synchronization. This PR is never merged automatically.' \
             "- Upstream: \`$upstream_sha\`" \
             "- Patched source diff: \`$patched_diff\`" \
-            '- Required Rust, security-overlay and firmware checks must pass before review.')
+            "$checks")
           existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --base main \
             --head "$branch" --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing" ]; then
