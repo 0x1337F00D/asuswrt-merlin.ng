@@ -301,7 +301,8 @@ pub fn parse_mac(value: &str) -> Option<[u8; 6]> {
     let mut parts = value.split(':');
     for byte in &mut mac {
         let part = parts.next()?;
-        if part.len() != 2 {
+        // from_str_radix tolerates a leading '+'; only two hex digits are valid.
+        if part.len() != 2 || !part.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return None;
         }
         *byte = u8::from_str_radix(part, 16).ok()?;
@@ -313,7 +314,7 @@ pub fn parse_mac(value: &str) -> Option<[u8; 6]> {
 }
 
 pub fn decode_group_id(value: &str) -> Option<[u8; 20]> {
-    if value.len() != 40 || !value.is_ascii() {
+    if value.len() != 40 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
     let mut group = [0_u8; 20];
@@ -459,7 +460,9 @@ mod tests {
             Some([0, 0x11, 0x22, 0x33, 0x44, 0x55])
         );
         assert_eq!(parse_mac("00:11:22:33:44"), None);
+        assert_eq!(parse_mac("+0:11:22:33:44:55"), None);
         assert_eq!(decode_group_id(&"ab".repeat(20)), Some([0xab; 20]));
         assert_eq!(decode_group_id("ab"), None);
+        assert_eq!(decode_group_id(&"+a".repeat(20)), None);
     }
 }
