@@ -1141,3 +1141,58 @@ image-boot blocker.
   with SIGILL for this C consumer. This is not a reproduced router crash;
   do not weaken the existing ARMv7 Rust checks or claim this narrow emulator
   model represents every OpenSSL acceleration path on the BCM4908.
+
+### 2026-09-10 combined image and protected hardware trial
+
+- The fresh clean build from frozen overlay `6cdab2a41cc` passed in 2104 s
+  (35m04s), including 2006 s vendor build and 124 s final repack. No vendor
+  kernel cache was used; exact-compiler ccache was warm. Both source and all
+  build/cache/temp outputs were in tmpfs with swap disabled. This is not a
+  cold-cache CI timing claim or a released parallel-package benchmark.
+- Image: `GT-AX11000_3006_102.9_alpha1_ubi.w`, 76,677,140 bytes, SHA-256
+  `daa0ceb28715cac755772ba3c0495cd714a50f2c6c913537d51fded5860cc2f0`.
+  All 27 source patches and their input lock were verified. Later commits
+  change validation, the host driver/CI failure propagation, documentation
+  and the separately installed JFFS guard, not this image's runtime payload.
+- Offline final-image verification passed all 2715 regular-file hashes,
+  entries/modes/symlinks and hardlink groups against staging. The only exact
+  packaging transformation is an empty mode-0755 `/bootfs`: unchanged
+  upstream `targets/buildFS2` creates it before mkfs.ubifs at line 154 and
+  removes it from staging at line 242. No file/path is blindly excluded.
+  All eight Rust consumer hashes, all Web file hashes, 31 Web symlinks,
+  25 dictionaries/5078 entries, nine ARMv7 ELF checks, six QEMU runtime paths,
+  actual Samba version and wget gzip/WARC consumers passed. The 15-case
+  baseline/candidate wget differential and the actual bsd ABI fixture
+  (candidate without adapter; broken-baseline negative control) passed.
+- Fresh encrypted preflash backup passed off-router CMS decryption, both
+  independently checked hashes, 4554 saved NVRAM entries, 18 essential
+  same-time comparisons, 329 JFFS and 26 data archive members. Factory-reset
+  restore is still NOT TESTED. The previous baseline image/backup are kept.
+- SSH transfer and vendor firmware_check passed; hnd-write returned 99 with
+  hndwr=99. Only inactive partition 2 was written (sequence 35); baseline
+  partition 1 stayed at sequence 34. Reboot at 01:14:48 CEST consumed the
+  PART2_IMAGE_ONCE state to BOOT_SET_PART1_IMAGE. No Merlin commit marker was
+  created. The host-driven promotion hold remains until the complete soak.
+- Native final-archive client-list probe passed 10 snapshots: 12 live clients,
+  105 database records, maximum 2.098 ms rendering, maximum RSS 2892 KiB.
+  Probe SHA-256 `17ac65f5fd72bd1c0469139b63308b8a01cc3d6436bdaef97dcc789502658842`.
+  Config fingerprints for selected Wi-Fi/board calibration, LAN/DHCP/client
+  mappings and VPN settings are identical before/after boot. Country ALL is
+  unchanged. These are aggregate private-setting checks, not published keys.
+- Hardware found a missing closing `]` in the guard's final wget hash test.
+  `sh -n` and prior dispatch mocks could not catch this runtime error. It
+  failed closed (no promotion, already-consumed fallback remained part 1).
+  Commit `fa4c65fa01d` corrects it and executes the real identity predicate
+  with synthetic files/OpenSSL for both slots and four corrupt binaries;
+  the original missing-bracket negative control fails. All 34 trial tests
+  pass. The corrected rendered JFFS guard also passes its complete hardware
+  check and records PROMOTION_HELD_FALLBACK_PART1. Its SHA-256 is
+  `974910b2bb2cf7e46739f447dc5499318c8464671e7d41e0bd4823637fd0dc3a`.
+- Host-driver review found the clean repack's final timing echo could mask
+  a failed make while errexit was disabled. Explicit failure exits now
+  preserve relink/repack status in both modes. Five executable dispatch
+  fixtures cover success, vendor failure, relink failure, repack failure and
+  the original masked-failure negative control; CI runs these cheaply.
+- Runtime probes and offline Web checks do not substitute for authenticated
+  browser rendering (NOT RUN, per user) or moving the MacBook/phone between
+  rooms. Mobile roaming/coverage improvement still needs that field test.
