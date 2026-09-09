@@ -24,6 +24,11 @@ never contacts a router and is not a firmware gate. Dependabot proposes weekly
 pinned-SHA bumps for GitHub Actions and lockfile-only Cargo bumps for `rust/`,
 each as a normal pull request through the same checks.
 
+The sync workflow accepts the `upstream` remote that `gh repo clone` creates
+automatically for forks and always rebinds it to the locked repository URL.
+Overlay and patch paths are absolute so replay still works inside a separate
+`git -C` source tree. Both details are covered by network-free regression tests.
+
 Development-branch pushes run the three inexpensive Rust, security-overlay
 and trial checks. **Firmware runs on PRs to `main`, `main` pushes, manual
 dispatches and the weekly schedule**, not a second time on a development push.

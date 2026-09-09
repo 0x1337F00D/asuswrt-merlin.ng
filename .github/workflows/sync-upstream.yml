@@ -42,13 +42,23 @@ jobs:
           git -C repo config user.name github-actions[bot]
           git -C repo config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
-          lock=repo/.github/ci/gt-ax11000/inputs.lock
-          tool=repo/.github/ci/gt-ax11000/tools/input_lock.py
-          patch_root=repo/.github/ci/gt-ax11000/patches
+          # git -C "$source" apply resolves patch arguments in the source tree,
+          # not in this shell's current directory. Keep every overlay path absolute.
+          overlay_root="$GITHUB_WORKSPACE/repo/.github/ci/gt-ax11000"
+          lock="$overlay_root/inputs.lock"
+          tool="$overlay_root/tools/input_lock.py"
+          patch_root="$overlay_root/patches"
           upstream_repo=$(python3 "$tool" get upstream_repo --lock "$lock")
           locked_upstream=$(python3 "$tool" get upstream_sha --lock "$lock")
 
-          git -C repo remote add upstream "$upstream_repo"
+          # BEGIN locked upstream remote (also executed by ci-workflow.test.cjs)
+          # gh repo clone automatically adds upstream when cloning a fork.
+          if git -C repo remote get-url upstream >/dev/null 2>&1; then
+            git -C repo remote set-url upstream "$upstream_repo"
+          else
+            git -C repo remote add upstream "$upstream_repo"
+          fi
+          # END locked upstream remote
           git -C repo fetch --no-tags upstream main
           upstream_sha=$(git -C repo rev-parse upstream/main)
           short_sha=${upstream_sha:0:12}
