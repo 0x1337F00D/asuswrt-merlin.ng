@@ -965,3 +965,20 @@ image-boot blocker.
   and NO adapter: all three radio MACMODE paths execute without SIGSEGV.
   This is preliminary evidence from the discarded cached-compiler build;
   the final correctly bound image must pass again. No deployment yet.
+
+- The correctly bound GCC 5.5 cold build exposed another legacy recursive
+  producer race in LPRng: `all` traversed both `src` and `src/lpd.conf`; the
+  latter launched a second complete src make. Both modified the same objects
+  and `liblpr.a`, and ar failed reading a concurrently replaced initialize.o.
+  `lprng-parallel-owner.patch` makes the config a checked output of the single
+  src producer, in both the shipped Makefile and its configure template.
+  The actual top-level-rule fixture fails before the patch and passes at
+  -j2/-j4/-j8 afterward. A clean real ARM GCC 5.5 LPRng build at -j4 also
+  passed. This is a build-graph correction, not a printer runtime rewrite.
+- The 26-patch pristine replay binds patched-diff SHA-256
+  `392f14cbcb57a5794a9bd6ebf2069ea3ae29f5c97859cd6aea8a8dd6edff228a`.
+  The failed full build published no image. A new fixed-overlay cold build
+  must pass all final image gates before any router deployment.
+- The focused httpd `web.o` C translation unit, including the new Rust ABI
+  calls, compiled successfully with the direct vendor GCC 5.5. This does not
+  yet prove final httpd linking or authenticated browser response handling.

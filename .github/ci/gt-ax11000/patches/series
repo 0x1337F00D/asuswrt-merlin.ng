@@ -4,6 +4,7 @@ local-features.patch
 gt-ax11000-wsl.patch
 fast-parallel-build.patch
 netatalk-parallel-dependencies.patch
+lprng-parallel-owner.patch
 jobserver-recursive-makes.patch
 kernel-cache-reuse.patch
 rust-components.patch

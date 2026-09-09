@@ -1,0 +1,32 @@
+diff --git a/release/src/router/LPRng/Makefile b/release/src/router/LPRng/Makefile
+--- a/release/src/router/LPRng/Makefile
++++ b/release/src/router/LPRng/Makefile
+@@ -147,8 +147,10 @@
+ 	cp src/lpd.conf $@
+ 	chmod 644 $@
+ 
+-src/lpd.conf:
+-	cd src; $(MAKE) MAKETARGET=lpd.conf
++# The src all target already produces lpd.conf. Never start a second make
++# over the same objects/archive while that producer is running in parallel.
++src/lpd.conf: | src
++	@test -f $@
+ 
+ realclean mostlyclean distclean: clean
+ 	rm -rf DISTRIBUTIONS/FreeBSD*/work DISTRIBUTIONS/FreeBSD*/*.tgz ;
+diff --git a/release/src/router/LPRng/Makefile.in b/release/src/router/LPRng/Makefile.in
+--- a/release/src/router/LPRng/Makefile.in
++++ b/release/src/router/LPRng/Makefile.in
+@@ -142,8 +142,10 @@
+ 	cp src/lpd.conf $@
+ 	chmod 644 $@
+ 
+-src/lpd.conf:
+-	cd src; $(MAKE) MAKETARGET=lpd.conf
++# The src all target already produces lpd.conf. Never start a second make
++# over the same objects/archive while that producer is running in parallel.
++src/lpd.conf: | src
++	@test -f $@
+ 
+ realclean mostlyclean distclean: clean
+ 	rm -rf DISTRIBUTIONS/FreeBSD*/work DISTRIBUTIONS/FreeBSD*/*.tgz ;

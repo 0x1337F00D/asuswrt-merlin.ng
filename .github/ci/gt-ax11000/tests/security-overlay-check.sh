@@ -365,4 +365,5 @@ done
 
 # Exercise the shared-producer race that a successful warm build can hide.
 python3 "$(dirname "$0")/test_netatalk_parallel.py" "$router_makefile"
+python3 "$(dirname "$0")/test_lprng_parallel.py" "$(dirname "$router_makefile")/LPRng"
 echo "security overlay invariants verified"
