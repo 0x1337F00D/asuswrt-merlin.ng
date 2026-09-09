@@ -1132,3 +1132,12 @@ image-boot blocker.
   Security/network overlay checks pass. A fresh locked full build is still
   required; neither the partial build nor the focused hostapd link is a
   deployable firmware image.
+- Validation-only correction after freezing build overlay `6cdab2a41cc`:
+  hostapd's version banner is on stderr (exit 1), while the supplicant uses
+  stdout (exit 0). The checked-in verifier is corrected; the running build
+  overlay remains untouched. Core dumps are disabled in the verifier.
+- Additional baseline OpenVPN version probe: the actual router and QEMU's
+  `max` CPU both return 0 (OpenVPN 2.7.7, OpenSSL 3.5.8). QEMU cortex-a7 exits
+  with SIGILL for this C consumer. This is not a reproduced router crash;
+  do not weaken the existing ARMv7 Rust checks or claim this narrow emulator
+  model represents every OpenSSL acceleration path on the BCM4908.

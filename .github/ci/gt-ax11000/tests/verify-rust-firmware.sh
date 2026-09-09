@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ulimit -c 0
 
 if [ "$#" -ne 3 ]; then
 	echo "usage: $0 ROOTFS TOOLCHAIN_BIN QEMU_ARM" >&2
