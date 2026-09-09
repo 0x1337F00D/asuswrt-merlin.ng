@@ -14,16 +14,16 @@ hook=/jffs/scripts/services-start
 [ -f "$hook" ] && [ ! -L "$hook" ]
 [ "$(head -n 1 "$hook")" = '#!/bin/sh' ]
 [ "$(openssl dgst -sha256 "$hook" | awk '{print $NF}')" = "$EXPECTED_SERVICES_SHA256" ]
-for file in link-health vpn-policy-audit index.asp panel.js ping.json control.sh; do
+for file in link-health wifi-observe vpn-policy-audit index.asp panel.js ping.json control.sh install.sh update-panel.sh; do
     [ -f "$source_dir/$file" ] && [ ! -L "$source_dir/$file" ]
     expected=$(awk -v name="$file" '$2 == name {print $1}' "$source_dir/SHA256SUMS")
     [ "$(openssl dgst -sha256 "$source_dir/$file" | awk '{print $NF}')" = "$expected" ]
 done
 mkdir -m 700 "$destination"
-for file in link-health vpn-policy-audit index.asp panel.js ping.json control.sh install.sh SHA256SUMS; do
+for file in link-health wifi-observe vpn-policy-audit index.asp panel.js ping.json control.sh install.sh update-panel.sh SHA256SUMS; do
     cp "$source_dir/$file" "$destination/$file"
 done
-chmod 700 "$destination/control.sh" "$destination/link-health" "$destination/vpn-policy-audit"
+chmod 700 "$destination/control.sh" "$destination/link-health" "$destination/wifi-observe" "$destination/vpn-policy-audit"
 cp -p "$hook" "$destination/services-start.before"
 temporary_dir=/jffs/scripts/.link-health-stage.$$
 mkdir -m 700 "$temporary_dir"

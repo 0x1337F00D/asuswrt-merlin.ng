@@ -36,7 +36,13 @@ def main():
         def do_GET(self):
             name = self.path.split("?", 1)[0].rsplit("/", 1)[-1]
             types = {"index.asp": "text/html", "panel.js": "text/javascript", "ping.json": "application/json"}
-            if name == "status.json":
+            if name == "wifi.json":
+                body = json.dumps(dict(schema=1, sequence=1, epoch_ms=1788945916101, target_ip="192.168.0.236", finished=True,
+                    all_profile=True, bsd_running=False, roamast_running=False,
+                    points=[dict(epoch_ms=1788945916101, state="associated", band=1, channel="64/160", rssi=-87, power_save=False, retry_delta=3, ping_ms=2.8, span_ms=40)],
+                    events=["Sep  9 13:01:08 eth7 ReAssoc"])).encode()
+                mime = "application/json"
+            elif name == "status.json":
                 body = json.dumps(data).encode()
                 mime = "application/json"
             elif name in types:
@@ -71,6 +77,8 @@ def main():
             assert 'id="state" class="good">Messung aktiv' in result.stdout
             assert "600 Messrunden" in result.stdout
             assert "15.5 ms" in result.stdout
+            assert "ALL bestätigt · bsd gestoppt · roamast gestoppt" in result.stdout
+            assert "-87 dBm" in result.stdout
             assert "keine Antwort" in result.stdout
             assert "unbekannt" not in result.stdout.split('<tbody id="targets">')[1].split('</tbody>')[0]
             print("BROWSER_FIXTURE=PASS screenshot=" + str(output / "panel.png"))

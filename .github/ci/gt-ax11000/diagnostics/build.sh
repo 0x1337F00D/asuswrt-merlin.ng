@@ -19,13 +19,13 @@ cargo +1.85.1 build --manifest-path "$root/rust/Cargo.toml" \
     --release --locked --offline --target armv7-unknown-linux-gnueabi \
     -p router-diagnostics -p router-vpn-audit
 mkdir -m 700 "$DIAGNOSTICS_OUTPUT"
-for program in link-health vpn-policy-audit; do
+for program in link-health wifi-observe vpn-policy-audit; do
     install -m 700 "$CARGO_TARGET_DIR/armv7-unknown-linux-gnueabi/release/$program" "$DIAGNOSTICS_OUTPUT/$program"
     "$DIAGNOSTICS_STRIP" "$DIAGNOSTICS_OUTPUT/$program"
 done
-for file in index.asp panel.js ping.json control.sh install.sh; do
+for file in index.asp panel.js ping.json control.sh install.sh update-panel.sh; do
     install -m 600 "$root/diagnostics/$file" "$DIAGNOSTICS_OUTPUT/$file"
 done
 chmod 700 "$DIAGNOSTICS_OUTPUT/control.sh"
-(cd "$DIAGNOSTICS_OUTPUT" && sha256sum link-health vpn-policy-audit index.asp panel.js ping.json control.sh install.sh > SHA256SUMS)
+(cd "$DIAGNOSTICS_OUTPUT" && sha256sum link-health wifi-observe vpn-policy-audit index.asp panel.js ping.json control.sh install.sh update-panel.sh > SHA256SUMS)
 echo "Diagnostic package built (not a firmware image): $DIAGNOSTICS_OUTPUT"

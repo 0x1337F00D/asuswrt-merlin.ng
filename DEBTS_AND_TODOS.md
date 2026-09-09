@@ -379,6 +379,22 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Wireless test-lab debt
 
+- [x] Fix connection-panel timeout/authentication confusion and add finite,
+  read-only Rust Wi-Fi correlation on the diagnostics branch. The native
+  600-round test exited automatically; no WLAN restart or NVRAM changes.
+  The moving **MacBook** (previously misidentified as a tablet) lost 44/144
+  local probes; a captured weak-signal slice stayed on 5 GHz-1 at reported
+  -87 dBm with 23 reverse-probe misses. See
+  `.github/ci/gt-ax11000/diagnostics/WIFI_STEERING_REVIEW.md` for original-source
+  comparison, blob hashes, synthetic-test limitations and release gates.
+- [ ] Repair steering under ALL without reintroducing historical bsd/roamast
+  crashes. The quarantine demonstrably suppresses configured Smart Connect;
+  the isolated original-binary test has **not reproduced the real crash**.
+  Do not remove the quarantine or replace it with an untested disconnect loop.
+- [ ] Retain a bounded whole Wi-Fi experiment in private RAM; the current
+  panel ring contains only the last 60 rounds. Distinguish failed pidof
+  capture from confirmed process absence before using service status as a gate.
+
 - [x] Retire the unmerged `codex/gt-ax11000-testlab-ui` branch at `e8ba9d2832e`.
   No code salvage: per-radio controls, the ALL restriction and the temporary
   IPv6 chain conflict with the current country-only policy. Exact contents

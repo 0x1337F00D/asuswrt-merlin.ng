@@ -31,9 +31,18 @@
 <section class="card">
 <h2>Lokale Browser-Messung</h2>
 <p class="muted">Letzte 30 Auffälligkeiten nur in diesem Tab. Ein gesperrtes Gerät oder ein Hintergrund-Tab pausiert die Messung; das zählt nicht als Netzausfall.</p>
+<p class="muted">Das HTTP-Zeitlimit beträgt 1800 ms. Ein Zeitlimit ist weder eine bestätigte Abmeldung noch der Nachweis eines WLAN- oder Internetausfalls. Für einen Vergleich am wachen Mac: <code>ping -c 30 192.168.0.1</code>. Hin- und Rückrichtung sowie Energiesparzustand können unterschiedliche Ergebnisse liefern.</p>
 <button id="clear" type="button">Lokale Ereignisse leeren</button>
 <ul id="local-events"><li>Noch keine Auffälligkeiten.</li></ul>
 </section>
+<details class="card"><summary>WLAN-Korrelation · ausgewählter Client</summary>
+<p id="wifi-state">WLAN-Korrelation nicht gestartet.</p>
+<p class="muted">Opt-in-Test für genau einen Client, höchstens 1800 Runden (bei kurzen Antworten etwa 30 Minuten; Zeitlimits verlängern die Laufzeit). Letzte 30 von maximal 60 Messrunden im RAM, kein vollständiges Verlaufsarchiv. Router → Client ist ein separater Ping: Ein schlafendes Gerät kann verzögert antworten. PS ist ein Treiberstatus, kein Beweis eines Fehlers. Die Messspanne umfasst nacheinander gelesene Werte; Bandwechsel innerhalb dieser Spanne sind nicht atomar aufgelöst. Anzeige alle 5 Sekunden.</p>
+<div class="scroll"><table><thead><tr><th>Zeit</th><th>Band</th><th>Kanal</th><th>RSSI am Router</th><th>Energiesparen</th><th>Router → Client</th><th>TX-Retries Δ</th><th>Messspanne</th></tr></thead><tbody id="wifi-points"></tbody></table></div>
+<h3>An-/Abmeldungen desselben Clients</h3>
+<p class="muted">Gefilterter Log-Ausschnitt; kann Ereignisse vor Testbeginn enthalten. Fehlende Logzeilen beweisen keinen unterbrechungsfreien Bandwechsel.</p>
+<table><tbody id="wifi-events"></tbody></table>
+</details>
 <details class="card"><summary>Was wird gemessen – und was nicht?</summary>
 <p>Drei kleine ICMP-Anfragen pro Sekunde: WAN-Gateway, 1.1.1.1 und 8.8.8.8. Sie gehen ausdrücklich über die WAN-Schnittstelle, auch wenn ein VPN eingerichtet ist. Es werden keine Nutzdaten übertragen. Der Router hält maximal 600 Messpunkte im RAM; keine Historie im Flash und keine Cloud-Telemetrie. Die öffentlichen Ziele sehen wie bei jedem Ping deine öffentliche IP.</p>
 <p>„RTT-Schwankung“ ist die mittlere absolute Differenz aufeinanderfolgender Ping-Laufzeiten, nicht der RTP-Jitter eines Telefonats. ICMP kann gefiltert oder nachrangig beantwortet werden. DNS, Paketverlust innerhalb eines VPNs und einzelne Gesprächsserver sind damit nicht geprüft.</p>

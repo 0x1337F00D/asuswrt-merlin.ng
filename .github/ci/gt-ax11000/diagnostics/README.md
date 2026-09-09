@@ -7,10 +7,12 @@ the W9 audit remains independently buildable and tested on the security branch.
 The dedicated **Connection diagnostics** push workflow tests this add-on only;
 it does not start a firmware build, contact the router or install anything.
 
-Still open: correlate a real POCO F3/Samsung tablet call interruption, confirm
-authenticated rendering on the user's device, and consider opt-in Wi-Fi/DNS
-correlation and longer bounded RAM retention. Weak-signal roaming is a
-hypothesis, not proof of a driver or WAN fault; do not auto-restart networking.
+Still open: restore reliable steering under ALL after reproducing the historical
+vendor crashes, correlate an actual POCO F3/Samsung tablet call interruption,
+and add bounded whole-test Wi-Fi retention. The user's moving MacBook test now
+correlates local packet loss with a weak 5-GHz association; this is not proof of
+a specific driver defect. See `WIFI_STEERING_REVIEW.md`. Do not auto-restart
+networking or remove the crash quarantine on the strength of a synthetic test.
 
 This is a separately installable, locally tested add-on, **not a new firmware
 image**. It leaves the upstream source, NVRAM, radio settings, routes, firewall,
@@ -64,6 +66,31 @@ with the router's `openssl dgst -sha256` (stock BusyBox has no `sha256sum`).
 Stopping uses a cooperative RAM marker, never `killall` or a network restart.
 An unexpected stale lock is intentionally not deleted without inspecting its
 owner. History disappears on reboot or collector restart.
+
+`wifi-observe --mac XX:XX:XX:XX:XX:XX --ip PRIVATE-LAN-IP --samples 600`
+adds a **finite, manually started**, one-client correlation test. It requires
+GT-AX11000, an already selected ALL profile and the verified three-radio
+mapping. ARP must identify that exact peer on br0 before probing it. It reads
+three association lists, the selected station, and a bounded, MAC-filtered
+syslog tail; no active scans, steering requests or disconnect commands exist.
+The panel shows actual process presence separately from configured Smart
+Connect. Each command has bounded output/deadline. At most 1800 rounds are
+accepted; timeouts stretch the nominal one-second interval. Only the last
+60 rounds and 30 reduced log events are retained, not a complete test archive.
+The panel displays 30 rounds and updates this optional leg every five seconds.
+To stop early, create `/tmp/link-health-wifi-runtime/stop` while its verified
+owner is running; no kill or network restart is needed. There is no autostart.
+
+`update-panel.sh` supports a static-panel and inactive-observer hot update of
+an existing installation. Supply the inspected `EXPECTED_PANEL_SHA256`,
+`EXPECTED_INDEX_SHA256`, `EXPECTED_MANIFEST_SHA256`, and, if already installed,
+`EXPECTED_OBSERVER_SHA256`. It requires matching JFFS/RAM copies and no running
+observer/lock. It retains a private `panel-before-TIMESTAMP-PID` backup and
+does not replace the WAN collector, startup hook or firmware. This is a
+compare-before-replace, per-file update, **not a directory-wide transaction**.
+To roll back the UI, inspect the backup, then restore only its panel.js and
+index.asp to both installed and RAM locations and regenerate the package
+manifest; do not overwrite the startup hook or unrelated newer add-on files.
 
 Optional first persistent installation uses `install.sh` with the previously
 inspected `EXPECTED_SERVICES_SHA256`. It refuses existing add-on/symlink targets,
@@ -144,14 +171,56 @@ live guard. Do not wire audit failure straight to a global forwarding shutdown.
   privately as `/jffs/addons/link-health.incomplete-20260909` for recovery.
   Firmware reboot-persistence itself was deliberately not retested by reboot.
 
-## Next Wi-Fi investigation
+## Wi-Fi follow-up: 2026-09-09, 13:54–14:06 CEST
 
-On this boot there were no observed WAN link-downs, kernel crashes or service
-PID changes. The affected Galaxy Tab S9 Ultra had repeated band changes and
-reassociations at roughly -85 to -87 dBm on 5 GHz. A later 2.4-GHz station
-snapshot showed about -78 dBm, retransmissions, WPA3-SAE/AES and no decrypt
-failures. This supports weak coverage/roaming as a working hypothesis, not a
-proved client/driver bug. The POCO F3 was not associated during inspection.
+Correction: the station previously called a Galaxy Tab S9 Ultra in this
+document is the user's **MacBook**, identified by the user and DHCP/ARP.
+The old device attribution must not be used as tablet-specific evidence.
+
+- Fixed UI misclassification of its own 1800-ms timeout as an authentication
+  problem. Explicit login/401/403, HTTP, invalid payload, network failure and
+  background-tab cancellation are separate states. Retained WAN values are
+  labeled as the last successful fetch after an HTTP failure.
+- Hot-deployed the panel and Rust observer with a private recovery copy at
+  `/jffs/addons/link-health/panel-before-20260909T135407-492`. The observer's
+  three-round native pilot passed, followed by 600 rounds and automatic exit
+  at approximately 14:04:36. RSS was 2048 KiB; 359 CPU ticks including child
+  commands over approximately 335 seconds imply about 1.1% of **one** core at
+  USER_HZ=100, not 1.1% of the whole machine.
+- User's Mac-to-router movement test: 144 sent, 100 replies, 44 missing
+  (30.6%), including 15 consecutive missing replies immediately after moving
+  toward the basement. The mean of received replies hides this outage.
+- Saved router-to-Mac slice: 13:55:50–13:56:52, 60 rounds. It stayed on
+  5 GHz-1/channel 64/160; RSSI fell from roughly -54 to -87 dBm. All 23 missing
+  replies occurred at reported -87 dBm; 20 had no PS flag. Smoothed RSSI may
+  remain stale during loss; it is not a fresh per-packet RF measurement.
+  This is a different direction/window from the user's 144 probes.
+- Saved later slice: 13:59:11–14:00:10, RSSI -60 to -56 dBm, all 60 replies,
+  maximum 2.713 ms. No band change was captured. WAN's simultaneous 600-round
+  window had zero gateway/Cloudflare misses and two isolated Google misses,
+  not a simultaneous upstream blackout.
+- Anonymous wifi.json requests still return the router login redirect. The
+  startup-hook hash remains `5cad1274664f82abe443a13dd180e876de5d7646c1aedd7235634f711fe4f54b`;
+  httpd/WAN-collector PIDs remained 1362/25987. ALL, Smart Connect configuration,
+  disabled roamast, channels, NVRAM and network services were not changed.
+- A final static correction at 14:12:25 recognizes a full-sized login redirect
+  even on the tiny ping endpoint and describes the finite test as rounds, not
+  a guaranteed wall-clock duration. Recovery copy:
+  `/jffs/addons/link-health/panel-before-20260909T141225-6402`. Verified installed
+  and RAM panel hash `4d56bb0d0b0265ae886854c6ae298afe6b154ab402a9f6ea9eb907113e142dc8`,
+  index hash `2b2732aba6c8c7332bd1bbde51233715b39d18ebf1bf8e6201d3e635715d9ce4`.
+  The observer stayed stopped and byte-identical. A first-install manifest
+  consistency correction is source-only; the existing installer/startup hook
+  on the router was not replaced or rerun.
+- 19 panel tests, 13 Rust tests, fmt/clippy and a real Chromium fixture render
+  passed. ARM binaries were built entirely in RAM. A fixture browser test is
+  not a live, authenticated browser test on the MacBook.
+- Only two intermediate 60-round snapshots plus the final snapshot were
+  retrieved. No claim is made to a preserved 600-round RF trace or precise
+  packet-by-packet alignment with the user's timestamp-free ping transcript.
+
+The ALL-specific bsd/roamast quarantine remains unchanged and still needs an
+actual fix. The new panel/observer do **not** repair coverage or band steering.
 
 Correlate an actual call glitch with the two measurement legs first. A
 controlled 80-MHz/non-DFS test on 5 GHz-1 and comparison near the router are
