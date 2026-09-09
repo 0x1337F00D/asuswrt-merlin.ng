@@ -8,6 +8,7 @@ members = [
     "router-security",
     "router-fuzz",
     "router-vpn-audit",
+    "router-diagnostics",
     "rstats",
     "wanduck-transition",
 ]
