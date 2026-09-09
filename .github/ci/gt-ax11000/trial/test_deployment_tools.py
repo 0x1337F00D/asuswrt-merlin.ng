@@ -1,5 +1,6 @@
 """Host-only tests. No real router commands, keys or settings are used."""
 import io
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -37,6 +38,76 @@ class GuardTests(unittest.TestCase):
                 render((ROOT / "router-persistent-guard.sh").read_text(),
                        candidate=2, web_hash="b" * 64, links_hash="c" * 64,
                        binaries=hashes)
+
+    def identity_fixture(self, slot, *, corrupt=None, old_bracket_bug=False):
+        # Execute the actual identity predicate, not the dispatch's mock.
+        # Only router paths/NVRAM/bootstate are redirected to synthetic data;
+        # test/[ ], grep, awk, and OpenSSL really execute under POSIX sh.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {
+                "www/Advanced_WAdvanced_Content.asp":
+                    b'id="regulatory_lab_country" regulatory_lab_store_acknowledgement',
+                "www/EN.dict": b"English dictionary fixture",
+                "www/DE.dict": b"German dictionary fixture",
+                "usr/share/codex/web-payload.sha256": b"payload fixture",
+                "usr/share/codex/web-symlinks.manifest": b"links fixture",
+                "usr/sbin/httpd": b"rust_regulatory_testlab_ack_v1",
+                "sbin/rc": b"rc fixture", "usr/lib/libshared.so": b"shared fixture",
+                "usr/sbin/wget": b"wget fixture",
+            }
+            for name, data in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            def digest(name):
+                return hashlib.sha256(files[name]).hexdigest()
+            text = render((ROOT / "router-persistent-guard.sh").read_text(),
+                          candidate=slot,
+                          web_hash=digest("usr/share/codex/web-payload.sha256"),
+                          links_hash=digest("usr/share/codex/web-symlinks.manifest"),
+                          binaries={name: digest(path) for name, path in {
+                              "HTTPD": "usr/sbin/httpd", "RC": "sbin/rc",
+                              "SHARED": "usr/lib/libshared.so", "WGET": "usr/sbin/wget"}.items()})
+            text = text.split('case "${1:-}" in', 1)[0]
+            if old_bracket_bug:
+                text = text.replace('= "$EXPECTED_WGET_SHA256" ]',
+                                    '= "$EXPECTED_WGET_SHA256"')
+            for name in sorted(files, key=len, reverse=True):
+                text = text.replace("/" + name, str(root / name))
+            text = text.replace("/usr/sbin/openssl", "/usr/bin/openssl")
+            text = text.replace("/bin/bcm_bootstate", "fixture_bootstate")
+            label = "First" if slot == 1 else "Second"
+            text += f'''
+nvram() {{
+    case "$2" in
+        productid) echo GT-AX11000;; firmver) echo 3.0.0.6;;
+        buildno) echo 102.9;; extendno) echo alpha1;; *) return 1;;
+    esac
+}}
+fixture_bootstate() {{ echo 'Booted Partition: {label}'; }}
+is_candidate_identity
+'''
+            if corrupt:
+                (root / corrupt).write_bytes(b"tampered")
+            return subprocess.run(["sh", "-s"], input=text, text=True,
+                                  capture_output=True, timeout=5)
+
+    def test_real_identity_predicate_accepts_both_slots(self):
+        for slot in (1, 2):
+            with self.subTest(slot=slot):
+                result = self.identity_fixture(slot)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_real_identity_rejects_tampered_binaries(self):
+        for path in ("usr/sbin/httpd", "sbin/rc", "usr/lib/libshared.so", "usr/sbin/wget"):
+            with self.subTest(path=path):
+                self.assertNotEqual(self.identity_fixture(2, corrupt=path).returncode, 0)
+
+    def test_old_missing_bracket_fails_at_runtime(self):
+        result = self.identity_fixture(2, old_bracket_bug=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing ]", result.stderr)
 
     def run_guard(self, slot, action, *, identity=True, healthy=True, hold=False):
         with tempfile.TemporaryDirectory() as directory:

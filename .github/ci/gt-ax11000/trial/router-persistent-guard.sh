@@ -101,7 +101,7 @@ is_candidate_identity() {
 	[ "$(/usr/sbin/openssl dgst -sha256 /usr/sbin/httpd 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_HTTPD_SHA256" ] &&
 	[ "$(/usr/sbin/openssl dgst -sha256 /sbin/rc 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_RC_SHA256" ] &&
 	[ "$(/usr/sbin/openssl dgst -sha256 /usr/lib/libshared.so 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_SHARED_SHA256" ] &&
-	[ "$(/usr/sbin/openssl dgst -sha256 /usr/sbin/wget 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_WGET_SHA256"
+	[ "$(/usr/sbin/openssl dgst -sha256 /usr/sbin/wget 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_WGET_SHA256" ]
 }
 
 is_candidate() {
