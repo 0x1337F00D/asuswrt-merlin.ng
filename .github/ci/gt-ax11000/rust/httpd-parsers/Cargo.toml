@@ -10,4 +10,5 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+clientlist = { path = "../clientlist" }
 router-policy = { path = "../router-policy" }

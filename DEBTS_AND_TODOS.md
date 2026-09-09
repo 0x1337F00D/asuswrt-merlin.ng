@@ -477,15 +477,47 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `crc32_combine_gen*`/`crc32_combine_op` are exported by zlib-rs but were not
   visible in the host archive and need a link check. `libbz2` is deferred: no
   dynamic user was found in the examined rootfs.
-- [ ] Port the client list completely to Rust (size- and layout-checked
+- [x] Port the client list completely to Rust (size- and layout-checked
   shared-memory snapshot, own data model, bounded JSON string; no
-  `json_object*` across the boundary; `serde_json` only for output). The
-  2026-09-09 map of the data path lists the legacy 174,964-byte GT-AX11000
-  layout, the public 173,436-byte layout that diverges after `os_type`, the
-  unterminated fixed-width fields, the unused `commit_no`, the
-  `shmget(IPC_CREAT)` size race and the remaining json-c ownership defects in
-  `get_client_detail_info`, `ej_get_all_basic_clientlist` and
-  `get_basic_clientlist_info`.
+  `json_object*` across the boundary; `serde_json` only for output).
+  `rust/clientlist` decodes the legacy 174,964-byte GT-AX11000 layout only
+  for `productid` `GT-AX11000` and the public 173,436-byte layout only at
+  exactly that size (anything else fails closed), takes the vendor
+  `file_lock("networkmap")`, attaches the existing segment read-only without
+  the `IPC_CREAT` size race, copies it, reads every string inside its field
+  width, clamps the count to 0..=255 and renders the live list, the
+  `/tmp/nmp_cache.js` read/write, the name-for-IP lookup, the SDN count,
+  the persistent-database view, the basic/all-basic lists and the name
+  search; `clientlist-rust.patch` replaces the nine json-c readers in
+  `web.c` with bounded-buffer calls into the single httpd Rust archive.
+  Evidence on 2026-09-09, host only: 42 unit tests, 8 golden documents
+  derived by hand from `web.c`, a SysV-segment FFI test, the C11 fixture
+  `tests/c-abi/clientlist.c` against a real segment, the fuzz smoke with the
+  new parsers, Clippy with warnings denied, the ARMv7 check, an armv7
+  `libhttpd_parsers.a` linked into the fixture with the Broadcom gcc 5.5
+  toolchain (link only), a full 23-patch replay re-locked to
+  `965f35b2733c928f362bea650b83c06e79e9c257e79e41c08fbea60b3ac69b71` and the
+  three overlay checks. No firmware build, hosted run or hardware test has
+  exercised the Rust client list yet.
+- [ ] Prove the Rust client list on a hosted build and on hardware: `httpd`
+  must compile and link the changed `web.c` against the archive, the legacy
+  and dashboard client pages must render a non-empty `maclist`, the cache
+  and database views, `get_client_name()` in the login-lock and port-forward
+  reports and the `INTERNETCTRL` report state must be exercised, and the
+  per-request 1 MiB buffer and the copy of the 175 KiB segment need a
+  memory/CPU measurement under a full 255-client table.
+- [ ] Remaining client-list C: `ej_get_clientlist_reportstate` keeps its
+  json-c shape and parses the Rust text locally; `search_device_name_in_
+  clientlist` fills the caller's json-c array; `get_amas_info`/`is_re_node`
+  (cfg_mnt shared memory) stay in C and reach Rust as a text list and a
+  callback; `do_del_client_data_cgi`/`deleteOfflineClient` still edit
+  `/jffs/nmp_cl_json.js` with json-c and write `delete_mac` through the C
+  trailer helper; `miniupnpc/upnpc.c` (`RTCONFIG_JFFS2USERICON`, not built)
+  still reads the public layout. Documented deltas: compact JSON instead of
+  json-c's spaced output, `/` unescaped, the non-AiMesh build variant
+  (`FLAG_EXIST` filter), the VLAN/captive-portal segments and the
+  `RTCONFIG_DISABLE_NETWORKMAP` gate are not modelled because the GT-AX11000
+  profile does not compile them.
 - [ ] Then `httparse` for the HTTP request line/header boundary and
   `rustls-ffi` for HTTPS; the latter needs a crypto-backend decision (the
   default is `aws-lc-rs`) and ARM build, ABI and consumer tests before use.
@@ -507,7 +539,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   malformed hook responses and individual stale Network Map records without
   discarding every valid client. Fix the JSON-C ownership error which could
   double-free a never-online custom client in
-  `get_clientlist_from_json_database()`.
+  `get_clientlist_from_json_database()`. Superseded on 2026-09-09: that
+  handler, the borrowed-object `json_object_put` in
+  `get_client_detail_info` and the array/name ownership defects in
+  `ej_get_all_basic_clientlist`/`get_basic_clientlist_info` are gone with
+  the Rust client list (`clientlist-rust.patch`).
 - [x] Fix the actually shipped legacy client page and HTTP backend as well as
   the optional dashboard module. Empty or structurally incomplete
   `/tmp/nmp_cache.js` snapshots no longer override live Network Map data;
@@ -522,7 +558,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   both model and segment size match. The compatibility view restores the real
   online, radio, type, rate, RSSI and timing offsets while newer/public layouts
   continue through their normal structure; a compile-time size assertion and
-  security-overlay checks prevent silent drift.
+  security-overlay checks prevent silent drift. Since 2026-09-09 the reader
+  is `rust/clientlist/src/layout.rs` (const-asserted sizes and offsets of
+  both layouts, strict selection, fail-closed otherwise) and the overlay
+  checks assert on the Rust source; only the `delete_mac` trailer helper
+  remains in `web.c`.
 - [x] Hardware-check that the legacy client page receives a non-empty
   `maclist`, preserves wired/wireless classification and does not restart
   `httpd` or `networkmap` during repeated refreshes.
@@ -561,7 +601,9 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `asusdiscovery`, and `find_cap` remain vendor binaries. The retained
   `usr/networkmap/nmp_bwdpi_type.js` is a 2.4-KiB static JSON keyword-to-device-
   type mapping, not executable DPI code; rename or replace it during a future
-  Rust Network Map port.
+  Rust Network Map port. The httpd side of the Network Map (every client-list
+  reader of the shared-memory table and of `/jffs/nmp_cl_json.js`) is Rust
+  since 2026-09-09; the producer daemon itself is still the vendor binary.
 
 ## Build and CI debt
 

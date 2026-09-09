@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "bwdpi-compat",
+    "clientlist",
     "httpd-parsers",
     "infosvr",
     "nt-event",

@@ -55,6 +55,7 @@ target_mak="$root/release/src-rt/target.mak"
 src_rt_makefile="$root/release/src-rt/Makefile"
 local_traffic="$router/httpd/local_traffic.c"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
+clientlist_rust="$router/rust-components/clientlist/src"
 security_rust="$router/rust-components/router-security/src/lib.rs"
 policy_rust="$router/rust-components/router-policy/src/vpn.rs"
 qos_policy_rust="$router/rust-components/router-policy/src/qos.rs"
@@ -79,6 +80,10 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
 	"$networkmap_makefile" "$bwdpi_compat" \
 	"$router_makefile" "$cargo_config" "$zlib_static" "$zlib_static_manifest" \
+	"$clientlist_rust/lib.rs" "$clientlist_rust/layout.rs" \
+	"$clientlist_rust/snapshot.rs" "$clientlist_rust/shm.rs" \
+	"$clientlist_rust/render.rs" "$clientlist_rust/cache.rs" \
+	"$clientlist_rust/ffi.rs" \
 	"$wifi_base/hostapd/src/common/sae.c" \
 	"$wifi_base/hostapd/src/radius/radius.c" \
 	"$wifi_base/hostapd/src/rsn_supp/wpa.c" \
@@ -130,26 +135,57 @@ require_text "$clientlist_ui" 'if (Array.isArray(fromNetworkmapd.maclist)) {'
 require_text "$clientlist_ui" 'Client icons unavailable; continuing without them'
 require_text "$clientlist_shipped" 'Array.isArray(originData.fromNetworkmapd[0].maclist)'
 require_text "$clientlist_shipped" 'httpApi.hookGet("get_clientlist") || {maclist: []}'
-require_text "$web" 'json_object_array_length(cached_maclist) > 0'
-require_text "$web" 'json_object_object_add(*clients, "maclist", macArray);'
-require_text "$web" 'json_object_is_type(val, json_type_object)'
-require_text "$web" 'json_object_object_add() transferred ownership of never-online clients'
-reject_text "$web" 'json_object_put(new_never_online_client);'
+# The Web UI client list is rendered by the Rust clientlist crate from a
+# locked, size- and layout-checked copy of the networkmap segment: the
+# 174,964-byte legacy view only for productid GT-AX11000, the 173,436-byte
+# public view otherwise, anything else fails closed; the trailer is read from
+# the segment end and the count is clamped to 0..=255.  C keeps the process
+# gates, the wireless offline flag and the delete_mac trailer write; no
+# json_object crosses the boundary and the json-c readers are gone.
+require_text "$web" '#define CLIENTLIST_JSON_CAPACITY (1024 * 1024)'
+require_text "$web" 'rust_httpd_clientlist_render(&inputs, buffer, capacity)'
+require_text "$web" 'rust_httpd_clientlist_cache_read(NMP_CACHE_FILE, buffer, CLIENTLIST_JSON_CAPACITY)'
+require_text "$web" 'rust_httpd_clientlist_cache_write(NMP_CACHE_FILE, buffer, (size_t)length)'
+require_text "$web" 'rust_httpd_clientlist_database_render(&inputs, buffer, CLIENTLIST_JSON_CAPACITY)'
+require_text "$web" 'rust_httpd_clientlist_name_for_ip(buffer, (size_t)length, ipaddr, name, name_len)'
+require_text "$web" 'rust_httpd_clientlist_basic_render(&inputs, alive, NMP_CL_JSON_FILE, opt,'
+require_text "$web" 'rust_httpd_clientlist_all_basic_render(NMP_CL_JSON_FILE, custom_clientlist,'
+require_text "$web" 'rust_httpd_clientlist_search_name(NMP_CL_JSON_FILE, custom_clientlist, name,'
+require_text "$web" 'nvram_set("nmp_wl_offline_check", "1");'
+require_text "$web" 'if(!pids("networkmap")){'
 require_text "$web" 'NETWORKMAP_SHM_TAIL'
 require_text "$web" 'shm_info.shm_segsz - sizeof(NETWORKMAP_SHM_TAIL)'
-require_text "$web" 'networkmap_shm_client_count(shared_client_info,'
-require_text "$web" 'count >= 0 && count <= MAX_NR_CLIENT_LIST'
 require_text "$web" 'networkmap_shm_set_delete_mac(shared_client_info, shm_client_info_id,'
-require_text "$web" 'GT_AX11000_NETWORKMAP_TABLE'
-require_text "$web" 'sizeof(GT_AX11000_NETWORKMAP_TABLE) == 174964'
-require_text "$web" 'strcmp(nvram_safe_get("productid"), "GT-AX11000")'
-require_text "$web" 'NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, online, i)'
-require_text "$web" 'NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, wireless, i)'
-require_text "$web" 'gt_ax11000_client_info_tab ? "" : p_client_info_tab->wireless_auth[i]'
-reject_text "$web" 'snprintf(online, sizeof(online), "%d", p_client_info_tab->online[i])'
-reject_text "$web" 'snprintf(wireless, sizeof(wireless), "%d", p_client_info_tab->wireless[i])'
+reject_text "$web" 'get_client_detail_info(struct json_object'
+reject_text "$web" 'get_client_detail_info(clients'
+reject_text "$web" 'get_client_detail_info(*clients'
+reject_text "$web" 'GT_AX11000_NETWORKMAP_TABLE'
+reject_text "$web" 'check_macrepeat('
+reject_text "$web" 'get_amas_re_client_detail_info('
+reject_text "$web" 'json_object_from_file(NMP_CACHE_FILE)'
+reject_text "$web" 'json_object_to_file(NMP_CACHE_FILE'
+reject_text "$web" 'shmget((key_t)shmkey, sizeof(CLIENT_DETAIL_INFO_TABLE), 0666|IPC_CREAT)'
 reject_text "$web" 'for(i = 0; i < p_client_info_tab->ip_mac_num; i++)'
 reject_text "$web" 'strlcpy(p_client_info_tab->delete_mac, mac_str'
+reject_text "$web" 'json_object_put(new_never_online_client);'
+require_text "$clientlist_rust/lib.rs" '#![forbid(unsafe_op_in_unsafe_fn)]'
+require_text "$clientlist_rust/layout.rs" 'pub const LEGACY_TABLE_SIZE: usize = 174_964;'
+require_text "$clientlist_rust/layout.rs" 'pub const PUBLIC_TABLE_SIZE: usize = 173_436;'
+require_text "$clientlist_rust/layout.rs" 'pub const LEGACY_PRODUCT_ID: &str = "GT-AX11000";'
+require_text "$clientlist_rust/layout.rs" 'const _: () = assert!(size_of::<LegacyTable>() == LEGACY_TABLE_SIZE);'
+require_text "$clientlist_rust/layout.rs" 'const _: () = assert!(size_of::<PublicTable>() == PUBLIC_TABLE_SIZE);'
+require_text "$clientlist_rust/layout.rs" 'if product_id == LEGACY_PRODUCT_ID && segment_size == LEGACY_TABLE_SIZE {'
+require_text "$clientlist_rust/layout.rs" 'Err(UnsupportedLayout { segment_size })'
+require_text "$clientlist_rust/snapshot.rs" '(reported as usize).min(MAX_NR_CLIENT_LIST)'
+require_text "$clientlist_rust/snapshot.rs" 'let tail = &segment[segment.len() - TAIL_SIZE..];'
+require_text "$clientlist_rust/shm.rs" 'libc::shmget(key, 0, 0)'
+require_text "$clientlist_rust/shm.rs" 'libc::shmat(id, std::ptr::null(), libc::SHM_RDONLY)'
+require_text "$clientlist_rust/shm.rs" 'libc::fcntl(file.as_raw_fd(), libc::F_SETLKW, &lock)'
+reject_text "$clientlist_rust/shm.rs" 'IPC_CREAT'
+require_text "$clientlist_rust/render.rs" 'pub const MAX_OUTPUT: usize = 1024 * 1024;'
+require_text "$clientlist_rust/cache.rs" '.is_some_and(|maclist| !maclist.is_empty())'
+require_text "$clientlist_rust/ffi.rs" 'pub unsafe extern "C" fn rust_httpd_clientlist_render('
+require_text "$httpd_rust" 'pub use clientlist::ffi as clientlist_ffi;'
 require_text "$qos_ui" 'const qos_type = (_nvram.qos_type == "2") ? "2" : "0";'
 require_text "$qos_ui" 'if (value !== "0" && value !== "2")'
 require_text "$qos_ui" 'style="display:none;" type="radio" disabled'

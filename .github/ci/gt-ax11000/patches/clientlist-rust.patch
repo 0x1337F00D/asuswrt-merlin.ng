@@ -1,0 +1,1865 @@
+diff --git a/release/src/router/httpd/web.c b/release/src/router/httpd/web.c
+--- a/release/src/router/httpd/web.c
++++ b/release/src/router/httpd/web.c
+@@ -622,7 +622,7 @@
+ #endif	/* RTCONFIG_AMAS_CAP_CONFIG */
+ #endif	/* RTCONFIG_AMAS_CENTRAL_CONTROL */
+ #endif
+-static int get_clientlist_ex(struct json_object **clients);
++static int get_clientlist_ex(char *buffer, size_t capacity);
+ 
+ #define FB_FILE_WEB "/tmp/xdslissuestracking_web"
+ 
+@@ -642,7 +642,7 @@
+ #define AVLBL_BW160 8
+ #define AVLBL_BW320 16
+ 
+-static int get_client_detail_info(struct json_object *clients, struct json_object *macArray, key_t shmkey);
++static int networkmap_render_clientlist(char *buffer, size_t capacity);
+ static int get_custom_clientlist_info(struct json_object *json_object_ptr);
+ static int get_client_name(char *ipaddr, char *name, size_t name_len);
+ #define CLIENTAPILEVEL "7"
+@@ -1953,170 +1953,233 @@
+ 	return ret;
+ }
+ 
+-static int
+-ej_get_clientlist_from_json_database(int eid, webs_t wp, int argc, char_t **argv)
+-{
+-	struct json_object *clients;
+-	struct json_object *macArray = json_object_new_array();
+-	int ret;
+-
+-	struct json_object *customList = NULL, *custom_attr_get = NULL, *custom_client_type = NULL, *custom_client_name = NULL;
+-	struct json_object *db_specific_client = NULL, *db_specific_client_defaultType = NULL, *db_specific_client_online = NULL;
+-#ifdef RTCONFIG_MULTILAN_CFG
+-	struct json_object *db_specific_client_sdn_idx = NULL, *db_specific_client_sdn_type = NULL;
+-#endif
+-	struct json_object *never_online_client = NULL, *new_never_online_client = NULL, *new_never_online_client_type = NULL, *new_never_online_client_name = NULL;
+-	int customList_status = 0;
+-#ifdef RTCONFIG_AMAS
+-	struct json_object *amasList = NULL, *amas_attr_get = NULL;;
+-	int amasList_status = 0;
+-	//get amas cap re info
+-	amasList = json_object_new_object();
+-	amasList_status = get_amas_info(amasList);
+-#ifdef RTCONFIG_STA_AP_BAND_BIND
+-	char node_mac[32]={0};
+-	char band_index[4]={0};
+-#endif
+-#endif
+-
+-	clients = json_object_from_file(NMP_CL_JSON_FILE);
+-
+-	/* return fake json data to avoid js error */
+-	if(!clients) {
+-		clients = json_object_new_object();
+-		json_object_object_add(clients, "maclist", macArray);
+-		json_object_object_add(clients, "ClientAPILevel", json_object_new_string(CLIENTAPILEVEL));
+-		ret = websWrite(wp, "%s", json_object_to_json_string(clients));
++/*
++ * Client list boundary to the Rust `clientlist` crate, linked through the
++ * single httpd Rust archive (rust-components/httpd-parsers).  The layout
++ * checked shared-memory snapshot, the NVRAM list parsers, the persistent
++ * database transform and the JSON rendering live in Rust.  C only gathers
++ * NVRAM inputs, keeps the process gates and writes the finished text into
++ * a bounded buffer.  No json_object crosses this boundary in either
++ * direction.
++ */
++#define CLIENTLIST_JSON_CAPACITY (1024 * 1024)
++#define CLIENTLIST_AMAS_NODE_TYPES_CAPACITY 2048
+ 
+-		json_object_put(clients);
++struct rust_httpd_clientlist_inputs {
++	int shm_key;
++	const char *productid;
++	const char *lan_ipaddr;
++	const char *login_ip_str;
++	const char *rog_clientlist;
++	const char *custom_clientlist;
++	const char *qos_rulelist;
++	const char *wtf_rulelist;
++	int multifilter_all;
++	const char *multifilter_mac;
++	const char *multifilter_enable;
++	const char *multifilter_daytime;
++	int amas_support;
++	const char *amas_client_list_path;
++	const char *lock_dir;
++	int (*is_re_node)(const char *mac);
++};
+ 
+-		return ret;
+-	}
++struct rust_httpd_clientlist_db_inputs {
++	const char *db_path;
++	const char *rog_clientlist;
++	const char *custom_clientlist;
++	const char *amas_node_types;
++	int (*is_re_node)(const char *mac);
++};
+ 
+-	//get custom_clientlist
+-	customList = json_object_new_object();
+-	customList_status = get_custom_clientlist_info(customList);
++extern int rust_httpd_clientlist_render(
++	const struct rust_httpd_clientlist_inputs *inputs, char *buffer,
++	size_t capacity);
++extern int rust_httpd_clientlist_cache_write(const char *path,
++	const char *json, size_t length);
++extern int rust_httpd_clientlist_cache_read(const char *path, char *buffer,
++	size_t capacity);
++extern int rust_httpd_clientlist_name_for_ip(const char *json, size_t length,
++	const char *ip, char *name, size_t name_capacity);
++extern int rust_httpd_clientlist_sdn_client_count(const char *json,
++	size_t length, int *counts, size_t count_capacity);
++extern int rust_httpd_clientlist_database_render(
++	const struct rust_httpd_clientlist_db_inputs *inputs, char *buffer,
++	size_t capacity);
++extern int rust_httpd_clientlist_all_basic_render(const char *db_path,
++	const char *custom_clientlist, char *buffer, size_t capacity);
++extern int rust_httpd_clientlist_basic_render(
++	const struct rust_httpd_clientlist_inputs *inputs, int networkmap_alive,
++	const char *db_path, int opt, char *buffer, size_t capacity);
++extern int rust_httpd_clientlist_search_name(const char *db_path,
++	const char *custom_clientlist, const char *name, char *buffer,
++	size_t capacity);
++
++/* NVRAM values are duplicated so every pointer handed to Rust stays valid
++ * for the whole call regardless of later nvram_get() activity. */
++struct clientlist_nvram {
++	char *productid;
++	char *lan_ipaddr;
++	char *login_ip_str;
++	char *rog_clientlist;
++	char *custom_clientlist;
++	char *qos_rulelist;
++	char *wtf_rulelist;
++	char *multifilter_mac;
++	char *multifilter_enable;
++	char *multifilter_daytime;
++};
+ 
+-	json_object_object_foreach(clients, key, val) {
+ #ifdef RTCONFIG_AMAS
+-		if (is_re_node(key, 1))
+-			continue;
++static int clientlist_is_re_node(const char *mac)
++{
++	return is_re_node((char *)mac, 1);
++}
+ #endif
+-		json_object_get_string(val);
+-		json_object_array_add(macArray, json_object_new_string(key));
+ 
+-		json_object_object_get_ex(clients, key, &db_specific_client);
+-		//create nickName and defaultType
+-		json_object_object_add(db_specific_client, "nickName", json_object_new_string(""));
+-		json_object_object_add(db_specific_client, "defaultType", json_object_new_string("0"));
+-		//update database type to defaultType
+-		if(json_object_object_get_ex(db_specific_client, "type", &db_specific_client_defaultType)) {
+-			json_object_object_add(db_specific_client, "defaultType", json_object_new_string(json_object_get_string(db_specific_client_defaultType)));
+-			json_object_object_add(db_specific_client, "type", json_object_new_string(json_object_get_string(db_specific_client_defaultType)));//transform int to string
+-		}
+-#ifdef RTCONFIG_MULTILAN_CFG
+-		if(json_object_object_get_ex(db_specific_client, "sdn_idx", &db_specific_client_sdn_idx)) {
+-			json_object_object_add(db_specific_client, "sdn_idx", json_object_new_string(json_object_get_string(db_specific_client_sdn_idx)));
+-		}
+-		if(json_object_object_get_ex(db_specific_client, "sdn_type", &db_specific_client_sdn_type)) {
+-			json_object_object_add(db_specific_client, "sdn_type", json_object_new_string(json_object_get_string(db_specific_client_sdn_type)));
+-		}
+-#endif
+-		if(json_object_object_get_ex(db_specific_client, "online", &db_specific_client_online)) {
+-			json_object_object_add(db_specific_client, "online", json_object_new_string(json_object_get_string(db_specific_client_online)));
+-		}
+-#ifdef RTCONFIG_MLO
+-		if(json_object_object_get_ex(db_specific_client, "mlo", &db_specific_client_online)) {
+-			if (json_object_is_type(db_specific_client_online, json_type_int)) {
+-				char mlo_str[5];
+-				snprintf(mlo_str, sizeof(mlo_str), "%d", json_object_get_int(db_specific_client_online));
+-				json_object_object_add(db_specific_client, "mlo", json_object_new_string(mlo_str));
+-			} else {
+-				json_object_object_add(db_specific_client, "mlo", json_object_new_string(json_object_get_string(db_specific_client_online)));
+-			}
+-		}
++static void clientlist_nvram_free(struct clientlist_nvram *values)
++{
++	free(values->productid);
++	free(values->lan_ipaddr);
++	free(values->login_ip_str);
++	free(values->rog_clientlist);
++	free(values->custom_clientlist);
++	free(values->qos_rulelist);
++	free(values->wtf_rulelist);
++	free(values->multifilter_mac);
++	free(values->multifilter_enable);
++	free(values->multifilter_daytime);
++	memset(values, 0, sizeof(*values));
++}
++
++/* A NULL string (strdup failure) is read as empty by Rust, exactly like
++ * nvram_safe_get(); the result is then a list without that override. */
++static void clientlist_live_inputs(struct rust_httpd_clientlist_inputs *inputs,
++	struct clientlist_nvram *values)
++{
++	memset(inputs, 0, sizeof(*inputs));
++	memset(values, 0, sizeof(*values));
++	values->productid = strdup(nvram_safe_get("productid"));
++	values->lan_ipaddr = strdup(nvram_safe_get("lan_ipaddr"));
++	values->login_ip_str = strdup(nvram_safe_get("login_ip_str"));
++	values->rog_clientlist = strdup(nvram_safe_get("rog_clientlist"));
++	values->custom_clientlist = strdup(nvram_safe_get("custom_clientlist"));
++	values->qos_rulelist = strdup(nvram_safe_get("qos_rulelist"));
++	values->wtf_rulelist = strdup(nvram_safe_get("wtf_rulelist"));
++	values->multifilter_mac = strdup(nvram_safe_get("MULTIFILTER_MAC"));
++	values->multifilter_enable = strdup(nvram_safe_get("MULTIFILTER_ENABLE"));
++	values->multifilter_daytime = strdup(nvram_safe_get("MULTIFILTER_MACFILTER_DAYTIME"));
++
++	inputs->shm_key = SHMKEY_LAN;
++	inputs->productid = values->productid;
++	inputs->lan_ipaddr = values->lan_ipaddr;
++	inputs->login_ip_str = values->login_ip_str;
++	inputs->rog_clientlist = values->rog_clientlist;
++	inputs->custom_clientlist = values->custom_clientlist;
++	inputs->qos_rulelist = values->qos_rulelist;
++	inputs->wtf_rulelist = values->wtf_rulelist;
++	inputs->multifilter_all = nvram_get_int("MULTIFILTER_ALL");
++	inputs->multifilter_mac = values->multifilter_mac;
++	inputs->multifilter_enable = values->multifilter_enable;
++	inputs->multifilter_daytime = values->multifilter_daytime;
++#ifdef RTCONFIG_AMAS
++	inputs->amas_support = is_amas_support();
++	inputs->amas_client_list_path = CLIENT_LIST_JSON_PATH;
++	inputs->is_re_node = clientlist_is_re_node;
+ #endif
+-		json_object_object_add(db_specific_client, "from", json_object_new_string("nmpClient"));
++	/* NULL selects the vendor lock directory /var/lock. */
++	inputs->lock_dir = NULL;
++}
+ 
+-		//check rog clientlist
+-		if (strstr(nvram_safe_get("rog_clientlist"), key)) {
+-			json_object_object_add(db_specific_client, "ROG", json_object_new_string("1"));
+-			json_object_object_add(db_specific_client, "type", json_object_new_string("36"));
+-			json_object_object_add(db_specific_client, "defaultType", json_object_new_string("36"));
+-		}
+-		else
+-			json_object_object_add(db_specific_client, "ROG", json_object_new_string("0"));
++/*
++ * Live client list with the side effect of the former
++ * get_client_detail_info(): the wireless offline check flag is raised and the
++ * complete document (clients, maclist, ClientAPILevel) is rendered from a
++ * locked, size- and layout-checked copy of the networkmap segment.  Returns
++ * the document length or -1 when the segment is absent or not decodable; the
++ * callers then report the empty document and never write the cache.
++ */
++static int networkmap_render_clientlist(char *buffer, size_t capacity)
++{
++	struct rust_httpd_clientlist_inputs inputs;
++	struct clientlist_nvram values;
++	int length;
+ 
+-		if(customList_status) {
+-			json_object_object_get_ex(customList, key, &custom_attr_get);
+-			if(custom_attr_get != NULL) {
+-				//update custom_clientlist type and nickName
+-				if(json_object_object_get_ex(custom_attr_get, "type", &custom_client_type))
+-					json_object_object_add(db_specific_client, "type", json_object_new_string(json_object_get_string(custom_client_type)));
+-				if(json_object_object_get_ex(custom_attr_get, "name", &custom_client_name))
+-					json_object_object_add(db_specific_client, "nickName", json_object_new_string(json_object_get_string(custom_client_name)));
+-			}
+-		}
+-#ifdef RTCONFIG_AMAS
+-		// json_object_object_add(db_specific_client, "amesh_isRe", json_object_new_string("0"));
+-		if(amasList_status) {
+-			json_object_object_get_ex(amasList, key, &amas_attr_get);
+-			if(amas_attr_get != NULL) {
+-				struct json_object *amas_get_type = NULL;
+-				if(json_object_object_get_ex(amas_attr_get, "type", &amas_get_type))
+-					json_object_object_add(db_specific_client, "amesh_isRe", json_object_new_string(!(strcmp(json_object_get_string(amas_get_type), "RE")) ? "1" : "0"));
+-			}
+-		}
+-		json_object_object_add(db_specific_client, "amesh_bind_mac", json_object_new_string(""));
+-		json_object_object_add(db_specific_client, "amesh_bind_band", json_object_new_string("0"));
+-#ifdef RTCONFIG_STA_AP_BAND_BIND
+-		if (get_client_bind_info(key, node_mac, sizeof(node_mac), band_index, sizeof(band_index)) == 1) {
+-			json_object_object_add(db_specific_client, "amesh_bind_mac", json_object_new_string(node_mac));
+-			json_object_object_add(db_specific_client, "amesh_bind_band", json_object_new_string(band_index));
+-		}
+-#endif
+-#endif
++	clientlist_live_inputs(&inputs, &values);
++	// set check wireless offline
++	nvram_set("nmp_wl_offline_check", "1");
++	length = rust_httpd_clientlist_render(&inputs, buffer, capacity);
++	clientlist_nvram_free(&values);
++	if(length < 0){
++		_dprintf("clientlist: networkmap snapshot rejected (%d)\n", length);
++		return -1;
+ 	}
++	return length;
++}
+ 
+-	//add nerver online client
+-	if(customList_status) {
+-		json_object_object_foreach(customList, key, val) {
+-			json_object_object_get_ex(clients, key, &never_online_client);
+-			if(never_online_client == NULL) {
+-				json_object_array_add(macArray, json_object_new_string(key));
+-
+-				new_never_online_client = json_object_new_object();
+-				json_object_object_add(new_never_online_client, "type", json_object_new_string("0"));
+-				json_object_object_add(new_never_online_client, "mac", json_object_new_string(key));
+-				json_object_object_add(new_never_online_client, "name", json_object_new_string(key));
+-				json_object_object_add(new_never_online_client, "vendor", json_object_new_string(""));
+-				json_object_object_add(new_never_online_client, "nickName", json_object_new_string(""));
+-				json_object_object_add(new_never_online_client, "defaultType", json_object_new_string("0"));
+-				if(json_object_object_get_ex(val, "type", &new_never_online_client_type))
+-					json_object_object_add(new_never_online_client, "type", json_object_new_string(json_object_get_string(new_never_online_client_type)));
+-				if(json_object_object_get_ex(val, "name", &new_never_online_client_name))
+-					json_object_object_add(new_never_online_client, "nickName", json_object_new_string(json_object_get_string(new_never_online_client_name)));
+-				json_object_object_add(new_never_online_client, "from", json_object_new_string("customList"));
+-				json_object_object_add(clients, key, new_never_online_client);
++#ifdef RTCONFIG_AMAS
++/* "MAC>CAP<MAC>RE<..." for the Rust database view.  get_amas_info() stays
++ * json-c based; its objects are released here and never reach Rust. */
++static void clientlist_amas_node_types(char *buffer, size_t capacity)
++{
++	struct json_object *amasList = json_object_new_object(), *type = NULL;
++	size_t used = 0;
++	int written;
++
++	buffer[0] = '\0';
++	if(amasList && get_amas_info(amasList)){
++		json_object_object_foreach(amasList, key, val) {
++			if(!json_object_object_get_ex(val, "type", &type))
++				continue;
++			written = snprintf(buffer + used, capacity - used, "%s%s>%s",
++				used ? "<" : "", key, json_object_get_string(type));
++			if(written < 0 || (size_t)written >= capacity - used){
++				buffer[used] = '\0';
++				break;
+ 			}
++			used += (size_t)written;
+ 		}
+ 	}
++	if(amasList)
++		json_object_put(amasList);
++}
++#endif
+ 
+-	json_object_object_add(clients, "maclist", macArray);
+-	json_object_object_add(clients, "ClientAPILevel", json_object_new_string(CLIENTAPILEVEL));
+-	ret = websWrite(wp, "%s", json_object_to_json_string(clients));
++static int
++ej_get_clientlist_from_json_database(int eid, webs_t wp, int argc, char_t **argv)
++{
++	struct rust_httpd_clientlist_db_inputs inputs;
++	char *buffer, *rog_clientlist, *custom_clientlist;
++#ifdef RTCONFIG_AMAS
++	char amas_node_types[CLIENTLIST_AMAS_NODE_TYPES_CAPACITY];
++#endif
++	int ret, length;
++
++	if((buffer = malloc(CLIENTLIST_JSON_CAPACITY)) == NULL)
++		return websWrite(wp, "{\"maclist\": [], \"ClientAPILevel\":\"%s\"}", CLIENTAPILEVEL);
+ 
+-	if(customList)
+-		json_object_put(customList);
+-	/* json_object_object_add() transferred ownership of never-online clients
+-	 * to clients; releasing one here would leave a dangling child and make the
+-	 * final clients put a double free. */
++	rog_clientlist = strdup(nvram_safe_get("rog_clientlist"));
++	custom_clientlist = strdup(nvram_safe_get("custom_clientlist"));
++	memset(&inputs, 0, sizeof(inputs));
++	inputs.db_path = NMP_CL_JSON_FILE;
++	inputs.rog_clientlist = rog_clientlist;
++	inputs.custom_clientlist = custom_clientlist;
+ #ifdef RTCONFIG_AMAS
+-	if(amasList)
+-		json_object_put(amasList);
++	clientlist_amas_node_types(amas_node_types, sizeof(amas_node_types));
++	inputs.amas_node_types = amas_node_types;
++	inputs.is_re_node = clientlist_is_re_node;
+ #endif
+-	if(clients)
+-		json_object_put(clients);
++
++	/* A missing or unreadable database yields the fake document Rust renders
++	 * for it; only a boundary error falls back to the literal below. */
++	length = rust_httpd_clientlist_database_render(&inputs, buffer, CLIENTLIST_JSON_CAPACITY);
++	free(rog_clientlist);
++	free(custom_clientlist);
++	if(length < 0)
++		ret = websWrite(wp, "{\"maclist\": [], \"ClientAPILevel\":\"%s\"}", CLIENTAPILEVEL);
++	else
++		ret = websWrite(wp, "%s", buffer);
++	free(buffer);
+ 
+ 	return ret;
+ }
+@@ -2124,41 +2187,23 @@
+ static int
+ ej_get_all_basic_clientlist(int eid, webs_t wp, int argc, char_t **argv)
+ {
+-	int ret;
+-	struct json_object *clients=NULL;
+-	struct json_object *clients_array_obj = NULL, *client_name = NULL, *macArray_tmp = NULL;
+-	struct json_object *customList = NULL, *custom_attr_get = NULL, *custom_client_name = NULL;
+-	int customList_status = 0;
++	char *buffer, *custom_clientlist;
++	int ret, length;
+ 
+-	if(!pids("networkmap") || (clients = json_object_from_file(NMP_CL_JSON_FILE)) == NULL){
++	if(!pids("networkmap") || (buffer = malloc(CLIENTLIST_JSON_CAPACITY)) == NULL){
+ 		ret = websWrite(wp, "[]");
+ 		return 0;
+ 	}
+ 
+-	clients_array_obj = json_object_new_array();
+-	customList = json_object_new_object();
+-	customList_status = get_custom_clientlist_info(customList);
+-
+-	json_object_object_foreach(clients, key, val) {
+-		macArray_tmp = json_object_new_array();
+-		json_object_array_add(macArray_tmp, json_object_new_string(key));
+-		if(customList_status && json_object_object_get_ex(customList, key, &custom_attr_get) && json_object_object_get_ex(custom_attr_get, "name", &custom_client_name)){
+-			json_object_array_add(macArray_tmp, custom_client_name);
+-		}else{
+-			json_object_object_get_ex(val, "name", &client_name);
+-			json_object_array_add(macArray_tmp, client_name);
+-		}
+-		json_object_array_add(clients_array_obj, macArray_tmp);
+-	}
+-
+-	ret = websWrite(wp, "%s", json_object_to_json_string(clients_array_obj));
+-
+-	if(clients_array_obj)
+-		json_object_put(clients_array_obj);
+-	if(customList)
+-		json_object_put(customList);
+-	if(clients)
+-		json_object_put(clients);
++	custom_clientlist = strdup(nvram_safe_get("custom_clientlist"));
++	length = rust_httpd_clientlist_all_basic_render(NMP_CL_JSON_FILE, custom_clientlist,
++		buffer, CLIENTLIST_JSON_CAPACITY);
++	free(custom_clientlist);
++	if(length < 0)
++		ret = websWrite(wp, "[]");
++	else
++		ret = websWrite(wp, "%s", buffer);
++	free(buffer);
+ 
+ 	return ret;
+ }
+@@ -2196,12 +2241,20 @@
+ 	strlcpy(icfilter_macfilter_daytime, nvram_safe_get("ICFILTER_MACFILTER_DAYTIME"), sizeof(icfilter_macfilter_daytime));
+ 
+ 	if(pids("networkmap")){
+-			clients = json_object_new_object();
+-			get_client_detail_info(clients, macArray, SHMKEY_LAN);
++		/* The live view is rendered by Rust; this INTERNETCTRL report keeps
++		 * its json-c shape and parses the finished text locally. */
++		char *buffer = malloc(CLIENTLIST_JSON_CAPACITY);
++
++		if(buffer && networkmap_render_clientlist(buffer, CLIENTLIST_JSON_CAPACITY) > 0)
++			clients = json_tokener_parse(buffer);
++		free(buffer);
+ 	}
+ 
+ 	if(clients) {
+ 		json_object_object_foreach(clients, key, val){
++			if(!strcmp(key, "maclist") || !strcmp(key, "ClientAPILevel") ||
++			   !json_object_is_type(val, json_type_object))
++				continue;
+ 			client_obj = json_object_new_object();
+ 			mac_idx = 0;
+ 			if(json_object_object_get_ex(val, "ip", &ip))
+@@ -2267,98 +2320,31 @@
+ 
+ static int get_basic_clientlist_info(webs_t wp, int opt)
+ {
+-	int ret = 0, client_name_status = 0, wl_count = 0, wire_count = 0;
+-	struct json_object *clients = NULL, *cache_clients = NULL, *wire_clients_array_obj = NULL, *wl_clients_array_obj = NULL, *clients_array_obj = NULL;
+-	struct json_object *client_tmp = NULL, *client_name = NULL, *isWL = NULL, *macArray = NULL, *macArray_tmp = NULL;
+-	macArray = json_object_new_array();
+-	clients_array_obj = json_object_new_array();
+-	wire_clients_array_obj = json_object_new_array();
+-	wl_clients_array_obj = json_object_new_array();
+-
+-	if(opt == 3 && check_if_file_exist(NMP_CL_JSON_FILE))
+-	{
+-		cache_clients = json_object_from_file(NMP_CL_JSON_FILE);
+-	}
+-
+-	if(pids("networkmap")){
+-			clients = json_object_new_object();
+-			get_client_detail_info(clients, macArray, SHMKEY_LAN);
+-	}
+-
+-	if(opt == 0 || opt == 1|| opt == 2){
+-		if(clients) {
+-			json_object_object_foreach(clients, key, val){
+-				macArray_tmp = json_object_new_array();
+-				client_name_status = json_object_object_get_ex(val, "name", &client_name);
+-
+-				if(json_object_object_get_ex(val, "isWL", &isWL)){
+-					if(atoi(json_object_get_string(isWL)) > 0){
+-						json_object_array_add(macArray_tmp, json_object_new_string(key));
+-						if(client_name_status)
+-							json_object_array_add(macArray_tmp, client_name);
+-						else
+-							json_object_array_add(macArray_tmp, json_object_new_string(key));
+-
+-						json_object_array_add(wl_clients_array_obj, macArray_tmp);
+-						wl_count++;
+-					}else{
+-						json_object_array_add(macArray_tmp, json_object_new_string(key));
+-						if(client_name_status)
+-							json_object_array_add(macArray_tmp, client_name);
+-						else
+-							json_object_array_add(macArray_tmp, json_object_new_string(key));
++	struct rust_httpd_clientlist_inputs inputs;
++	struct clientlist_nvram values;
++	char *buffer;
++	int ret = 0, length, alive;
++
++	if((buffer = malloc(CLIENTLIST_JSON_CAPACITY)) == NULL)
++		return 0;
++
++	alive = pids("networkmap");
++	clientlist_live_inputs(&inputs, &values);
++	if(alive)
++		nvram_set("nmp_wl_offline_check", "1");
++	/* 0: wired, 1: wireless, 2: counts, 3: WOL candidates from the database */
++	length = rust_httpd_clientlist_basic_render(&inputs, alive, NMP_CL_JSON_FILE, opt,
++		buffer, CLIENTLIST_JSON_CAPACITY);
++	clientlist_nvram_free(&values);
+ 
+-						json_object_array_add(wire_clients_array_obj, macArray_tmp);
+-						wire_count++;
+-					}
+-				}
+-			}
+-		}
+-	}else if(opt == 3){
+-		if(cache_clients && clients){
+-			json_object_object_foreach(cache_clients, key, val) {
+-				macArray_tmp = json_object_new_array();
+-				client_name_status = json_object_object_get_ex(val, "name", &client_name);
+-				if(json_object_object_get_ex(clients, key, &client_tmp))
+-					if(json_object_object_get_ex(client_tmp, "isWL", &isWL))
+-						if(atoi(json_object_get_string(isWL)) > 0)
+-							continue;
+-
+-				json_object_array_add(macArray_tmp, json_object_new_string(key));
+-				if(client_name_status)
+-					json_object_array_add(macArray_tmp, client_name);
+-				else
+-					json_object_array_add(macArray_tmp, json_object_new_string(key));
+-
+-				json_object_array_add(clients_array_obj, macArray_tmp);
+-			}
+-		}
+-
+-	}
+-
+-	if(opt == 0)	//wire client
+-		ret = websWrite(wp, "%s", json_object_to_json_string(wire_clients_array_obj));
+-	else if(opt == 1)	//wireless client
+-		ret = websWrite(wp, "%s", json_object_to_json_string(wl_clients_array_obj));
++	if(length >= 0)
++		ret = websWrite(wp, "%s", buffer);
+ 	else if(opt == 2)
+-		ret = websWrite(wp, "{\"wireless\":\"%d\", \"wire\":\"%d\"}", wl_count, wire_count);
+-	else if(opt == 3)	//wireless client
+-		ret = websWrite(wp, "%s", json_object_to_json_string(clients_array_obj));
++		ret = websWrite(wp, "{\"wireless\":\"0\", \"wire\":\"0\"}");
++	else
++		ret = websWrite(wp, "[]");
++	free(buffer);
+ 
+-	if(clients)
+-		json_object_put(clients);
+-	if(cache_clients)
+-		json_object_put(cache_clients);
+-	if(macArray)
+-		json_object_put(macArray);
+-	if(wl_clients_array_obj)
+-		json_object_put(clients_array_obj);
+-	if(wire_clients_array_obj)
+-		json_object_put(wire_clients_array_obj);
+-	if(clients_array_obj)
+-		json_object_put(clients_array_obj);
+-	if(macArray_tmp)
+-		json_object_put(macArray_tmp);
+ 	return ret;
+ }
+ 
+@@ -9398,19 +9384,6 @@
+  */
+ 
+ 
+-static int
+-check_macrepeat(struct json_object *macArray, char *mac){
+-	int total=0, arraylen, i;
+-	struct json_object *macStr;
+-
+-	arraylen = json_object_array_length(macArray);
+-	for(i = 0; i < arraylen; i++) {
+-		macStr = json_object_array_get_idx(macArray, i);
+-		if(!strcmp(mac, json_object_get_string(macStr))) total++;
+-	}
+-	return total;
+-}
+-
+ static int get_custom_clientlist_info(struct json_object *json_object_ptr) {
+ 	int have_data = 0, data_count;
+ 	char init_str[1] = {0};
+@@ -9459,240 +9432,6 @@
+ 	return have_data;
+ }
+ 
+-static int get_qos_rulelist_info(struct json_object *json_object_ptr) {
+-	int have_data = 0;
+-	char *buf, *g, *p;
+-	char *desc, *mac, *port, *proto, *transferred, *prio;
+-	g = buf = strdup(nvram_safe_get("qos_rulelist"));
+-
+-	if(strcmp(buf, "") != 0) {
+-		while (buf) {
+-			if ((p = strsep(&g, "<")) == NULL) break;
+-
+-			if((vstrsep(p, ">", &desc, &mac, &port, &proto, &transferred, &prio)) != 6) continue;
+-
+-			if(strcmp(mac, "")) {
+-				json_object_object_add(json_object_ptr, mac, json_object_new_string(prio));
+-				if(!have_data)
+-					have_data = 1;
+-			}
+-		}
+-	}
+-
+-	free(buf);
+-	return have_data;
+-}
+-
+-static int get_wtf_rulelist_info(struct json_object *json_object_ptr) {
+-	int have_data = 0;
+-	char *buf, *g, *p;
+-	char *status, *mac, *server1, *server2, *game;
+-	g = buf = strdup(nvram_safe_get("wtf_rulelist"));
+-
+-	if(strcmp(buf, "") != 0) {
+-		while (buf) {
+-			if ((p = strsep(&g, "<")) == NULL) break;
+-
+-			if((vstrsep(p, ">", &status, &mac, &server1, &server2, &game)) != 5) continue;
+-
+-			if(strcmp(mac, "")) {
+-				json_object_object_add(json_object_ptr, mac, json_object_new_int(atoi(status)));
+-				if(!have_data)
+-					have_data = 1;
+-			}
+-		}
+-	}
+-
+-	free(buf);
+-	return have_data;
+-}
+-static int check_internetState(char *timeList) {
+-#ifdef RTCONFIG_PC_SCHED_V3
+-	return check_sched_v2_on_off(timeList);
+-#else
+-	int state = 0;
+-	char *buf, *g, *p;
+-	int system_week = 0, system_hour = 0,  week_start = 0, week_end = 0, hour_start = 0, hour_end = 0;
+-	char time_item[2];
+-
+-	time_t t = time(NULL);
+-	struct tm tm = *localtime(&t);
+-	system_week = tm.tm_wday;
+-	system_hour = tm.tm_hour;
+-	if(system_week == 0)
+-		system_week = 7;
+-
+-	g = buf = strdup(timeList);
+-	if(strcmp(buf, "") != 0) {
+-		while (buf) {
+-			if ((p = strsep(&g, "<")) == NULL) break;
+-
+-			if(strcmp(p, "T")) {
+-				memset(time_item, 0 , 2);
+-				strncpy(time_item, p, 1);
+-				week_start = atoi(time_item);
+-
+-				memset(time_item, 0 , 2);
+-				strncpy(time_item, p + 1, 1);
+-				week_end = atoi(time_item);
+-
+-				memset(time_item, 0 , 2);
+-				strncpy(time_item, p + 2, 2);
+-				hour_start = atoi(time_item);
+-
+-				memset(time_item, 0 , 2);
+-				strncpy(time_item, p + 4, 2);
+-				hour_end = atoi(time_item);
+-				
+-				if((week_start == 0 && week_end == 0 && hour_start == 0 && hour_end == 0) || week_start > week_end)
+-					week_end = 7;
+-
+-				if(week_start == 0 && week_end == 7 && hour_start == 0 && hour_end == 0) { //all time setting
+-					state = 1;
+-					break;
+-				}
+-				else if(week_start == system_week && week_end == system_week) {
+-					if(hour_start <= system_hour && hour_end > system_hour) {
+-						state = 1;
+-						break;
+-					}
+-				}
+-				else if(week_start == system_week && week_end > system_week) {
+-					if(hour_start <= system_hour) {
+-						state = 1;
+-						break;
+-					}
+-				}
+-				else if(week_start < system_week && week_end > system_week) {
+-					state = 1;
+-					break;
+-				}
+-				else if(week_start < system_week && week_end >= system_week) {
+-					if(hour_end > system_hour) {
+-						state = 1;
+-						break;
+-					}
+-				}
+-				else if(week_start == 0 && week_end == 0 && system_week == 7) {//for sunday
+-					if(hour_start <= system_hour && hour_end > system_hour) {
+-						state = 1;
+-						break;
+-					}
+-				}
+-			}
+-		}
+-	}
+-
+-	free(buf);
+-	return state;
+-#endif
+-}
+-static int get_multifilter_info(struct json_object *json_object_ptr) {
+-	int have_data = 0;
+-	char *buf, *g, *p, *timeList = NULL;
+-	struct json_object *statusArray = NULL, *timeArray = NULL, *multifilter_attr = NULL, *ruleIdxArray = NULL;
+-	int arraylen = 0, idx = 0, internetState = 0;
+-	char internetMode[8];
+-	int ruleStatus = 0;
+-
+-	if (nvram_get_int("MULTIFILTER_ALL")) {
+-#ifdef RTCONFIG_PERMISSION_MANAGEMENT
+-		g = buf = strdup(nvram_safe_get("MULTIFILTER_DEVICENAME"));
+-#else
+-		g = buf = strdup(nvram_safe_get("MULTIFILTER_MAC"));
+-#endif
+-		if(strcmp(buf, "") != 0) {
+-			ruleIdxArray = json_object_new_array();
+-			while (buf) {
+-				if ((p = strsep(&g, ">")) == NULL) break;
+-
+-#ifdef RTCONFIG_PERMISSION_MANAGEMENT
+-				json_object_array_add(ruleIdxArray, json_object_new_string(strtok(p, "@")));
+-#else
+-				json_object_array_add(ruleIdxArray, json_object_new_string(p));
+-#endif	
+-			}
+-			if(!have_data)
+-				have_data = 1;
+-		}
+-		else {
+-			free(buf);
+-			goto finish;
+-		}
+-
+-		free(buf);
+-		
+-		g = buf = strdup(nvram_safe_get("MULTIFILTER_ENABLE"));
+-		if(strcmp(buf, "") != 0) {
+-			statusArray = json_object_new_array();
+-			while (buf) {
+-				if ((p = strsep(&g, ">")) == NULL) break;
+-
+-				json_object_array_add(statusArray, json_object_new_string(p));
+-			}
+-		}
+-
+-		free(buf);
+-
+-#ifdef RTCONFIG_PC_SCHED_V3
+-		g = buf = strdup(nvram_safe_get("MULTIFILTER_MACFILTER_DAYTIME_V2"));
+-#else
+-		g = buf = strdup(nvram_safe_get("MULTIFILTER_MACFILTER_DAYTIME"));
+-#endif
+-		if(strcmp(buf, "") != 0) {
+-			timeArray = json_object_new_array();
+-			while (buf) {
+-				if ((p = strsep(&g, ">")) == NULL) break;
+-
+-				json_object_array_add(timeArray, json_object_new_string(p));	
+-			}
+-		}
+-
+-		free(buf);
+-	}
+-
+-finish:
+-	if (nvram_get_int("MULTIFILTER_ALL")) {
+-		if(ruleIdxArray != NULL) {
+-			arraylen = json_object_array_length(ruleIdxArray);
+-			for (idx = 0; idx < arraylen; idx++) {
+-				multifilter_attr = json_object_new_object();
+-				memset(internetMode, 0, 8);
+-				strlcpy(internetMode, "allow", sizeof(internetMode));
+-				ruleStatus = 0;
+-				internetState = 1;
+-
+-				if(statusArray != NULL && json_object_array_get_idx(statusArray, idx) != NULL) {
+-					ruleStatus = json_object_get_int(json_object_array_get_idx(statusArray, idx));
+-					if(ruleStatus == 1)
+-						strlcpy(internetMode, "time", sizeof(internetMode));
+-					else if(ruleStatus == 2)
+-						strlcpy(internetMode, "block", sizeof(internetMode));
+-				}
+-
+-				json_object_object_add(multifilter_attr, "internetMode", json_object_new_string(internetMode));
+-
+-				if(ruleStatus == 1) {
+-					if(timeArray != NULL && json_object_array_get_idx(timeArray, idx) != NULL) {
+-						if(!strcmp(json_object_get_string(json_object_array_get_idx(timeArray, idx)), "<"))
+-							internetState = 0;
+-						else {
+-							timeList = (char *) json_object_get_string(json_object_array_get_idx(timeArray, idx));
+-							internetState = check_internetState(timeList);
+-						}
+-					}
+-				}
+-				else if(ruleStatus == 2)
+-					internetState = 0;
+-
+-				json_object_object_add(multifilter_attr, "internetState", json_object_new_int(internetState));
+-
+-				json_object_object_add(json_object_ptr, json_object_get_string(json_object_array_get_idx(ruleIdxArray, idx)), multifilter_attr);
+-			}
+-		}
+-	}
+-	return have_data;
+-}
+ #ifdef RTCONFIG_PERMISSION_MANAGEMENT
+ static int get_pms_device_info(struct json_object *json_object_ptr) {
+ 	int have_data = 0;
+@@ -10058,90 +9797,6 @@
+ 	return have_data;
+ }
+ 
+-static int get_amas_re_client_detail_info(struct json_object *json_object_ptr) { //get re client detail info
+-	int have_data = 0;
+-
+-	int lock;
+-	json_object *clietListObj = NULL;
+-	json_object *brMacObj = NULL;
+-	json_object *bandObj = NULL;
+-	struct json_object *amas_re_client_detail_attr = NULL;
+-
+-	lock = file_lock(CLIENTLIST_FILE_LOCK);
+-
+-	clietListObj = json_object_from_file(CLIENT_LIST_JSON_PATH);
+-	if (clietListObj) {
+-		char papMac_buf[32] = {0};
+-		char band_buf[16] = {0};
+-		char band_prefix_buf[16] = {0};
+-		json_object_object_foreach(clietListObj, key, val) {
+-			brMacObj = val;
+-			memset(papMac_buf, 0, sizeof(papMac_buf));
+-			snprintf(papMac_buf, sizeof(papMac_buf), "%s", key);
+-			json_object_object_foreach(brMacObj, key, val) {
+-				bandObj = val;
+-				memset(band_buf, 0, sizeof(band_buf));
+-				snprintf(band_buf, sizeof(band_buf), "%s", key);
+-				json_object_object_foreach(bandObj, key, val) {
+-					struct json_object *amas_re_get_rssi = NULL;
+-					json_object_object_get_ex(val, "rssi", &amas_re_get_rssi);
+-					if(amas_re_get_rssi != NULL) {
+-						int isWL = 0;
+-						char client_key[40] = {0};
+-						memset(client_key, 0, sizeof(client_key));
+-						amas_re_client_detail_attr = json_object_new_object();
+-						if (strstr(band_buf, "_")) {
+-							memset(band_prefix_buf, 0, sizeof(band_prefix_buf));
+-							sscanf(band_buf, "%[^_]", band_prefix_buf);//get prefix band, 2G_1/2G_2/2G_3/5G_1/5G_2/5G_3/5G1_1/5G1_2/5G1_3...
+-							memset(band_buf, 0, sizeof(band_buf));
+-							snprintf(band_buf, sizeof(band_buf), "%s", band_prefix_buf);
+-						}
+-						if (!strcmp(band_buf, "2G")) {
+-							json_object_object_add(amas_re_client_detail_attr, "isWL", json_object_new_string("1"));
+-							isWL = 1;
+-						}
+-						else if (!strcmp(band_buf, "5G")) {
+-							json_object_object_add(amas_re_client_detail_attr, "isWL", json_object_new_string("2"));
+-							isWL = 2;
+-						}
+-						else if (!strcmp(band_buf, "5G1")) {
+-							json_object_object_add(amas_re_client_detail_attr, "isWL", json_object_new_string("3"));
+-							isWL = 3;
+-						}
+-						else if (!strcmp(band_buf, "6G")) {
+-							json_object_object_add(amas_re_client_detail_attr, "isWL", json_object_new_string("4"));
+-							isWL = 4;
+-						}
+-						else if (!strcmp(band_buf, "6G1")) {
+-							json_object_object_add(amas_re_client_detail_attr, "isWL", json_object_new_string("5"));
+-							isWL = 5;
+-						}
+-						else {
+-							json_object_object_add(amas_re_client_detail_attr, "isWL", json_object_new_string("0"));
+-							isWL = 0;
+-						}
+-
+-						json_object_object_add(amas_re_client_detail_attr, "rssi", json_object_new_string(json_object_get_string(amas_re_get_rssi)));
+-						json_object_object_add(amas_re_client_detail_attr, "papMac", json_object_new_string(papMac_buf));
+-						snprintf(client_key, sizeof(client_key), "%s_%d_%s", key, isWL, papMac_buf);//mac_band_papMac
+-						json_object_object_add(json_object_ptr, client_key, amas_re_client_detail_attr);
+-					}
+-				}
+-			}
+-			if(!have_data)
+-				have_data = 1;
+-		}
+-
+-
+-		json_object_put(clietListObj);
+-		
+-	}
+-
+-	file_unlock(lock);
+-
+-
+-	return have_data;
+-}
+ static int is_re_node(char *client_mac, int check_path) {
+ 	int i;
+ 	int ret = 0;
+@@ -10456,8 +10111,11 @@
+  * The closed GT-AX11000 networkmap daemon and the current public header do
+  * not have the same size for CLIENT_DETAIL_INFO_TABLE.  The fixed trailer,
+  * however, is ABI-stable and lives at the end of the SysV segment.  Resolve
+- * it from the kernel-reported segment size so a newer reader neither sees an
+- * empty client count nor writes delete_mac into a client data array.
++ * it from the kernel-reported segment size so the delete_mac request is
++ * never written into a client data array.  Reading the table is done by the
++ * Rust clientlist crate (rust-components/clientlist/src/layout.rs), which
++ * decodes the 174,964-byte legacy view only for productid GT-AX11000, the
++ * 173,436-byte public view otherwise and fails closed for any other size.
+  */
+ typedef struct {
+ 	int ip_mac_num;
+@@ -10467,66 +10125,6 @@
+ 	char delete_mac[13];
+ } NETWORKMAP_SHM_TAIL;
+ 
+-/*
+- * The GT-AX11000 binary networkmap daemon still exports the Wi-Fi 6 layout
+- * that predates the public header's IPv6 and dhcp_flag additions.  Keep this
+- * reader private to httpd and select it only when the model and exact segment
+- * size agree.  This prevents later arrays from being interpreted through the
+- * wrong offsets while leaving every other model on the public ABI.
+- */
+-typedef struct {
+-	unsigned char ip_addr[MAX_NR_CLIENT_LIST][4];
+-	unsigned char mac_addr[MAX_NR_CLIENT_LIST][6];
+-	unsigned char user_define[MAX_NR_CLIENT_LIST][16];
+-	unsigned char vendor_name[MAX_NR_CLIENT_LIST][128];
+-	unsigned char device_name[MAX_NR_CLIENT_LIST][32];
+-	unsigned char apple_model[MAX_NR_CLIENT_LIST][16];
+-	unsigned char device_type[MAX_NR_CLIENT_LIST][32];
+-	unsigned char vendorClass[MAX_NR_CLIENT_LIST][32];
+-	unsigned char os_type[MAX_NR_CLIENT_LIST];
+-	unsigned char sdn_idx[MAX_NR_CLIENT_LIST];
+-	unsigned char online[MAX_NR_CLIENT_LIST];
+-	unsigned char type[MAX_NR_CLIENT_LIST];
+-	unsigned char ipMethod[MAX_NR_CLIENT_LIST][7];
+-	unsigned char opMode[MAX_NR_CLIENT_LIST];
+-	unsigned char device_flag[MAX_NR_CLIENT_LIST];
+-	unsigned char wireless[MAX_NR_CLIENT_LIST];
+-	unsigned char is_wireless[MAX_NR_CLIENT_LIST];
+-	int conn_ts[MAX_NR_CLIENT_LIST];
+-	int offline_time[MAX_NR_CLIENT_LIST];
+-	char ssid[MAX_NR_CLIENT_LIST][32];
+-	char txrate[MAX_NR_CLIENT_LIST][7];
+-	char rxrate[MAX_NR_CLIENT_LIST][10];
+-	unsigned int rssi[MAX_NR_CLIENT_LIST];
+-	char conn_time[MAX_NR_CLIENT_LIST][12];
+-	char bwdpi_host[MAX_NR_CLIENT_LIST][32];
+-	char bwdpi_vendor[MAX_NR_CLIENT_LIST][100];
+-	char bwdpi_type[MAX_NR_CLIENT_LIST][100];
+-	char bwdpi_device[MAX_NR_CLIENT_LIST][100];
+-	NETWORKMAP_SHM_TAIL tail;
+-} GT_AX11000_NETWORKMAP_TABLE;
+-
+-typedef char gt_ax11000_networkmap_table_size_must_match[
+-	(MAX_NR_CLIENT_LIST != 255 ||
+-	 sizeof(GT_AX11000_NETWORKMAP_TABLE) == 174964) ? 1 : -1];
+-
+-#define NETWORKMAP_CLIENT_FIELD(public_layout, legacy_layout, field, index) \
+-	((legacy_layout) ? (legacy_layout)->field[(index)] : \
+-		(public_layout)->field[(index)])
+-
+-static GT_AX11000_NETWORKMAP_TABLE *networkmap_gt_ax11000_table(
+-	void *shared_client_info, int shm_client_info_id)
+-{
+-	struct shmid_ds shm_info;
+-
+-	if (strcmp(nvram_safe_get("productid"), "GT-AX11000") != 0 ||
+-	    shmctl(shm_client_info_id, IPC_STAT, &shm_info) != 0 ||
+-	    shm_info.shm_segsz != sizeof(GT_AX11000_NETWORKMAP_TABLE))
+-		return NULL;
+-
+-	return (GT_AX11000_NETWORKMAP_TABLE *)shared_client_info;
+-}
+-
+ static NETWORKMAP_SHM_TAIL *networkmap_shm_tail(void *shared_client_info,
+ 	int shm_client_info_id)
+ {
+@@ -10542,16 +10140,6 @@
+ 		shm_info.shm_segsz - sizeof(NETWORKMAP_SHM_TAIL));
+ }
+ 
+-static int networkmap_shm_client_count(void *shared_client_info,
+-	int shm_client_info_id, P_CLIENT_DETAIL_INFO_TABLE public_layout)
+-{
+-	NETWORKMAP_SHM_TAIL *tail = networkmap_shm_tail(shared_client_info,
+-		shm_client_info_id);
+-	int count = tail ? tail->ip_mac_num : public_layout->ip_mac_num;
+-
+-	return count >= 0 && count <= MAX_NR_CLIENT_LIST ? count : 0;
+-}
+-
+ static void networkmap_shm_set_delete_mac(void *shared_client_info,
+ 	int shm_client_info_id, P_CLIENT_DETAIL_INFO_TABLE public_layout,
+ 	const char *mac)
+@@ -10563,472 +10151,6 @@
+ 	strlcpy(delete_mac, mac, sizeof(tail->delete_mac));
+ }
+ 
+-//2016.09 Rawny add for new networkmap
+-//static int get_client_detail_info(int eid, webs_t wp, int argc, char_t **argv, key_t shmkey, char *maclist_buf){
+-static int get_client_detail_info(struct json_object *clients, struct json_object *macArray, key_t shmkey){
+-	CLIENT_DPRINTF("get_client_detail_info start\n");
+-	int i, shm_client_info_id;
+-	void *shared_client_info = (void *) 0;
+-	char mac_buf[32], dev_name[32];
+-	char type[8], online[8], defaultType[8], macRepeat[8], opMode[8], rssi[8], wtfast[8], internetState[8], wireless[8];
+-	char ipaddr[16];
+-#ifdef RTCONFIG_IPV6
+-	char ip6addr[40];
+-	char ip6_prefix[50];
+-#endif
+-	P_CLIENT_DETAIL_INFO_TABLE p_client_info_tab;
+-	GT_AX11000_NETWORKMAP_TABLE *gt_ax11000_client_info_tab;
+-	int lock;
+-	char devname[LINE_SIZE], character;
+-	int j, len;
+-
+-	struct json_object *client = NULL;
+-	struct json_object *customList = NULL, *qosRuleList = NULL, *wtfRulelist = NULL, *multifilterList = NULL, *custom_attr_get = NULL;
+-	int customList_status = 0, qosRuleList_status = 0, wtfRulelist_status = 0, multifilterList_status = 0;
+-#ifdef RTCONFIG_PERMISSION_MANAGEMENT
+-	struct json_object *pmInfo = NULL, *pmGroupArray = NULL, *pmGroupArray_temp = NULL;
+-	int pmInfo_status = 0;
+-	int idx = 0, arraylen = 0;
+-#endif
+-#if defined(RTCONFIG_AMAS) || defined(RTCONFIG_WIFI_SON)
+-	struct json_object *amasReClientDetailList = NULL;
+-	int amasReClientDetailList_status = 0;
+-	struct json_object *amasPAP_attr_get = NULL;
+-#ifdef RTCONFIG_STA_AP_BAND_BIND
+-	char node_mac[32]={0};
+-	char band_index[4]={0};
+-#endif
+-#ifdef RTCONFIG_MULTILAN_CFG
+-	char sdn_idx[8], sdn_type[32] = {0}, vlan_id[8] = {0};
+-#endif
+-#endif
+-#ifdef RTCONFIG_MLO
+-	char mlo[8] = {0};
+-#endif
+-
+-	//get custom_clientlist
+-	customList = json_object_new_object();
+-	customList_status = get_custom_clientlist_info(customList);
+-
+-	//get qos_rulelist
+-	qosRuleList = json_object_new_object();
+-	qosRuleList_status = get_qos_rulelist_info(qosRuleList);
+-
+-	//get wtf_rulelist
+-	wtfRulelist = json_object_new_object();
+-	wtfRulelist_status = get_wtf_rulelist_info(wtfRulelist);
+-
+-	//get MULTIFILTER
+-	multifilterList = json_object_new_object();
+-	multifilterList_status = get_multifilter_info(multifilterList);
+-
+-#ifdef RTCONFIG_PERMISSION_MANAGEMENT
+-	//get_pms_device_info
+-	pmInfo = json_object_new_object();
+-	pmInfo_status = get_pms_device_info(pmInfo);
+-#endif
+-
+-#if defined(RTCONFIG_AMAS) || defined(RTCONFIG_WIFI_SON)
+-	//get amas re client detail info
+-	amasReClientDetailList = json_object_new_object();
+-	amasReClientDetailList_status = get_amas_re_client_detail_info(amasReClientDetailList);
+-#endif
+-
+-	// set check wireless offline
+-	nvram_set("nmp_wl_offline_check", "1");
+-
+-	lock = file_lock("networkmap");
+-	shm_client_info_id = shmget((key_t)shmkey, sizeof(CLIENT_DETAIL_INFO_TABLE), 0666|IPC_CREAT);
+-	if (shm_client_info_id == -1){
+-		fprintf(stderr,"shmget failed\n");
+-		file_unlock(lock);
+-		return 0;
+-	}
+-
+-	shared_client_info = shmat(shm_client_info_id, (void *) 0,0);
+-	if (shared_client_info == (void *)-1){
+-		fprintf(stderr,"shmat failed\n");
+-		file_unlock(lock);
+-		return 0;
+-	}
+-
+-#ifdef RTCONFIG_DISABLE_NETWORKMAP
+-	if (nvram_match("networkmap_enable", "0")){
+-		nvram_set("networkmap_fullscan", "0");
+-		file_unlock(lock);
+-		return 0;
+-	}
+-#endif
+-
+-
+-	p_client_info_tab = (P_CLIENT_DETAIL_INFO_TABLE)shared_client_info;
+-	gt_ax11000_client_info_tab = networkmap_gt_ax11000_table(shared_client_info,
+-		shm_client_info_id);
+-	int client_count = networkmap_shm_client_count(shared_client_info,
+-		shm_client_info_id, p_client_info_tab);
+-	for(i = 0; i < client_count; i++) {
+-		memset(dev_name, 0, sizeof(dev_name));
+-		memset(ipaddr, 0, sizeof(ipaddr));
+-#ifdef RTCONFIG_IPV6
+-		memset(ip6addr, 0, sizeof(ip6addr));
+-		memset(ip6_prefix, 0, sizeof(ip6_prefix));
+-#endif
+-		memset(mac_buf, 0, sizeof(mac_buf));
+-		memset(devname, 0, LINE_SIZE);
+-#ifdef RTCONFIG_MULTILAN_CFG
+-		memset(sdn_idx, 0, sizeof(sdn_idx));
+-		memset(sdn_type, 0, sizeof(sdn_type));
+-#endif
+-#ifdef RTCONFIG_MLO
+-		memset(mlo, 0, sizeof(mlo));
+-#endif
+-		memset(online, 0, sizeof(online));
+-		memset(type, 0, sizeof(type));
+-		memset(defaultType, 0, sizeof(defaultType));
+-		memset(macRepeat, 0, sizeof(macRepeat));
+-		memset(opMode, 0, sizeof(opMode));
+-		memset(rssi, 0, sizeof(rssi));
+-		memset(wtfast, 0, sizeof(wtfast));
+-		memset(internetState, 0, sizeof(internetState));
+-		memset(wireless, 0, sizeof(wireless));
+-
+-		if (*p_client_info_tab->user_define[i])
+-			strlcpy(dev_name, (const char *)p_client_info_tab->user_define[i], sizeof(dev_name));
+-		else
+-			strlcpy(dev_name, (const char *)p_client_info_tab->device_name[i], sizeof(dev_name));
+-
+-#ifndef RTCONFIG_AMAS
+-		if(NETWORKMAP_CLIENT_FIELD(p_client_info_tab,
+-			gt_ax11000_client_info_tab, device_flag, i) & (1<<FLAG_EXIST)) {
+-#endif
+-			len = strlen(dev_name);
+-			for (j = 0; (j < len) && (j < LINE_SIZE-1); j++) {
+-				character = dev_name[j];
+-				if ((isalnum(character)) || (character == ' ') || (character == '-') || (character == '_')
+-					|| (character == '(') || (character == ')'))
+-					devname[j] = character;
+-				else
+-					devname[j] = ' ';
+-			}
+-
+-			snprintf(ipaddr, sizeof(ipaddr), "%d.%d.%d.%d", p_client_info_tab->ip_addr[i][0],p_client_info_tab->ip_addr[i][1],
+-			p_client_info_tab->ip_addr[i][2],p_client_info_tab->ip_addr[i][3]);
+-#ifdef RTCONFIG_IPV6
+-			if (!gt_ax11000_client_info_tab) {
+-				snprintf(ip6addr, sizeof(ip6addr), "%s", p_client_info_tab->ip6_addr[i]);
+-				snprintf(ip6_prefix, sizeof(ip6_prefix), "%s", p_client_info_tab->ip6_prefix[i]);
+-			}
+-#endif
+-			snprintf(mac_buf, sizeof(mac_buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+-			p_client_info_tab->mac_addr[i][0],p_client_info_tab->mac_addr[i][1],
+-			p_client_info_tab->mac_addr[i][2],p_client_info_tab->mac_addr[i][3],
+-			p_client_info_tab->mac_addr[i][4],p_client_info_tab->mac_addr[i][5]
+-			);
+-
+-#ifdef RTCONFIG_AMAS
+-			if(is_amas_support()) {
+-
+-				if (is_re_node(mac_buf, 1))
+-					continue;
+-			}
+-#endif	/* RTCONFIG_AMAS */
+-#ifdef RTCONFIG_MULTILAN_CFG
+-			if (gt_ax11000_client_info_tab) {
+-				snprintf(sdn_idx, sizeof(sdn_idx), "%d", gt_ax11000_client_info_tab->sdn_idx[i]);
+-				sdn_type[0] = '\0';
+-				strlcpy(vlan_id, "0", sizeof(vlan_id));
+-			} else {
+-				snprintf(sdn_idx, sizeof(sdn_idx), "%d", p_client_info_tab->sdn_idx[i]);
+-				snprintf(sdn_type, sizeof(sdn_type), "%s", p_client_info_tab->sdn_type[i]);
+-				snprintf(vlan_id, sizeof(vlan_id), "%d", p_client_info_tab->vlan_id[i]);
+-			}
+-#endif
+-#ifdef RTCONFIG_MLO
+-			if (!gt_ax11000_client_info_tab)
+-				snprintf(mlo, sizeof(mlo), "%d", p_client_info_tab->mlo[i]);
+-#endif
+-			snprintf(online, sizeof(online), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, online, i));
+-			snprintf(type, sizeof(type), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, type, i));
+-			snprintf(defaultType, sizeof(defaultType), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, type, i));
+-			snprintf(macRepeat, sizeof(macRepeat), "%d", check_macrepeat(macArray, mac_buf));
+-			snprintf(opMode, sizeof(opMode), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, opMode, i));
+-			snprintf(rssi, sizeof(rssi), "%d", (int)NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, rssi, i));
+-			snprintf(wireless, sizeof(wireless), "%d", NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, wireless, i));
+-
+-			client = json_object_new_object();
+-#ifdef RTCONFIG_MULTILAN_CFG
+-			json_object_object_add(client, "sdn_idx", json_object_new_string(sdn_idx));
+-			json_object_object_add(client, "sdn_type", json_object_new_string(sdn_type));
+-			json_object_object_add(client, "vlan_id", json_object_new_string(vlan_id));
+-#endif
+-#ifdef RTCONFIG_MLO
+-			json_object_object_add(client, "mlo", json_object_new_string(mlo));
+-
+-			struct json_object *mlo_links_obj = gt_ax11000_client_info_tab ? NULL :
+-				client_mlo_links_to_json(p_client_info_tab, i);
+-			if (mlo_links_obj)
+-				json_object_object_add(client, "mlo_links", mlo_links_obj);
+-
+-#endif
+-			json_object_object_add(client, "type", json_object_new_string(type));
+-			json_object_object_add(client, "defaultType", json_object_new_string(defaultType));
+-			json_object_object_add(client, "name", json_object_new_string(devname));
+-			json_object_object_add(client, "nickName", json_object_new_string(""));
+-			json_object_object_add(client, "ip", json_object_new_string(ipaddr));
+-#ifdef RTCONFIG_IPV6
+-			json_object_object_add(client, "ip6", json_object_new_string(ip6addr));
+-			json_object_object_add(client, "ip6_prefix", json_object_new_string(ip6_prefix));
+-#endif
+-			json_object_object_add(client, "mac", json_object_new_string(mac_buf));
+-			json_object_object_add(client, "from", json_object_new_string("networkmapd"));
+-			json_object_object_add(client, "macRepeat", json_object_new_string(macRepeat));
+-			json_object_object_add(client, "isGateway", json_object_new_string(!strcmp(nvram_safe_get("lan_ipaddr"), ipaddr) ? "1" : "0"));
+-			unsigned char client_device_flag = NETWORKMAP_CLIENT_FIELD(p_client_info_tab,
+-				gt_ax11000_client_info_tab, device_flag, i);
+-			json_object_object_add(client, "isASUS", json_object_new_string((client_device_flag & (1<<FLAG_ASUS)) ? "1" : "0"));
+-			json_object_object_add(client, "isWebServer", json_object_new_string((client_device_flag & (1<<FLAG_HTTP)) ? "1" : "0"));
+-			json_object_object_add(client, "isPrinter", json_object_new_string((client_device_flag & (1<<FLAG_PRINTER)) ? "1" : "0"));
+-			json_object_object_add(client, "isITunes", json_object_new_string((client_device_flag & (1<<FLAG_ITUNE)) ? "1" : "0"));
+-			json_object_object_add(client, "isAiBoard", json_object_new_string((client_device_flag & (1<<FLAG_AIBOARD)) ? "1" : "0"));
+-			json_object_object_add(client, "dpiType", json_object_new_string(""));
+-			json_object_object_add(client, "dpiDevice", json_object_new_string((const char *) p_client_info_tab->apple_model[i]));
+-			json_object_object_add(client, "vendor", json_object_new_string((const char *) p_client_info_tab->vendor_name[i]));
+-			json_object_object_add(client, "isWL", json_object_new_string(wireless));
+-			json_object_object_add(client, "isGN", json_object_new_string(gt_ax11000_client_info_tab ? "" : p_client_info_tab->guest_network[i]));
+-#ifndef RTCONFIG_AMAS
+- 			json_object_object_add(client, "isOnline", json_object_new_string("1"));
+-			json_object_array_add(macArray, json_object_new_string(mac_buf));
+-#else
+-			json_object_object_add(client, "isOnline", json_object_new_string(online));
+-#endif
+-			json_object_object_add(client, "ssid", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, ssid, i)));
+-			if(!strcmp(ipaddr, nvram_safe_get("login_ip_str"))){
+-				json_object_object_add(client, "isLogin", json_object_new_string("1"));
+-			}
+-			else{
+-				json_object_object_add(client, "isLogin", json_object_new_string("0"));
+-			}
+-			json_object_object_add(client, "opMode", json_object_new_string(opMode));
+-
+-			//wireless hook
+-			json_object_object_add(client, "rssi", json_object_new_string(rssi));
+-			json_object_object_add(client, "curTx", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, txrate, i)));
+-			json_object_object_add(client, "curRx", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, rxrate, i)));
+-			json_object_object_add(client, "totalTx", json_object_new_string(""));
+-			json_object_object_add(client, "totalRx", json_object_new_string(""));
+-			json_object_object_add(client, "wlConnectTime", json_object_new_string(NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, conn_time, i)));
+-			json_object_object_add(client, "wlAuth", json_object_new_string(gt_ax11000_client_info_tab ? "" : p_client_info_tab->wireless_auth[i]));
+-#if defined(BRTAC828)
+-			json_object_object_add(client, "wlInterface", json_object_new_string(&p_client_info_tab->subunit[i]));
+-#endif
+-
+-			//ipMethod
+-			json_object_object_add(client, "ipMethod", json_object_new_string((const char *)NETWORKMAP_CLIENT_FIELD(p_client_info_tab, gt_ax11000_client_info_tab, ipMethod, i)));
+-
+-			//check rog clientlist
+-			if (strstr(nvram_safe_get("rog_clientlist"), mac_buf)) {
+-				json_object_object_add(client, "ROG", json_object_new_string("1"));
+-				json_object_object_add(client, "type", json_object_new_string("36"));
+-				json_object_object_add(client, "defaultType", json_object_new_string("36"));
+-			}
+-			else
+-				json_object_object_add(client, "ROG", json_object_new_string("0"));
+-
+-			//custom_clientlist
+-			json_object_object_add(client, "group", json_object_new_string(""));
+-			json_object_object_add(client, "callback", json_object_new_string(""));
+-			json_object_object_add(client, "keeparp", json_object_new_string(""));
+-
+-			//Update attribute by custom_clientlist
+-			if(customList_status) {
+-				 json_object_object_get_ex(customList, mac_buf, &custom_attr_get);
+-				if(custom_attr_get != NULL) {
+-					struct json_object *custom_attr_get_type = NULL, *custom_attr_get_name = NULL, *custom_attr_get_callback = NULL, *custom_attr_get_keeparp = NULL;
+-					memset(type, 0, sizeof(type));
+-					if(json_object_object_get_ex(custom_attr_get, "type", &custom_attr_get_type))
+-						snprintf(type, sizeof(type), "%d", json_object_get_int(custom_attr_get_type));
+-					if(strcmp(type, "0")) //if custom_clientlist type is 0, not update.
+-						json_object_object_add(client, "type", json_object_new_string(type));
+-					if(json_object_object_get_ex(custom_attr_get, "name", &custom_attr_get_name))
+-						json_object_object_add(client, "nickName", json_object_new_string(json_object_get_string(custom_attr_get_name)));
+-					//json_object_object_add(client, "group", json_object_new_string(json_object_get_string(json_object_object_get(custom_attr_get, "group"))));
+-					if(json_object_object_get_ex(custom_attr_get, "callback", &custom_attr_get_callback))
+-						json_object_object_add(client, "callback", json_object_new_string(json_object_get_string(custom_attr_get_callback)));
+-					if(json_object_object_get_ex(custom_attr_get, "keeparp", &custom_attr_get_keeparp))
+-						json_object_object_add(client, "keeparp", json_object_new_string(json_object_get_string(custom_attr_get_keeparp)));
+-				}
+-				CLIENT_DPRINTF("customList finish\n");
+-			}
+-
+-			//qos_rulelist
+-			json_object_object_add(client, "qosLevel", json_object_new_string(""));
+-			//Update attribute by qos_rulelist
+-			if(qosRuleList_status) {
+-				json_object_object_get_ex(qosRuleList, mac_buf, &custom_attr_get);
+-				if(custom_attr_get != NULL) {
+-					json_object_object_add(client, "qosLevel", json_object_new_string(json_object_get_string(custom_attr_get)));
+-				}
+-				CLIENT_DPRINTF("qosRuleList finish\n");
+-			}
+-
+-			//wtf_rulelist
+-			json_object_object_add(client, "wtfast", json_object_new_string("0"));
+-			//Update attribute by qos_rulelist
+-			if(wtfRulelist_status) {
+-				json_object_object_get_ex(wtfRulelist, mac_buf, &custom_attr_get);
+-				if(custom_attr_get != NULL) {
+-					snprintf(wtfast, sizeof(wtfast), "%d", json_object_get_int(custom_attr_get));
+-					json_object_object_add(client, "wtfast", json_object_new_string(wtfast));
+-				}
+-				CLIENT_DPRINTF("wtfRulelist finish\n");
+-			}
+-
+-#ifdef RTCONFIG_PERMISSION_MANAGEMENT
+-			//Update attribute by pmInfo
+-			if(pmInfo_status) {
+-				json_object_object_get_ex(pmInfo, mac_buf, &custom_attr_get);
+-				if(custom_attr_get != NULL) {
+-					pmGroupArray = json_object_new_array();
+-					json_object_object_get_ex(custom_attr_get, "device_group", &pmGroupArray_temp);
+-					arraylen = json_object_array_length(pmGroupArray_temp);
+-					for (idx = 0; idx < arraylen; idx++) {
+-						json_object_array_add(pmGroupArray, json_object_new_string(json_object_get_string(json_object_array_get_idx(pmGroupArray_temp, idx))));
+-					}
+-					json_object_object_add(client, "group", pmGroupArray);
+-				}
+-				CLIENT_DPRINTF("pmInfo finish\n");
+-			}
+-#endif
+-
+-			//time_scheduling
+-			json_object_object_add(client, "internetMode", json_object_new_string("allow"));
+-			json_object_object_add(client, "internetState", json_object_new_string("1"));
+-			if(multifilterList_status) {
+-#ifdef RTCONFIG_PERMISSION_MANAGEMENT
+-				json_object_object_get_ex(client, "group", &pmGroupArray_temp);
+-				if(strcmp(json_object_get_string(pmGroupArray_temp), "") && strcmp(json_object_get_string(pmGroupArray_temp), "0")) {
+-					arraylen = json_object_array_length(pmGroupArray_temp);
+-					for (idx = 0; idx < arraylen; idx++) {
+-						json_object_object_get_ex(multifilterList, json_object_get_string(json_object_array_get_idx(pmGroupArray_temp, idx)), &custom_attr_get);
+-						if(custom_attr_get != NULL) {
+-							struct json_object *custom_attr_get_internetState = NULL, *custom_attr_get_internetMode = NULL;
+-							if(json_object_object_get_ex(custom_attr_get, "internetState", &custom_attr_get_internetState))
+-								snprintf(internetState, sizeof(internetState), "%d", json_object_get_int(custom_attr_get_internetState));
+-							if(json_object_object_get_ex(custom_attr_get, "internetMode", &custom_attr_get_internetMode))
+-								json_object_object_add(client, "internetMode", json_object_new_string(json_object_get_string(custom_attr_get_internetMode)));
+-							json_object_object_add(client, "internetState", json_object_new_string(internetState));
+-							if(!json_object_get_int(custom_attr_get_internetState)) {
+-								break;
+-							}
+-						}
+-					}
+-					CLIENT_DPRINTF("multifilterList by group finish\n");
+-				}
+-#else
+-				json_object_object_get_ex(multifilterList, mac_buf, &custom_attr_get);
+-				if(custom_attr_get != NULL) {
+-					struct json_object *custom_attr_get_internetState = NULL, *custom_attr_get_internetMode = NULL;
+-					if(json_object_object_get_ex(custom_attr_get, "internetMode", &custom_attr_get_internetMode))
+-						json_object_object_add(client, "internetMode", json_object_new_string(json_object_get_string(custom_attr_get_internetMode)));
+-					if(json_object_object_get_ex(custom_attr_get, "internetState", &custom_attr_get_internetState))
+-						json_object_object_add(client, "internetState", json_object_new_int(json_object_get_int(custom_attr_get_internetState)));
+-				}
+-				CLIENT_DPRINTF("multifilterList by mac finish\n");
+-#endif
+-			}
+-
+-#if defined(RTCONFIG_AMAS) || defined(RTCONFIG_WIFI_SON)
+-			if(is_amas_support()) {
+-
+-			if(!gt_ax11000_client_info_tab && strcmp(p_client_info_tab->is_re[i], "1") == 0) {
+-				json_object_object_add(client, "amesh_isRe", json_object_new_string("1"));
+-			}
+-
+-			if(!gt_ax11000_client_info_tab && isMAC(p_client_info_tab->pap_mac[i]))  {
+-				json_object_object_add(client, "amesh_isReClient", json_object_new_string("1"));
+-				json_object_object_add(client, "amesh_papMac", json_object_new_string(p_client_info_tab->pap_mac[i]));
+-				CLIENT_DPRINTF("check amesh_isReClient finish\n");
+-			}
+-
+-			if(amasReClientDetailList_status) {
+-				struct json_object *amas_re_get_isWL = NULL, *amas_re_get_amesh_papMac = NULL;
+-				json_object_object_get_ex(client, "isWL", &amas_re_get_isWL);
+-				json_object_object_get_ex(client, "amesh_papMac", &amas_re_get_amesh_papMac);
+-
+-				if(amas_re_get_amesh_papMac != NULL && strcmp(json_object_get_string(amas_re_get_isWL), "0")) {
+-					char client_key[40] = {0};
+-					memset(client_key, 0, sizeof(client_key));
+-					snprintf(client_key, sizeof(client_key), "%s_%s_%s", mac_buf, json_object_get_string(amas_re_get_isWL), json_object_get_string(amas_re_get_amesh_papMac));//mac_band_papMac
+-					json_object_object_get_ex(amasReClientDetailList, client_key, &custom_attr_get);
+-					if(custom_attr_get != NULL) {
+-						struct json_object *amas_re_get_rssi = NULL;
+-						json_object_object_get_ex(custom_attr_get, "rssi", &amas_re_get_rssi);
+-						json_object_object_add(client, "rssi", json_object_new_string(json_object_get_string(amas_re_get_rssi)));
+-					}
+-				}
+-				CLIENT_DPRINTF("amasReClientDetailList finish\n");
+-			}
+-			json_object_object_add(client, "amesh_bind_mac", json_object_new_string(""));
+-			json_object_object_add(client, "amesh_bind_band", json_object_new_string("0"));
+-#ifdef RTCONFIG_STA_AP_BAND_BIND
+-			if (get_client_bind_info(mac_buf, node_mac, sizeof(node_mac), band_index, sizeof(band_index)) == 1) {
+-				json_object_object_add(client, "amesh_bind_mac", json_object_new_string(node_mac));
+-				json_object_object_add(client, "amesh_bind_band", json_object_new_string(band_index));
+-			}
+-#endif
+-			}
+-
+-            //check isOnline attribute only on amas support(not when RTCONFIG_AMAS defined)
+-            if(is_amas_support()) {
+-
+-				struct json_object *isOnline = NULL;
+-				json_object_object_get_ex(client, "isOnline", &isOnline);
+-				snprintf(online, sizeof(online), "%s", json_object_get_string(isOnline));
+-
+-				// _dprintf("WEB i = %2d, mac = %s, online = %s, wireless = %s, ip = %s\n", i, mac_buf, online, wireless, ipaddr);
+-
+-                if(strcmp(online, "1") == 0) {
+-                    json_object_array_add(macArray, json_object_new_string(mac_buf));   
+-                }
+-
+-            } else {
+-                json_object_object_add(client, "isOnline", json_object_new_string("1"));
+-                json_object_array_add(macArray, json_object_new_string(mac_buf));
+-            }
+-
+-#endif
+-
+-			json_object_object_add(clients, mac_buf, client);
+-#ifndef RTCONFIG_AMAS
+-		}
+-#endif
+-	}
+-	shmdt(shared_client_info);
+-	file_unlock(lock);
+-
+-	if(customList)
+-		json_object_put(customList);
+-	if(qosRuleList)
+-		json_object_put(qosRuleList);
+-	if(wtfRulelist)
+-		json_object_put(wtfRulelist);
+-	if(multifilterList)
+-		json_object_put(multifilterList);
+-#ifdef RTCONFIG_PERMISSION_MANAGEMENT
+-	if(pmInfo)
+-		json_object_put(pmInfo);
+-#endif
+-#if defined(RTCONFIG_AMAS) || defined(RTCONFIG_WIFI_SON)
+-	if(amasReClientDetailList)
+-		json_object_put(amasReClientDetailList);
+-#endif
+-	if(custom_attr_get)
+-		json_object_put(custom_attr_get);
+-	CLIENT_DPRINTF("get_client_detail_info finish\n");
+-
+-	return 0;
+-}
+-
+ static int ej_get_clientlist(int eid, webs_t wp, int argc, char_t **argv)
+ {
+ 
+@@ -11047,83 +10169,48 @@
+     }
+ #endif
+ 
+-	struct json_object *clients;
++	char *buffer;
++	int length;
++
++	if((buffer = malloc(CLIENTLIST_JSON_CAPACITY)) == NULL){
++		websWrite(wp, "{\"maclist\": [], \"ClientAPILevel\":\"%s\"}", CLIENTAPILEVEL);
++		return 0;
++	}
++
+ 	if((nvram_match("refresh_networkmap", "1") || nvram_match("rescan_networkmap", "1")) && (check_if_file_exist(NMP_CACHE_FILE)))
+ 	{
+-		struct json_object *cached_maclist = NULL;
+-		clients = json_object_from_file(NMP_CACHE_FILE);
+-		/* A partial writer or get_clientlist_ex() used to leave a cache without
+-		 * the maclist index required by client_function.js.  Do not turn that
+-		 * transient snapshot into an empty/broken client view. */
+-		if(clients &&
+-		   json_object_object_get_ex(clients, "maclist", &cached_maclist) &&
+-		   json_object_is_type(cached_maclist, json_type_array) &&
+-		   json_object_array_length(cached_maclist) > 0) {
+-			websWrite(wp, "%s", json_object_to_json_string(clients));
+-			json_object_put(clients);
++		/* A partial writer used to leave a cache without the maclist index
++		 * required by client_function.js.  Rust serves the cache only when it
++		 * is a JSON object with a non-empty maclist array; otherwise the
++		 * transient snapshot is regenerated below. */
++		length = rust_httpd_clientlist_cache_read(NMP_CACHE_FILE, buffer, CLIENTLIST_JSON_CAPACITY);
++		if(length > 0){
++			websWrite(wp, "%s", buffer);
++			free(buffer);
+ 			return 0;
+ 		}
+-		if(clients)
+-			json_object_put(clients);
+ 	}
+-	
++
+ 	if(!pids("networkmap")){
+ 		websWrite(wp, "{\"maclist\": [], \"ClientAPILevel\":\"%s\"}", CLIENTAPILEVEL);
++		free(buffer);
+ 		return 0;
+ 	}
+ 
+-	clients = json_object_new_object();
+-
+-	struct json_object *macArray = json_object_new_array();
+ 	/*
+ 	shmkey	index
+ 	1001	LAN
+-	1003	VLAN1
+-	1004	VLAN2
+-	1005	VLAN3
+-	1006	VLAN4
+-	1007	VLAN5
+-	1008	VLAN6
+-	1009	VLAN7
+-	1010	VLAN8
+-	1011	FREE-WIFI
+-	1012	CAPTIVE PORTAL
+ 	*/
+-	get_client_detail_info(clients, macArray, SHMKEY_LAN);
+-
+-#if defined(RTCONFIG_TAGGED_BASED_VLAN) && !defined(FLAG_FUNCTION_TEMPORARILY_CANCELED)
+-	int i, vlan_flag;
+-	int shmkeys[8], shmkey = 1003;
+-	for(i = 0; i < 8; i++){
+-		shmkeys[i] = shmkey;
+-		shmkey++;
+-	}
+-	vlan_flag = nvram_get_int("vlan_flag");
+-	if(vlan_flag){
+-		for(i = 0; i < 8; i++){
+-			if(vlan_flag & (1<<i)){
+-				_dprintf("VLAN subnet search %d\n", shmkeys[i]);
+-				get_client_detail_info(clients, macArray, shmkeys[i]);
+-			}
+-		}
+-	}
+-#endif
+-#if defined(RTCONFIG_CAPTIVE_PORTAL) && !defined(FLAG_FUNCTION_TEMPORARILY_CANCELED)
+-	if (nvram_match("captive_portal_enable", "on")){
+-		get_client_detail_info(clients, macArray, SHMKEY_FREEWIFI);
+-	}
+-	if (nvram_match("captive_portal_adv_enable", "on")){
+-		get_client_detail_info(clients, macArray, SHMKEY_CP);
++	length = networkmap_render_clientlist(buffer, CLIENTLIST_JSON_CAPACITY);
++	if(length < 0){
++		websWrite(wp, "{\"maclist\": [], \"ClientAPILevel\":\"%s\"}", CLIENTAPILEVEL);
++		free(buffer);
++		return 0;
+ 	}
+-#endif
+ 
+-	json_object_object_add(clients, "maclist", macArray);
+-	json_object_object_add(clients, "ClientAPILevel", json_object_new_string(CLIENTAPILEVEL));
+-	websWrite(wp, "%s", json_object_to_json_string(clients));
+-
+-	json_object_to_file(NMP_CACHE_FILE, clients);
+-	if(clients)
+-		json_object_put(clients);
++	websWrite(wp, "%s", buffer);
++	rust_httpd_clientlist_cache_write(NMP_CACHE_FILE, buffer, (size_t)length);
++	free(buffer);
+ 	return 0;
+ }
+ 
+@@ -23193,40 +22280,32 @@
+ }
+ 
+ static int search_device_name_in_clientlist(const char *name, struct json_object *json_object_array){
+-	int ret=0;
+-	struct json_object *clients=NULL;
+-	struct json_object *client_name = NULL;
+-	struct json_object *customList = NULL, *custom_attr_get = NULL, *custom_client_name = NULL;
+-	int customList_status = 0;
++	char *buffer, *custom_clientlist, *line, *next;
++	int count;
+ 
+-	if(!pids("networkmap") || (clients = json_object_from_file(NMP_CL_JSON_FILE)) == NULL){
++	if(!pids("networkmap") || (buffer = malloc(CLIENTLIST_JSON_CAPACITY)) == NULL){
+ 		HTTPD_DBG("search_device_name_in_clientlist fail\n");
+ 		return 0;
+ 	}
+ 
+-	customList = json_object_new_object();
+-	customList_status = get_custom_clientlist_info(customList);
+-
+-	json_object_object_foreach(clients, key, val) {
+-		if(customList_status && json_object_object_get_ex(customList, key, &custom_attr_get) && json_object_object_get_ex(custom_attr_get, "name", &custom_client_name)){
+-			if(!strcasecmp(name, json_object_get_string(custom_client_name)))
+-				json_object_array_add(json_object_array, json_object_new_string(key));
+-		}else{
+-			if(json_object_object_get_ex(val, "name", &client_name)){
+-				if(!strcasecmp(name, json_object_get_string(client_name)))
+-					json_object_array_add(json_object_array, json_object_new_string(key));
+-			}
+-		}
++	custom_clientlist = strdup(nvram_safe_get("custom_clientlist"));
++	count = rust_httpd_clientlist_search_name(NMP_CL_JSON_FILE, custom_clientlist, name,
++		buffer, CLIENTLIST_JSON_CAPACITY);
++	free(custom_clientlist);
++	if(count < 0){
++		HTTPD_DBG("search_device_name_in_clientlist fail\n");
++		free(buffer);
++		return 0;
+ 	}
+ 
+-	ret = json_object_array_length(json_object_array);
+-
+-	if(customList)
+-		json_object_put(customList);
+-	if(clients)
+-		json_object_put(clients);
++	/* One MAC per line; the array belongs to the caller. */
++	for(line = buffer; (next = strchr(line, '\n')) != NULL; line = next + 1){
++		*next = '\0';
++		json_object_array_add(json_object_array, json_object_new_string(line));
++	}
++	free(buffer);
+ 
+-	return ret;
++	return json_object_array_length(json_object_array);
+ }
+ 
+ static int
+@@ -42131,28 +41210,16 @@
+ }
+ 
+ static int get_sdn_client_num(int *client_num){
++	char *buffer;
++	int length;
+ 
+-	int num = 0;
+-	struct json_object *clients = NULL, *sdn_idx = NULL, *isOnline = NULL;
+-
+-	get_clientlist_ex(&clients);
+-
+-	if(clients && json_object_get_type(clients) == json_type_object)
+-	{
+-		json_object_object_foreach(clients, key, val) {
+-			if(json_object_object_get_ex(val, "sdn_idx", &sdn_idx) && json_object_object_get_ex(val, "isOnline", &isOnline)){
+-				if(json_object_get_type(isOnline) != json_type_string || !strcmp(json_object_get_string(isOnline), "0"))
+-					continue;
+-				num = strtoul((char *)json_object_get_string(sdn_idx), NULL, 10);
+-				if(num >= 0 && num <= APG_MAXINUM){
+-					client_num[num]++;
+-				}
+-			}
+-		}
+-	}
++	if((buffer = malloc(CLIENTLIST_JSON_CAPACITY)) == NULL)
++		return 0;
+ 
+-	if(clients)
+-		json_object_put(clients);
++	length = get_clientlist_ex(buffer, CLIENTLIST_JSON_CAPACITY);
++	if(length > 0)
++		rust_httpd_clientlist_sdn_client_count(buffer, (size_t)length, client_num, APG_MAXINUM);
++	free(buffer);
+ 
+ 	return 0;
+ }
+@@ -43499,114 +42566,46 @@
+ 	return (str);
+ }
+ 
+-static int get_clientlist_ex(struct json_object **clients)
++static int get_clientlist_ex(char *buffer, size_t capacity)
+ {
++	int length;
++
+ 	if((nvram_match("refresh_networkmap", "1") || nvram_match("rescan_networkmap", "1")) && (check_if_file_exist(NMP_CACHE_FILE)))
+ 	{
+-		struct json_object *cached_maclist = NULL;
+-		*clients = json_object_from_file(NMP_CACHE_FILE);
+-		if(*clients &&
+-		   json_object_object_get_ex(*clients, "maclist", &cached_maclist) &&
+-		   json_object_is_type(cached_maclist, json_type_array) &&
+-		   json_object_array_length(cached_maclist) > 0)
+-			return 0;
+-		if(*clients) {
+-			json_object_put(*clients);
+-			*clients = NULL;
+-		}
++		/* Only a complete cache (object with a non-empty maclist array) is
++		 * used; anything else is regenerated. */
++		length = rust_httpd_clientlist_cache_read(NMP_CACHE_FILE, buffer, capacity);
++		if(length > 0)
++			return length;
+ 	}
+ 
+ 	if(!pids("networkmap")){
+-		return 0;
++		return -1;
+ 	}
+ 
+-	*clients = json_object_new_object();
+-
+-	struct json_object *macArray = json_object_new_array();
+ 	/*
+ 	shmkey	index
+ 	1001	LAN
+-	1003	VLAN1
+-	1004	VLAN2
+-	1005	VLAN3
+-	1006	VLAN4
+-	1007	VLAN5
+-	1008	VLAN6
+-	1009	VLAN7
+-	1010	VLAN8
+-	1011	FREE-WIFI
+-	1012	CAPTIVE PORTAL
+ 	*/
+-	get_client_detail_info(*clients, macArray, SHMKEY_LAN);
+-
+-#if defined(RTCONFIG_TAGGED_BASED_VLAN) && !defined(FLAG_FUNCTION_TEMPORARILY_CANCELED)
+-	int i, vlan_flag;
+-	int shmkeys[8], shmkey = 1003;
+-	for(i = 0; i < 8; i++){
+-		shmkeys[i] = shmkey;
+-		shmkey++;
+-	}
+-	vlan_flag = nvram_get_int("vlan_flag");
+-	if(vlan_flag){
+-		for(i = 0; i < 8; i++){
+-			if(vlan_flag & (1<<i)){
+-				_dprintf("get_clientlist: VLAN subnet search %d\n", shmkeys[i]);
+-				get_client_detail_info(*clients, macArray, shmkeys[i]);
+-			}
+-		}
+-	}
+-#endif
+-
+-#if defined(RTCONFIG_CAPTIVE_PORTAL) && !defined(FLAG_FUNCTION_TEMPORARILY_CANCELED)
+-	if (nvram_match("captive_portal_enable", "on")){
+-		get_client_detail_info(*clients, macArray, SHMKEY_FREEWIFI);
+-	}
+-	if (nvram_match("captive_portal_adv_enable", "on")){
+-		get_client_detail_info(*clients, macArray, SHMKEY_CP);
+-	}
+-#endif
+-	json_object_object_add(*clients, "maclist", macArray);
+-	json_object_object_add(*clients, "ClientAPILevel", json_object_new_string(CLIENTAPILEVEL));
+-	json_object_to_file(NMP_CACHE_FILE, *clients);
+-	return 0;
++	length = networkmap_render_clientlist(buffer, capacity);
++	if(length < 0)
++		return -1;
++	rust_httpd_clientlist_cache_write(NMP_CACHE_FILE, buffer, (size_t)length);
++	return length;
+ }
+ 
+ static int get_client_name(char *ipaddr, char *name, size_t name_len){
+-	struct json_object *clients = NULL;
+-	struct json_object *ip_obj = NULL, *name_obj = NULL, *nickname_obj = NULL;
+-	char *ip_string, *nickname_string, *name_string;
+-	memset(name, 0, name_len);
+-
+-	get_clientlist_ex(&clients);
+-	if(clients){
+-		json_object_object_foreach(clients, key, val) {
+-			if(!json_object_is_type(val, json_type_object))
+-				continue;
+-			if(!json_object_object_get_ex(val, "ip", &ip_obj))
+-				continue;
+-			ip_string = (char *)json_object_get_string(ip_obj);
+-			if(!ip_string)
+-				continue;
+-			if(strcmp(ip_string, ipaddr) == 0)
+-			{
+-				strlcpy(name, ipaddr, name_len);
+-				if(json_object_object_get_ex(val, "name", &name_obj)){
+-					name_string = (char *)json_object_get_string(name_obj);
+-					if(name_string && *name_string != '\0')
+-						strlcpy(name, name_string, name_len);
+-				}
++	char *buffer;
++	int length;
+ 
+-				if(json_object_object_get_ex(val, "nickName", &nickname_obj)){
+-					nickname_string = (char *)json_object_get_string(nickname_obj);
+-					if(nickname_string && *nickname_string != '\0')
+-						strlcpy(name, nickname_string, name_len);
+-				}
+-			}
+-		}
+-	}
++	memset(name, 0, name_len);
+ 
+-	if(clients)
+-		json_object_put(clients);
++	if((buffer = malloc(CLIENTLIST_JSON_CAPACITY)) == NULL)
++		return 0;
++	length = get_clientlist_ex(buffer, CLIENTLIST_JSON_CAPACITY);
++	if(length > 0)
++		rust_httpd_clientlist_name_for_ip(buffer, (size_t)length, ipaddr, name, name_len);
++	free(buffer);
+ 
+ 	return 0;
+ }

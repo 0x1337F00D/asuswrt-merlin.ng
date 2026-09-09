@@ -7,6 +7,8 @@ license = "GPL-2.0-only"
 publish = false
 
 [dependencies]
+clientlist = { path = "../clientlist" }
+serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
 httpd-parsers = { path = "../httpd-parsers" }
 infosvr = { path = "../infosvr" }
 router-policy = { path = "../router-policy" }

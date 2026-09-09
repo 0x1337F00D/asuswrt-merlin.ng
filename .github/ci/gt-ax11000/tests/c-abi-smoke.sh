@@ -36,6 +36,12 @@ libraries=(-ldl -lpthread -lm -lrt -lutil)
 cc "${common[@]}" "$SCRIPT_ROOT/c-abi/httpd.c" \
 	"$TARGET_DIR/release/libhttpd_parsers.a" "${libraries[@]}" \
 	-o "$FIXTURE_DIR/httpd"
+# The client list is exported by the same archive httpd links; the fixture
+# creates a private SysV segment and needs a writable directory for the
+# vendor-style lock and cache files.
+cc "${common[@]}" "$SCRIPT_ROOT/c-abi/clientlist.c" \
+	"$TARGET_DIR/release/libhttpd_parsers.a" "${libraries[@]}" \
+	-o "$FIXTURE_DIR/clientlist"
 cc "${common[@]}" "$SCRIPT_ROOT/c-abi/router-security.c" \
 	"$TARGET_DIR/release/librouter_security.a" "${libraries[@]}" \
 	-o "$FIXTURE_DIR/router-security"
@@ -49,6 +55,7 @@ cc "${common[@]}" -I"$SCRIPT_ROOT/c-abi/include" "$SCRIPT_ROOT/c-abi/zlib.c" \
 	-o "$FIXTURE_DIR/zlib"
 
 "$FIXTURE_DIR/httpd"
+"$FIXTURE_DIR/clientlist" "$FIXTURE_DIR"
 "$FIXTURE_DIR/router-security" "$FIXTURE_DIR"
 "$FIXTURE_DIR/wanduck"
 "$FIXTURE_DIR/zlib"

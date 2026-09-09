@@ -62,6 +62,35 @@ calls them, and `verify-rust-firmware.sh` checks that the installed `wget` has
 no `libz.so` dependency, carries the `1.3.0-zlib-rs-` marker and starts under
 QEMU.
 
+The ninth component is `clientlist`, the GT-AX11000 Web UI client list. It
+replaces the json-c based readers of `httpd/web.c` (`get_client_detail_info`,
+`ej_get_clientlist`, `get_clientlist_ex`, `get_client_name`,
+`get_sdn_client_num`, `ej_get_clientlist_from_json_database`,
+`ej_get_all_basic_clientlist`, `get_basic_clientlist_info` and
+`search_device_name_in_clientlist`). `layout.rs` carries `#[repr(C)]`
+descriptions of the closed daemon's 174,964-byte legacy table and the public
+173,436-byte table with compile-time size and offset assertions; the legacy
+view is selected only for `productid` `GT-AX11000` with exactly that segment
+size, the public view only for exactly its size, and anything else fails
+closed. `shm.rs` takes the vendor `file_lock("networkmap")` (`fcntl`
+`F_SETLKW`), attaches the existing segment read-only without ever creating
+it, copies it whole and detaches; parsing works on the copy, reads every
+string inside its own field width, takes the trailer from the segment end
+and clamps the count to 0..=255. The typed model is enriched from
+`custom_clientlist`, `qos_rulelist`, `wtf_rulelist`, the `MULTIFILTER_*`
+set (including the weekday/hour schedule check), `rog_clientlist` and the
+AiMesh RE details, and rendered with `serde_json` through an
+insertion-ordered value that keeps json-c's replace-in-place key order. The
+C side keeps the `networkmap` process gate, the `nmp_wl_offline_check`
+flag, the `delete_mac` trailer write and the AiMesh `is_re_node`/
+`get_amas_info` lookups (passed as a callback and a text list); output goes
+into a caller-provided 1 MiB buffer, atomic `/tmp/nmp_cache.js` writes are
+done in Rust and no `json_object` crosses the boundary. The crate's FFI is
+re-exported by `httpd-parsers`, so `httpd` still links one Rust archive.
+`serde`/`serde_json` are the only new dependencies (the vendored
+`serde_derive`/`syn` tree is a `cfg(any())` placeholder of `serde_core` that
+is never compiled).
+
 `infosvr` security boundary:
 
 - the packet parser requires an exact 512-byte PDU and accepts only the four
@@ -113,10 +142,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 bash ../tests/security-overlay-check.sh /path/to/patched/source
 ```
 
-The dependency-free structured fuzz runner covers the HTTP query/URL and
-multipart boundaries, NVRAM-facing WLAN/test-lab policy, OpenVPN/IPsec/
-WireGuard parsers, infosvr PDUs, rstats codecs and the wanduck transition
-machine. It is deterministic and keeps Cargo state and artifacts in tmpfs:
+The structured fuzz runner covers the HTTP query/URL and multipart
+boundaries, NVRAM-facing WLAN/test-lab policy, OpenVPN/IPsec/WireGuard
+parsers, infosvr PDUs, rstats codecs, the wanduck transition machine and the
+client-list parsers (synthetic legacy/public shared-memory segments with
+random counts and unterminated fields, the NVRAM list/schedule parsers, the
+AiMesh details file, the cache check and the persistent-database transform).
+It is deterministic and keeps Cargo state and artifacts in tmpfs:
 
 ```sh
 ASUSWRT_REQUIRE_TMPFS=1 \
@@ -125,12 +157,17 @@ bash ../tests/rust-fuzz-smoke.sh
 ```
 
 Three fixed seeds are always run, along with explicit maximum-length,
-pair-count, encoded-NUL, codec-record and protocol-opcode boundary cases.
+pair-count, encoded-NUL, codec-record, protocol-opcode and client-count/
+segment-size boundary cases.
 
 The C ABI smoke suite compiles strict C11 fixtures against the release Rust
 archives and executes the same entry points used by `httpd`, `rc` and
-`wanduck`. This catches layout, symbol, ownership and non-mutation regressions
-without claiming to replace full firmware-consumer or hardware tests:
+`wanduck`; `tests/c-abi/clientlist.c` creates a real SysV segment with a
+private key, fills the legacy GT-AX11000 layout and checks the rendered
+document, the cache and database views and the NULL/small-buffer/wrong-size/
+missing-segment failure codes. This catches layout, symbol, ownership and
+non-mutation regressions without claiming to replace full firmware-consumer
+or hardware tests:
 
 ```sh
 ASUSWRT_REQUIRE_TMPFS=1 \
