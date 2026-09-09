@@ -9,6 +9,10 @@ use std::path::Path;
 
 use router_policy::testlab::TestlabRequest;
 
+#[path = "../../linux_open_flags.rs"]
+mod linux_open_flags;
+use linux_open_flags::{O_NOFOLLOW, O_NONBLOCK};
+
 /// Accept only QoS modes implemented by the local kernel/userspace stack.
 /// Mode 1 is the removed Trend Micro/BWDPI adaptive path.
 ///
@@ -29,7 +33,6 @@ pub unsafe extern "C" fn rust_local_qos_mode_allowed(mode: *const c_char) -> c_i
 
 const MAX_WIREGUARD_CONFIG_SIZE: u64 = 65_536;
 const MAX_FIREWALL_RULESET_SIZE: u64 = 128 * 1024;
-const O_NOFOLLOW: i32 = 0o400000;
 
 /// Classify a persisted regulatory profile without accepting an independent
 /// channel or power value. `1` is a supported normal country, `2` is the
@@ -57,7 +60,7 @@ pub unsafe extern "C" fn rust_regulatory_profile_kind(country: *const c_char) ->
 fn read_regular_ascii_file(path: &Path, max_size: u64) -> Option<String> {
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(O_NOFOLLOW)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
         .open(path)
         .ok()?;
     let metadata = file.metadata().ok()?;
@@ -351,7 +354,7 @@ pub unsafe extern "C" fn rust_update_wireguard_endpoint(
     let path = Path::new(path);
     let Ok(source) = OpenOptions::new()
         .read(true)
-        .custom_flags(O_NOFOLLOW)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
         .open(path)
     else {
         return 0;

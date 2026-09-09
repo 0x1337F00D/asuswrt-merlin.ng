@@ -94,6 +94,10 @@ jobs:
           set -euo pipefail
           root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           python3 "$root/tests/test_input_lock.py"
+          node --test "$root/tests/diagnostics-panel.test.cjs"
+          bash -n "$root/diagnostics/build.sh"
+          sh -n "$root/diagnostics/control.sh"
+          sh -n "$root/diagnostics/install.sh"
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" fmt \
             --manifest-path "$root/rust/Cargo.toml" --all -- --check
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" test \
@@ -107,6 +111,17 @@ jobs:
             --target "${{ steps.inputs.outputs.rust_target }}"
           bash "$root/tests/rust-fuzz-smoke.sh"
           bash "$root/tests/c-abi-smoke.sh"
+
+      - name: Execute security C ABI on ARM Linux under QEMU
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabi libc6-dev-armel-cross qemu-user
+          # Host-only tests previously missed the ARM-specific O_NOFOLLOW bit.
+          # Small gate outputs stay in RAM; this is not another firmware build.
+          CARGO_TARGET_DIR=/dev/shm/gt-ax11000-arm-security-target TMPDIR=/dev/shm \
+            bash overlay/.github/ci/gt-ax11000/tests/arm-security-abi.sh
 
   security-overlay:
     name: Security overlay
@@ -181,6 +196,7 @@ jobs:
           mkdir -p source/release/src/router/rust-components
           cp -a "$root/rust/." source/release/src/router/rust-components/
           bash "$root/tests/security-overlay-check.sh" "$GITHUB_WORKSPACE/source"
+          python3 "$root/tests/test_firewall_capture.py" "$GITHUB_WORKSPACE/source"
           bash "$root/tests/network-hardening-check.sh" "$GITHUB_WORKSPACE/source"
           bash "$root/tests/rust-fast-relink-check.sh" \
             "$GITHUB_WORKSPACE/source" "$root"

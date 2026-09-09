@@ -1,0 +1,60 @@
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index c1ffb20..8886f6d 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -233,9 +233,10 @@ static int install_wan_admin_guard(const char *wan_if)
+ 
+ static int validate_effective_firewall_policy(void)
+ {
+-	static const char ipv4_path[] = "/tmp/firewall-effective-v4.rules";
++	char private_dir[] = "/tmp/firewall-effective.XXXXXX";
++	char ipv4_path[128], ipv4_output[130];
+ #ifdef RTCONFIG_IPV6
+-	static const char ipv6_path[] = "/tmp/firewall-effective-v6.rules";
++	char ipv6_path[128], ipv6_output[130];
+ #endif
+ 	char *ipv4_argv[] = { "iptables-save", "-t", "filter", NULL };
+ #ifdef RTCONFIG_IPV6
+@@ -246,16 +247,22 @@ static int validate_effective_firewall_policy(void)
+ #endif
+ 	int valid = 0;
+ 
+-	unlink(ipv4_path);
++	/* Root-owned 0700 directory protects capture and validation together.
++	 * A predictable public /tmp pathname can be replaced after unlink(). */
++	if (!mkdtemp(private_dir))
++		return 0;
++	snprintf(ipv4_path, sizeof(ipv4_path), "%s/v4.rules", private_dir);
++	snprintf(ipv4_output, sizeof(ipv4_output), ">%s", ipv4_path);
+ #ifdef RTCONFIG_IPV6
+-	unlink(ipv6_path);
++	snprintf(ipv6_path, sizeof(ipv6_path), "%s/v6.rules", private_dir);
++	snprintf(ipv6_output, sizeof(ipv6_output), ">%s", ipv6_path);
+ #endif
+-	if (_eval(ipv4_argv, ">/tmp/firewall-effective-v4.rules", 0, NULL) != 0 ||
++	if (_eval(ipv4_argv, ipv4_output, 0, NULL) != 0 ||
+ 	    chmod(ipv4_path, 0600) != 0)
+ 		goto out;
+ #ifdef RTCONFIG_IPV6
+ 	if (require_ipv6 &&
+-	    (_eval(ipv6_argv, ">/tmp/firewall-effective-v6.rules", 0, NULL) != 0 ||
++	    (_eval(ipv6_argv, ipv6_output, 0, NULL) != 0 ||
+ 	     chmod(ipv6_path, 0600) != 0))
+ 		goto out;
+ 	valid = rust_validate_effective_firewall_policy_files(ipv4_path,
+@@ -263,7 +270,7 @@ static int validate_effective_firewall_policy(void)
+ 		firewall_fail_wan_if, require_ipv6 ? get_wan6face() : NULL,
+ 		firewall_admin_ports);
+ #else
+-	valid = rust_validate_effective_firewall_policy_files(ipv4_path, NULL, 0,
++	valid = rust_validate_effective_firewall_policy_files(ipv4_path, NULL, require_ipv6,
+ 		firewall_fail_wan_if, NULL, firewall_admin_ports);
+ #endif
+ 
+@@ -272,5 +279,6 @@ out:
+ #ifdef RTCONFIG_IPV6
+ 	unlink(ipv6_path);
+ #endif
++	rmdir(private_dir);
+ 	return valid;
+ }

@@ -5,6 +5,20 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Current router state and latest hardware-tested candidate
 
+- As verified on **2026-09-09**, the live, permanently selected image is
+  partition **1**, `BOOT_SET_PART1_IMAGE`, `3.0.0.6/102.9/alpha1`, from commit
+  `dc4452af234` and hosted run `34243633067`. Image SHA-256:
+  `46a16a7c1fa42d5aef1a02b41747556f4fab827eb525eae71af512a14778432f`.
+  The verified `102.8/4` image on partition 2 remains the rollback image.
+  See “Fixed during hardware promotion” below for final guard/boot evidence.
+- The 2026-09-09 W9 and latency work does **not** flash another firmware.
+  Rust `vpn-policy-audit` and `link-health` are separately tested diagnostics;
+  they neither reboot the router nor change NVRAM/radio/firewall settings.
+  The connection panel is `/ext/link-health/index.asp`. See
+  `.github/ci/gt-ax11000/diagnostics/README.md` for scope and measured overhead.
+
+### Historical baseline: 2026-09-07 (superseded by the state above)
+
 - The current hardware-tested and persistently selected image is on partition
   2: `BOOT_SET_PART2_IMAGE`, version `3.0.0.6/102.8/4`. The exact candidate is
   `GT-AX11000_3006_102.8_4_ubi.w`, SHA-256
@@ -174,6 +188,25 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Security debt
 
+### 2026-09-09 W9 hardening follow-up (not yet flashed)
+
+- [x] Fix the architecture-specific file-open flags: ARM EABI `O_NOFOLLOW`
+  is `0100000`, not the host x86-64 `0400000`. Share target-selected constants
+  between diagnostics and `router-security`; include `O_NONBLOCK` before
+  rejecting special files. Host, QEMU and native-router C ABI fixtures verify
+  symlink/FIFO rejection. Add the ARM execution gate to hosted CI.
+- [x] Protect the firewall capture **write and read** transaction with a
+  private 0700 directory. Rust's read-side symlink check alone cannot secure
+  the earlier C `_eval` redirection to a predictable public `/tmp` path.
+  `private-firewall-capture.patch` is appended to the canonical patch series;
+  upstream stays pinned to `6be5bc84b50`, new patched diff lock:
+  `dad85e447250b612dae51176a1e74fb726673d459a0a7281939b78cb0959f168`.
+  Both IPv6 compile variants and failure cleanup paths pass the C harness.
+- [ ] Build/validate/deploy a new full firmware containing those fixes to
+  `rc`. Live firmware remains the previously promoted `102.9 alpha1`; native
+  ABI testing is not a firmware replacement. No restart was done during the
+  call-drop investigation.
+
 ### Current unpromoted 2026 hardening work
 
 - [x] Backport the applicable upstream hostap/wpa security fixes to both
@@ -225,11 +258,21 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   and policy-route kill-switch inspection in Rust, expose it through an
   additive C ABI, and cover the vendor-derived shapes plus adversarial decoys
   with unit, integration and C-ABI fixtures.
-- [ ] Wire the per-profile VPN validator into the running firewall using an
-  exact typed derivation of enabled NVRAM profiles, then capture representative
-  real-router `iptables-save`, `ip6tables-save` and `ip rule show` fixtures for
-  every OpenVPN and WireGuard client mode. W9 deliberately does not change the
-  existing live firewall call site before those hardware fixtures exist.
+- [x] W9 follow-up: derive complete, typed runtime profile requirements and
+  require **all** enabled Director sources, not one arbitrary prohibit rule
+  per profile. Bind early routing exceptions to configured selectors; reject
+  unsupported enforce/destination-only cases. Include inactive/empty/manual
+  tunnel cases and all five WireGuard unit slots in regression tests.
+  `vpn-policy-audit --check-live` now exercises this on native router ARM code
+  and rechecks configuration/rules for concurrent changes. The actual router
+  had zero active VPN-client requirements: that pass is explicitly not an
+  active VPN leak-protection test.
+- [ ] W9 remains open for **live enforcement**: capture active OpenVPN and
+  WireGuard hardware fixtures for each relevant mode, validate server-peer
+  exceptions and VPN table content, resolve IPv6 kill-switch semantics, and
+  design scoped failure/recovery before changing the running firewall call
+  site. The new audit is observation-only and does not disable forwarding.
+  The old additive C ABI remains compatible and unchanged.
 - [x] Move imported OpenVPN custom-directive validation from ad-hoc C into a
   bounded Rust allowlist. Weak ciphers/digests, compression, scripts, routes,
   pull filters, unknown directives and malformed numeric values fail closed.
@@ -311,6 +354,21 @@ compile is not sufficient evidence for releasing or flashing a candidate.
     hardware trials above, so the item stays open.
 
 ## Wireless test-lab debt
+
+- [x] Add lightweight, authenticated connection diagnostics as a separately
+  installed Rust add-on at `/ext/link-health/index.asp`: three ICMP probes/s,
+  600-round RAM cap, browser-to-router timing, stale/background/error handling,
+  no NVRAM/radio/firewall mutations and no extra listener. Native 15-minute
+  pilot: about 1.7 MiB RSS and 0.4–0.5% of one CPU core including probe children;
+  no packet loss in the sampled interval. Persisted start hook is backed up.
+- [ ] Correlate a real POCO F3 / Samsung tablet call interruption with this
+  panel. Tablet logs show repeated weak-signal 5-GHz reassociation (-85 to
+  -87 dBm); later 2.4-GHz RSSI was about -78 dBm. This is a coverage/roaming
+  hypothesis, not proof of a driver or WAN fault. No WLAN tweak was applied.
+- [ ] Confirm the panel's authenticated rendering on the user's device;
+  headless Chromium fixture rendering and anonymous-access rejection passed.
+  Consider longer RAM-only event retention and opt-in Wi-Fi/DNS correlation
+  after baseline measurements, without adding automatic network restarts.
 
 - [x] Make country selection—including explicit `ALL`—the only test-lab
   mutation. Direct per-radio country, channel-list, DFS, TX percentage,

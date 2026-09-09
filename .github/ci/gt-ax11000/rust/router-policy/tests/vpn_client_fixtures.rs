@@ -53,6 +53,44 @@ const WAN: &str = "eth0";
 const LAN: &str = "br0";
 const ADMIN_PORTS: [u16; 2] = [22, 443];
 
+#[test]
+fn runtime_derivation_checks_manual_tunnels_even_without_autostart() {
+    let mut snapshot = String::new();
+    for unit in 1..=5 {
+        snapshot.push_str(&format!(
+            "openvpn:{unit}:tun{}:0:{}:1:0:2\n",
+            10 + unit,
+            u8::from(unit == 1)
+        ));
+        snapshot.push_str(&format!("wireguard:{unit}:wgc{unit}:0:0:1:0:2\n"));
+    }
+    let v4 = filter_save(OPENVPN1_BLOCK);
+    let routes =
+        "0: from all lookup local\n32766: from all lookup main\n32767: from all lookup default\n";
+    let result =
+        router_policy::vpn_runtime::audit(&snapshot, "", &v4, Some(&v4), routes, LAN).unwrap();
+    assert_eq!(result.inbound_profiles, 1);
+    assert_eq!(result.kill_switch_profiles, 0);
+    assert!(router_policy::vpn_runtime::audit(
+        &snapshot,
+        "",
+        &filter_save(OPENVPN1_ALLOW),
+        Some(&v4),
+        routes,
+        LAN
+    )
+    .is_err());
+    assert!(router_policy::vpn_runtime::audit(
+        &snapshot,
+        "",
+        &v4,
+        Some(&filter_save("")),
+        routes,
+        LAN
+    )
+    .is_err());
+}
+
 /// The vendor mangle table entries the client scripts add (openvpn_setup.c
 /// :976-977, wireguard.c:712-713). They live outside `*filter` and must be
 /// ignored by the policy.

@@ -78,6 +78,11 @@ done
 # GT-AX11000 ships no Trend Micro/BWDPI engine. The compatibility hook is
 # backed by bounded local conntrack/ARP counters parsed in Rust, and crafted
 # requests cannot re-enable the proprietary adaptive mode.
+require_text "$firewall" 'mkdtemp(private_dir)'
+require_text "$firewall" '_eval(ipv4_argv, ipv4_output, 0, NULL)'
+require_text "$firewall" 'rmdir(private_dir);'
+reject_text "$firewall" '"/tmp/firewall-effective-v4.rules"'
+reject_text "$firewall" '"/tmp/firewall-effective-v6.rules"'
 require_text "$target_mak" 'JFFS2LOG=y BWDPI=n DUMP_OOPS_MSG=n'
 require_text "$target_mak" 'OPEN_NAT=y AHS=n ASD=n LIBASC=y FRS_LIVE_UPDATE=n'
 require_text "$src_rt_makefile" 'if [ "$(LIBASC)" = "y" ]; then'
