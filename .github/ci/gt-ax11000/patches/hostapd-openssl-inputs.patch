@@ -1,0 +1,22 @@
+# Bind hostapd headers to the same OpenSSL tree its linker already uses.
+# The separate supplicant already has this include path; give its package
+# an explicit OpenSSL producer edge as well.
+diff --git a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile
+--- a/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile
++++ b/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools/hostapd/hostapd/Makefile
+@@ -25,6 +25,7 @@
+ CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -Wformat -Wformat-security
+ CFLAGS += -I$(abspath ../src)
+ CFLAGS += -I$(abspath ../src/utils)
++CFLAGS += -I$(TOP)/openssl/include
+ LDFLAGS += -L$(TOP)/openssl -lcrypto -lm -lssl -lpthread -L$(TOP)/libnl/lib/.libs
+ LDFLAGS += -L$(TOP_PLATFORM)/nvram$(BCMEX)$(EX7) -lnvram -L$(TOP)/shared -lshared -L$(TOP_PLATFORM)/wlcsm -lwlcsm
+ LDFLAGS += -pie -Wl,-z,relro,-z,now
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -7445,3 +7445,3 @@
+-wpa_supplicant-2.7: libnl $(WPA_SUPPLICANT_DIR)/wpa_supplicant/.config $(if $(or $(HND_ROUTER_AX_6756),$(HND_ROUTER_BE_4916),$(BCM_502L07P2)),cevent_app)
++wpa_supplicant-2.7: libnl openssl $(WPA_SUPPLICANT_DIR)/wpa_supplicant/.config $(if $(or $(HND_ROUTER_AX_6756),$(HND_ROUTER_BE_4916),$(BCM_502L07P2)),cevent_app)
+ 	+$(MAKE) $(PARALLEL_BUILD) -C $(WPA_SUPPLICANT_DIR)/wpa_supplicant
+ 

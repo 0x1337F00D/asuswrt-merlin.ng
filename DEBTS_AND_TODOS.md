@@ -1083,3 +1083,52 @@ image-boot blocker.
 - Restored Rust workspace format, all-target tests and Clippy with warnings
   as errors passed. Firmware completion, extracted-image checks and the
   hardware trial remain pending; no flash, reboot, promotion or push yet.
+
+### 2026-09-10 pre-image integration checks
+
+- Restored gates: 15 Python tests (including the real patched Netatalk/LPRng
+  dependency fixtures at j2/j4/j8), 35 Node tests, host C-ABI fixtures and
+  ARM GCC 5.5/QEMU C-ABI fixtures pass. Three deterministic fuzz seeds with
+  250,000 iterations each pass; this is not coverage-guided fuzzing.
+- A further 90-second clock probe during the full build passed with zero
+  events (8,915 samples, worst negative differential -0.0926 ms). The build
+  passed its former libusbmuxd failure point without skipping configure.
+- A native probe linked to the in-flight firmware's actual Rust httpd
+  archive (`5f3d9321fc53ffb616c30313a5039b5f3fc232dbe587d91ad547e0af09fabb63`)
+  with the pinned GCC 5.5 passed on the baseline router at 00:04 CEST:
+  10 snapshots, 13 live clients, 105 database clients, maximum 2.558 ms,
+  maximum RSS 3228 KiB. Probe SHA-256:
+  `28ec9ac1df71724101022a55707717d4d122e3cfc449e49f77d9b753c56818ed`.
+  Only the bounded vendor advisory lock is written; no configuration,
+  shared-memory client data, cache or service is modified. This is not an
+  authenticated httpd endpoint or visual-browser test.
+- Baseline LAN comparison from this WSL host: 120/120 ICMP replies, no loss,
+  RTT min/mean/max 2.869/5.631/31.902 ms. Do not interpret this as a mobile
+  WLAN handover or basement-coverage result.
+- Upstream build noise remains a debt, not a clean-log claim: Samba's
+  `librpc/build_idl.sh` requests Python wrappers whose generator emits
+  non-fatal type-origin diagnostics; this board installs only the linked
+  Samba multicall and codepages, not those Python bindings. The baseline
+  ARM `smbd -V` probe reports 3.6.25; repeat against the final image.
+  The HND `asusnatnl` recipe explicitly passes empty `LD`, so unused PJ
+  sample executable links emit ignored errors. Its install recipe ships
+  `libasusnatnl.so`, not the samples. Review skipping unshipped sample and
+  wrapper generation as a separate build-speed/diagnostic-quality change;
+  do not modify the running reference build or weaken fatal-error gates.
+- The frozen `425695cbe4c` clean run subsequently failed at hostapd:
+  `openssl/x509.h` was absent from its include search path. No image was
+  published or flashed. Unlike its sibling supplicant, the vendor hostapd
+  Makefile omitted `-I$(TOP)/openssl/include`, although it already linked
+  from `$(TOP)/openssl`. The new CI-only patch adds that path and an explicit
+  OpenSSL prerequisite for the supplicant. It does not change RF settings.
+- Focused GCC 5.5 hostapd compilation and link pass after the fix. Its ELF
+  requires libssl.so.3/libcrypto.so.3, and its ARM/QEMU version-only command
+  agrees with baseline (hostapd v2.9, expected exit 1). No daemon was started.
+  A real Make/compiler regression test proves both WLAN header paths and
+  rejects the missing-path negative controls. The final-image gate now also
+  checks both WLAN ELFs, OpenSSL-major linkage and version-only execution.
+- All 27 patches replay on unchanged upstream `6be5bc84b50`; the new canonical
+  diff is `e41c488fc66432ffa2db0bb8b843837c515900ed140392e787d92aa97efc01cd`.
+  Security/network overlay checks pass. A fresh locked full build is still
+  required; neither the partial build nor the focused hostapd link is a
+  deployable firmware image.

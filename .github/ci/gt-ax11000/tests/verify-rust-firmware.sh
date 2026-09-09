@@ -27,6 +27,8 @@ artifacts=(
 	"usr/sbin/networkmap"
 	"sbin/rc"
 	"usr/sbin/wget"
+	"usr/sbin/hostapd"
+	"usr/sbin/wpa_supplicant-2.7"
 )
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/gtax-rust-verify.XXXXXX")
@@ -73,6 +75,14 @@ for relative in "${artifacts[@]}"; do
 	fi
 done
 
+# The WLAN daemons must use the locked OpenSSL major, including on a cold
+# vendor-cache miss. A header-only fix must not leave a stale 1.1 consumer.
+for relative in usr/sbin/hostapd usr/sbin/wpa_supplicant-2.7; do
+	"$readelf" -d "$rootfs/$relative" > "$temporary/wifi-dynamic"
+	grep -Fq 'Shared library: [libcrypto.so.3]' "$temporary/wifi-dynamic"
+	grep -Fq 'Shared library: [libssl.so.3]' "$temporary/wifi-dynamic"
+done
+
 # wget is the isolated zlib-rs consumer: it must carry the Rust zlib in its
 # own image and must not load the vendor libz.so.1 that every other package
 # still uses.
@@ -111,5 +121,11 @@ run_expected_exit 0 "${qemu[@]}" "$rootfs/bin/rstats" --self-test
 grep -q 'runtime self-test passed' "$temporary/qemu.stdout"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
+# hostapd deliberately exits 1 after printing its version; the baseline and
+# rebuilt consumer were both checked. Neither invocation starts a radio.
+run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/hostapd" -v
+grep -q '^hostapd v2\.9' "$temporary/qemu.stdout"
+run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wpa_supplicant-2.7" -v
+grep -q '^wpa_supplicant v2\.9' "$temporary/qemu.stdout"
 
-echo "verified ${#artifacts[@]} ARMv7 soft-float consumers and 4 QEMU runtime paths"
+echo "verified ${#artifacts[@]} ARMv7 soft-float consumers and 6 QEMU runtime paths"
