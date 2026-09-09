@@ -124,7 +124,7 @@ grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
 # hostapd deliberately exits 1 after printing its version; the baseline and
 # rebuilt consumer were both checked. Neither invocation starts a radio.
 run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/hostapd" -v
-grep -q '^hostapd v2\.9' "$temporary/qemu.stdout"
+grep -q '^hostapd v2\.9' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wpa_supplicant-2.7" -v
 grep -q '^wpa_supplicant v2\.9' "$temporary/qemu.stdout"
 
