@@ -5,12 +5,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Current router state and latest hardware-tested candidate
 
-- As verified on **2026-09-09**, the live, permanently selected image is
-  partition **1**, `BOOT_SET_PART1_IMAGE`, `3.0.0.6/102.9/alpha1`, from commit
-  `dc4452af234` and hosted run `34243633067`. Image SHA-256:
+- As verified on **2026-09-10 at 01:34 CEST**, the live, permanently selected
+  image is partition **2**, `BOOT_SET_PART2_IMAGE`, `3.0.0.6/102.9/alpha1`.
+  It is the combined Rust/client-list/Wi-Fi image built locally from frozen
+  overlay `6cdab2a41cc`, SHA-256
+  `daa0ceb28715cac755772ba3c0495cd714a50f2c6c913537d51fded5860cc2f0`.
+  Partition **1** remains untouched as the tested fallback, from commit
+  `dc4452af234` / hosted run `34243633067`, SHA-256
   `46a16a7c1fa42d5aef1a02b41747556f4fab827eb525eae71af512a14778432f`.
-  The verified `102.8/4` image on partition 2 remains the rollback image.
-  See “Fixed during hardware promotion” below for final guard/boot evidence.
+  See “2026-09-10 combined image and protected hardware trial” below.
 - The 2026-09-09 W9 and latency work does **not** flash another firmware.
   Rust `vpn-policy-audit` and `link-health` are separately tested diagnostics;
   they neither reboot the router nor change NVRAM/radio/firewall settings.
@@ -1172,7 +1175,7 @@ image-boot blocker.
   hndwr=99. Only inactive partition 2 was written (sequence 35); baseline
   partition 1 stayed at sequence 34. Reboot at 01:14:48 CEST consumed the
   PART2_IMAGE_ONCE state to BOOT_SET_PART1_IMAGE. No Merlin commit marker was
-  created. The host-driven promotion hold remains until the complete soak.
+  created. A host-driven promotion hold covered the complete initial soak.
 - Native final-archive client-list probe passed 10 snapshots: 12 live clients,
   105 database records, maximum 2.098 ms rendering, maximum RSS 2892 KiB.
   Probe SHA-256 `17ac65f5fd72bd1c0469139b63308b8a01cc3d6436bdaef97dcc789502658842`.
@@ -1196,3 +1199,19 @@ image-boot blocker.
 - Runtime probes and offline Web checks do not substitute for authenticated
   browser rendering (NOT RUN, per user) or moving the MacBook/phone between
   rooms. Mobile roaming/coverage improvement still needs that field test.
+- Final hardware outcome: both complete router-health gates and repeated
+  manifest-bound guard checks passed. The 600-second steady-state LAN probe
+  received 600/600 replies, no loss, RTT min/mean/max 2.092/4.244/33.184 ms.
+  After more than 17 minutes, all observed service PID sets were unchanged
+  (`httpd`, `dnsmasq`, `wanduck`, `infosvr`, `rstats`, `nt_monitor`,
+  `networkmap`, `bsd`, three `hostapd`, two `openvpn`). Kernel log remained
+  fault-free. The final client-list repetition again returned 12 live/105
+  stored clients (max 1.959 ms, RSS 2976 KiB). The acknowledgement is still
+  persisted as 1; the separate roamast quarantine is intentionally still 1.
+- At **01:34:03 CEST**, after another health check, the hold was moved to an
+  audit marker and the corrected guard promoted partition 2 persistently:
+  `PROMOTED_UI_NVRAM_PART2`, `BOOT_SET_PART2_IMAGE`, booted Second, sequence
+  35; fallback First sequence 34 was unchanged. No extra reboot/reset/NVRAM
+  commit was issued. A read-only half-hourly follow-up is scheduled until
+  2026-09-11 02:00 CEST, with alerts only on actionable changes. This initial
+  soak is not a guarantee of future crash freedom or automatic power recovery.
