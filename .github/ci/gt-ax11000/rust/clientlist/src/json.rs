@@ -12,6 +12,10 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use std::fmt;
 
+pub const MAX_INPUT: usize = 1024 * 1024;
+pub const MAX_DEPTH: usize = 32;
+pub const MAX_CONTAINER_ENTRIES: usize = 1024;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Null,
@@ -221,6 +225,9 @@ impl<'de> Visitor<'de> for ValueVisitor {
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Value, A::Error> {
         let mut items = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(1_024));
         while let Some(item) = sequence.next_element()? {
+            if items.len() == MAX_CONTAINER_ENTRIES {
+                return Err(de::Error::custom("clientlist array limit"));
+            }
             items.push(item);
         }
         Ok(Value::Array(items))
@@ -228,7 +235,12 @@ impl<'de> Visitor<'de> for ValueVisitor {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut object = Object::with_capacity(map.size_hint().unwrap_or(0).min(1_024));
+        let mut count = 0;
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
+            count += 1;
+            if count > MAX_CONTAINER_ENTRIES {
+                return Err(de::Error::custom("clientlist object limit"));
+            }
             // The json-c tokener also replaces duplicate keys in place.
             object.set(&key, value);
         }
@@ -244,6 +256,36 @@ impl<'de> Deserialize<'de> for Value {
 
 /// Parse a complete JSON document.
 pub fn parse(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+    if bytes.len() > MAX_INPUT {
+        return Err(de::Error::custom("clientlist input limit"));
+    }
+    // Bound recursion before serde allocates anything. This scanner only
+    // counts structural delimiters outside strings; serde still validates
+    // the entire grammar, escape sequences and matching delimiters.
+    let (mut depth, mut in_string, mut escaped) = (0_usize, false, false);
+    for &byte in bytes {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+        } else {
+            match byte {
+                b'"' => in_string = true,
+                b'[' | b'{' => {
+                    depth += 1;
+                    if depth > MAX_DEPTH {
+                        return Err(de::Error::custom("clientlist nesting limit"));
+                    }
+                }
+                b']' | b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
     serde_json::from_slice(bytes)
 }
 
@@ -290,5 +332,22 @@ mod tests {
         assert!(parse(b"{").is_err());
         assert!(parse(b"\xff").is_err());
         assert!(parse(b"").is_err());
+    }
+
+    #[test]
+    fn hostile_depth_size_and_width_are_bounded() {
+        let deep = format!(
+            "{}0{}",
+            "[".repeat(MAX_DEPTH + 1),
+            "]".repeat(MAX_DEPTH + 1)
+        );
+        assert!(parse(deep.as_bytes()).is_err());
+        assert!(parse(&vec![b' '; MAX_INPUT + 1]).is_err());
+        let wide = format!("[{}0]", "0,".repeat(MAX_CONTAINER_ENTRIES));
+        assert!(parse(wide.as_bytes()).is_err());
+        let object = format!("{{{}\"z\":0}}", "\"a\":0,".repeat(MAX_CONTAINER_ENTRIES));
+        assert!(parse(object.as_bytes()).is_err());
+        let quoted = serde_json::to_vec(&"[\\\"".repeat(100)).unwrap();
+        assert!(parse(&quoted).is_ok());
     }
 }

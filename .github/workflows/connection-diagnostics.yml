@@ -1,0 +1,79 @@
+name: Connection diagnostics
+
+on:
+  push:
+    branches:
+      - codex/gt-ax11000-connection-diagnostics
+    paths:
+      - .github/ci/gt-ax11000/**
+      - .github/workflows/connection-diagnostics.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connection-diagnostics-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnostics:
+    name: Add-on tests (no firmware or router access)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact overlay
+        run: |
+          set -euo pipefail
+          git init overlay
+          git -C overlay remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C overlay sparse-checkout init --cone
+          git -C overlay sparse-checkout set .github/ci/gt-ax11000
+          git -C overlay fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
+          git -C overlay checkout --detach FETCH_HEAD
+          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Read locked Rust inputs
+        id: inputs
+        run: |
+          set -euo pipefail
+          root=overlay/.github/ci/gt-ax11000
+          for key in rust_toolchain rust_target rust_target_cpu; do
+            value=$(python3 "$root/tools/input_lock.py" get "$key" --lock "$root/inputs.lock")
+            printf '%s=%s\n' "$key" "$value" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "${{ steps.inputs.outputs.rust_toolchain }}" \
+            --profile minimal --component clippy,rustfmt \
+            --target "${{ steps.inputs.outputs.rust_target }}"
+
+      - name: Test isolated add-on
+        env:
+          CARGO_TARGET_DIR: /dev/shm/connection-diagnostics-target
+          TMPDIR: /dev/shm
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
+          node --test "$root/tests/diagnostics-panel.test.cjs"
+          bash -n "$root/diagnostics/build.sh"
+          sh -n "$root/diagnostics/control.sh"
+          sh -n "$root/diagnostics/install.sh"
+          sh -n "$root/diagnostics/update-panel.sh"
+          bash -n "$root/tests/wifi-vendor-reference.sh"
+          bash "$root/tests/bsd-maclist-adapter-test.sh"
+          cd "$root/rust"
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" fmt \
+            --manifest-path "$root/rust/Cargo.toml" --all -- --check
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" test \
+            --manifest-path "$root/rust/Cargo.toml" --locked --offline \
+            -p router-diagnostics -p router-vpn-audit
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" clippy \
+            --manifest-path "$root/rust/Cargo.toml" --locked --offline --all-targets \
+            -p router-diagnostics -p router-vpn-audit -- -D warnings
+          RUSTFLAGS="-Dwarnings -Ctarget-cpu=${{ steps.inputs.outputs.rust_target_cpu }}" \
+            cargo +"${{ steps.inputs.outputs.rust_toolchain }}" check \
+            --manifest-path "$root/rust/Cargo.toml" --locked --offline \
+            -p router-diagnostics -p router-vpn-audit \
+            --target "${{ steps.inputs.outputs.rust_target }}"

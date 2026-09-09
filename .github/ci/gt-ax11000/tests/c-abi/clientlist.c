@@ -5,8 +5,12 @@
  * GT-AX11000 layout the way the closed networkmap daemon does, renders the
  * document and checks the fail-closed paths.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +19,8 @@
 #include <sys/shm.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define LEGACY_TABLE_SIZE 174964U
@@ -91,6 +97,38 @@ extern int rust_httpd_clientlist_basic_render(
 extern int rust_httpd_clientlist_search_name(const char *db_path,
     const char *custom_clientlist, const char *name, char *buffer,
     size_t capacity);
+
+static void check_contended_lock(const char *path,
+    const struct rust_httpd_clientlist_inputs *inputs, char *buffer, size_t size)
+{
+	int ready[2], release[2], status;
+	char byte = 'x';
+	pid_t child;
+	struct timespec start, end;
+	assert(pipe(ready) == 0 && pipe(release) == 0);
+	child = fork();
+	assert(child >= 0);
+	if(child == 0) {
+		int fd = open(path, O_CREAT | O_RDWR, 0600);
+		pid_t pid = getpid();
+		struct flock lock = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
+		assert(fd >= 0 && fcntl(fd, F_SETLK, &lock) == 0);
+		assert(write(fd, &pid, sizeof(pid)) == sizeof(pid));
+		assert(write(ready[1], &byte, 1) == 1);
+		assert(read(release[0], &byte, 1) == 1);
+		close(fd);
+		_exit(0);
+	}
+	assert(read(ready[0], &byte, 1) == 1);
+	assert(clock_gettime(CLOCK_MONOTONIC, &start) == 0);
+	assert(rust_httpd_clientlist_render(inputs, buffer, size) == -6);
+	assert(clock_gettime(CLOCK_MONOTONIC, &end) == 0);
+	assert((end.tv_sec - start.tv_sec) * 1000 +
+	    (end.tv_nsec - start.tv_nsec) / 1000000 < 2000);
+	assert(write(release[1], &byte, 1) == 1);
+	assert(waitpid(child, &status, 0) == child && status == 0);
+	close(ready[0]); close(ready[1]); close(release[0]); close(release[1]);
+}
 
 static int is_re_node_f1(const char *mac)
 {
@@ -233,6 +271,7 @@ int main(int argc, char **argv)
 	inputs.amas_client_list_path = NULL;
 	inputs.lock_dir = scratch;
 	inputs.is_re_node = is_re_node_f1;
+	check_contended_lock(lock_probe, &inputs, buffer, sizeof(buffer));
 
 	/* Live document from the real segment. */
 	length = rust_httpd_clientlist_render(&inputs, buffer, sizeof(buffer));
@@ -278,6 +317,20 @@ int main(int argc, char **argv)
 	inputs.shm_key = (int)key;
 
 	/* Cache write/read and the name lookup over the document. */
+	{
+		char hostile[700], target[700];
+		snprintf(hostile, sizeof(hostile), "%s.%ld.0.tmp", cache_path, (long)getpid());
+		snprintf(target, sizeof(target), "%s/untouched", scratch);
+		write_file(target, "untouched");
+		assert(symlink(target, hostile) == 0);
+		assert(rust_httpd_clientlist_cache_write(cache_path, buffer, (size_t)length) == -7);
+		assert(lstat(hostile, &status) == 0 && S_ISLNK(status.st_mode));
+		assert(stat(target, &status) == 0 && status.st_size == 9);
+		assert(unlink(hostile) == 0 && unlink(target) == 0);
+		assert(mkfifo(hostile, 0600) == 0);
+		assert(rust_httpd_clientlist_cache_read(hostile, copy, sizeof(copy)) < 0);
+		assert(unlink(hostile) == 0);
+	}
 	assert(rust_httpd_clientlist_cache_write(cache_path, buffer,
 	    (size_t)length) == 0);
 	assert(stat(cache_path, &status) == 0 &&

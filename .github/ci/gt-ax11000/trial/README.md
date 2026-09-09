@@ -69,30 +69,41 @@ python3 -m unittest discover -s .github/ci/gt-ax11000/trial \
 ## Persistent promotion guard
 
 `router-persistent-guard.sh` is deliberately separate from the one-shot trial
-controller. Its roles are intentionally asymmetric for this deployment:
-partition 1 is the candidate and partition 2 is the known-good fallback. It
+controller. Its roles are intentionally asymmetric and must be rendered from
+the verified candidate image and an explicit candidate slot using
+`render_guard.py --candidate-slot 2 --rootfs ROOTFS --output NEW_GUARD`. It
 never derives those roles from the currently booted slot, because doing so can
 make a baseline boot re-arm a rejected candidate. Candidate identity requires
-the exact model/version, partition 1, final test-lab UI markers, the `httpd`
-NVRAM marker, and complete file-plus-symlink Web manifests; the shared base
+the exact model/version, selected partition, final test-lab UI markers, the `httpd`
+NVRAM marker, exact httpd/rc/libshared/wget hashes and complete file-plus-symlink Web manifests; the shared base
 firmware version string alone is not sufficient.
 
 The manifests live under `/usr/share/codex`. ASUS maps `/etc` to volatile
 `/tmp/etc` at runtime, so immutable candidate identity must never be stored
 there.
 
-On every persistent partition-1 candidate boot, `arm` selects partition 2 for
+On every persistent candidate boot, `arm` selects the fixed fallback slot for
 one boot. The delayed `services-start` hook invokes `promote` after 120 seconds.
 Only the complete services, WAN/DNS, three-radio, firewall, kernel-log and
-UI-marker health gate restores partition 1 persistently. A reachable health
-failure selects partition 2 persistently and
+UI-marker health gate restores the candidate persistently. A reachable health
+failure selects the fallback persistently and
 requests a reboot. A candidate that never becomes reachable still requires
 out-of-band power control to trigger the already armed fallback, as documented
 above.
 
 For a host-driven soak that must never auto-promote, create the root-owned
 `/data/firmware-trial-rollback/hold-promotion` marker before booting the
-candidate. The delayed guard then selects partition 2 persistently while it
+candidate. The delayed guard then selects the fallback persistently while it
 leaves the running candidate available for observation. Removing the marker
 does not itself promote or change the boot state; a later explicit trial must
 pass the complete guard again.
+
+The unrendered template cannot match a candidate (binary hashes say
+`RENDER_REQUIRED`). Never install it directly, and never overwrite a working
+guard without an off-router settings/JFFS backup. `verify_backup.py` verifies
+an encrypted backup in memory and compares the vendor HDR2 export to its
+same-time raw snapshot without printing secret values; it does not perform
+or prove a factory-reset restore. `artifact_transfer.py` offers an expiring
+single-file LAN transfer for systems without SFTP; only encrypted backups
+may be uploaded, and every artifact hash must be independently checked via
+authenticated SSH. These utilities never discover or extract credentials.

@@ -1296,24 +1296,19 @@ fi
 
 rootfs_dir="$SDK_DIR/targets/$PROFILE/fs"
 dict_enum_file=$(find "$SDK_DIR" -type f -path '*/src/image/dictenum.txt' -print -quit)
-# The five Rust-built binaries are what rust-components-relink (rust-repack.mk)
-# reinstalls in rust-fast mode. The closed networkmap and its Rust libbwdpi.so
-# provider are only built by networkmap-install, which a full build runs and
-# rust-fast does not: there they are carried from the cached tree with their
-# old timestamps and are bound only by the manifest hash check below.
+# Every Rust consumer is freshly installed in rust-fast as well as full mode.
+# networkmap itself stays the vendor blob; its libbwdpi provider is rebuilt.
 rust_relinked_consumers=(
 	usr/sbin/infosvr
 	bin/rstats
 	usr/sbin/Notify_Event2NC
 	usr/sbin/httpd
 	sbin/rc
-)
-rust_consumers=(
-	"${rust_relinked_consumers[@]}"
 	usr/sbin/networkmap
 	usr/lib/libbwdpi.so
 	usr/sbin/wget
 )
+rust_consumers=("${rust_relinked_consumers[@]}")
 fresh_consumers=("${rust_consumers[@]}")
 if [ "$BUILD_MODE" = "rust-fast" ]; then
 	fresh_consumers=("${rust_relinked_consumers[@]}")

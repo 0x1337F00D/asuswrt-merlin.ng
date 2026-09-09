@@ -78,6 +78,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "router-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "router-vpn-audit",
+]
+
+[[package]]
 name = "router-fuzz"
 version = "0.1.0"
 dependencies = [

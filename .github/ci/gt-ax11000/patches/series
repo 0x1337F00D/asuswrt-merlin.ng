@@ -13,6 +13,7 @@ wireless-policy-ui.patch
 runtime-policy.patch
 regulatory-profile-boot.patch
 wireless-service-testlab-stability.patch
+gt-ax11000-maclist-abi.patch
 network-hardening.patch
 runtime-hardening-2026.patch
 wifi-upstream-security.patch

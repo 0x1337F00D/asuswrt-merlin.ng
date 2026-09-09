@@ -11,10 +11,20 @@ fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/arm-security-abi.XXXXXX")
 # Cargo resolves the vendored crates.io mapping from the working directory.
 cd "$root/rust"
 cargo +1.85.1 build --manifest-path "$root/rust/Cargo.toml" --release \
-    --locked --offline --target armv7-unknown-linux-gnueabi -p router-security
+    --locked --offline --target armv7-unknown-linux-gnueabi \
+    -p router-security -p httpd-parsers -p zlib-static
 "$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 \
     "$root/tests/c-abi/router-security.c" \
     "$CARGO_TARGET_DIR/armv7-unknown-linux-gnueabi/release/librouter_security.a" \
     -ldl -lpthread -lm -lrt -lutil -o "$fixture_dir/router-security"
 timeout 20 "$ARM_QEMU" -L "$ARM_SYSROOT" "$fixture_dir/router-security" "$fixture_dir"
+for fixture in clientlist zlib; do
+    archive=libhttpd_parsers.a
+    [[ $fixture != zlib ]] || archive=libzlib_static.a
+    "$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 \
+        -I"$root/tests/c-abi/include" "$root/tests/c-abi/$fixture.c" \
+        "$CARGO_TARGET_DIR/armv7-unknown-linux-gnueabi/release/$archive" \
+        -ldl -lpthread -lm -lrt -lutil -o "$fixture_dir/$fixture"
+    timeout 20 "$ARM_QEMU" -L "$ARM_SYSROOT" "$fixture_dir/$fixture" "$fixture_dir"
+done
 echo "ARM_SECURITY_ABI=PASS fixture_dir=$fixture_dir (includes symlink and FIFO rejection)"

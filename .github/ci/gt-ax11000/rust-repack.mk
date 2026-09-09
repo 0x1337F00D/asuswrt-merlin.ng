@@ -5,7 +5,10 @@ rust-components-relink:
 	# one versioned set.  Generate that set before rebuilding httpd consumers.
 	+$(MAKE) -C router www-install
 	+$(MAKE) -C router \
-		infosvr-install rstats-install nt_center-install httpd-rust-install rc-install
+		infosvr-install rstats-install nt_center-install httpd-rust-install rc-install networkmap-install
+	# wget's ordinary target rebuilds the Rust archive and refreshes the link.
+	+$(MAKE) -C router wget
+	+$(MAKE) -C router wget-install
 
 # Short iteration path for changes confined to the authenticated HTTP boundary
 # and its Web UI. Invoking this through the platform Makefile preserves all HND
@@ -107,7 +110,9 @@ rust-firmware-repack:
 	promote_artifact $(PROFILE_DIR)/fs.install/networkmap/usr/sbin/networkmap \
 		$(PROFILE_DIR)/fs.install/usr/sbin/networkmap; \
 	promote_artifact $(PROFILE_DIR)/fs.install/networkmap/usr/lib/libbwdpi.so \
-		$(PROFILE_DIR)/fs.install/usr/lib/libbwdpi.so
+		$(PROFILE_DIR)/fs.install/usr/lib/libbwdpi.so; \
+	promote_artifact $(PROFILE_DIR)/fs.install/wget/usr/sbin/wget \
+		$(PROFILE_DIR)/fs.install/usr/sbin/wget
 	# Package install targets stage their complete payload below a package-named
 	# directory. The selected artifacts have now been promoted into the
 	# flat firmware tree, so remove only those known duplicate staging roots.
@@ -117,7 +122,8 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/nt_center \
 		$(PROFILE_DIR)/fs.install/httpd \
 		$(PROFILE_DIR)/fs.install/rc \
-		$(PROFILE_DIR)/fs.install/networkmap
+		$(PROFILE_DIR)/fs.install/networkmap \
+		$(PROFILE_DIR)/fs.install/wget
 	# fsbuild creates these legacy containers for optional external payloads.
 	# On GT-AX11000 they are empty; leaving them behind only on a repeated
 	# build makes rust-fast rootfs topology differ from the clean reference.

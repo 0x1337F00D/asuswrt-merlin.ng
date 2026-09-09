@@ -1,0 +1,21 @@
+diff --git a/release/src/router/shared/sysdeps/broadcom/broadcom.c b/release/src/router/shared/sysdeps/broadcom/broadcom.c
+--- a/release/src/router/shared/sysdeps/broadcom/broadcom.c
++++ b/release/src/router/shared/sysdeps/broadcom/broadcom.c
+@@ -2448,8 +2448,17 @@
+ }
+ #endif
+ 
++#if defined(GTAX11000)
++/* The pinned GT-AX11000 bsd and roamast-broadcom.o consumers use the
++ * legacy three-argument ABI. A fourth argument shifts buffer/size and
++ * makes libshared dereference 0x1000. Keep other models' VIF-aware ABI. */
++void retrieve_static_maclist_from_nvram(int idx,struct maclist *maclist,int maclist_buf_size)
++{
++	const int vidx = 0;
++#else
+ void retrieve_static_maclist_from_nvram(int idx,int vidx,struct maclist *maclist,int maclist_buf_size)
+ {
++#endif
+ 	char prefix[16]={0};
+ 	struct ether_addr *ea;
+ 	char *buf = maclist;

@@ -1,10 +1,13 @@
 //! `/tmp/nmp_cache.js` and bounded file reads.
 
 use crate::json::{self, Value};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub enum CacheError {
@@ -24,10 +27,18 @@ impl From<io::Error> for CacheError {
 /// Read at most `limit` bytes; a longer file is an error rather than a
 /// truncated document.
 pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, CacheError> {
-    let mut file = File::open(path)?;
+    // A FIFO/device must not hang the single-threaded httpd. Do not follow
+    // links in world-writable /tmp, even for these read-only cache inputs.
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput).into());
+    }
     let mut bytes = Vec::new();
     let read = Read::by_ref(&mut file)
-        .take(limit as u64 + 1)
+        .take((limit as u64).saturating_add(1))
         .read_to_end(&mut bytes)?;
     if read > limit {
         return Err(CacheError::Oversized);
@@ -39,6 +50,11 @@ pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, CacheError> {
 /// `maclist` is a non-empty array (`ej_get_clientlist()` as patched by
 /// `local-qos-rust.patch`); otherwise the caller regenerates the list.
 pub fn cache_is_servable(document: &[u8]) -> bool {
+    // Legacy or tampered cache text is injected verbatim into inline ASP
+    // script elements. Regenerate it through the HTML-safe serializer.
+    if document.iter().any(|b| matches!(b, b'<' | b'>' | b'&')) {
+        return false;
+    }
     match json::parse(document) {
         Ok(Value::Object(document)) => document
             .get("maclist")
@@ -57,19 +73,20 @@ pub fn read_cache(path: &Path, limit: usize) -> Result<Vec<u8>, CacheError> {
     }
 }
 
-/// Atomic replacement: write `<path>.<pid>.tmp` with mode 0644, then rename.
+/// Atomic replacement using an exclusively created sibling. Never truncate
+/// or unlink a pre-existing path (including an attacker's symlink).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return Err(io::Error::from(io::ErrorKind::InvalidInput));
     };
-    let temporary = path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()));
+    let serial = NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed);
+    let temporary = path.with_file_name(format!("{file_name}.{}.{serial}.tmp", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&temporary)?;
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o644)
-            .open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_data()?;
         drop(file);
@@ -105,6 +122,31 @@ mod tests {
         assert!(!cache_is_servable(br#"{"ClientAPILevel":"7"}"#));
         assert!(!cache_is_servable(b"[]"));
         assert!(!cache_is_servable(b"{"));
+        assert!(!cache_is_servable(
+            br#"{"maclist":["A"],"name":"</script>"}"#
+        ));
+    }
+
+    #[test]
+    fn read_rejects_symlinks_and_nonregular_files() {
+        let target = scratch("read-target");
+        fs::write(&target, b"secret").unwrap();
+        let link = scratch("read-link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(read_bounded(&link, 100).is_err());
+        assert!(read_bounded(target.parent().unwrap(), 100).is_err());
+    }
+
+    #[test]
+    fn replacement_does_not_follow_destination_symlink() {
+        let target = scratch("unchanged-target");
+        fs::write(&target, b"secret").unwrap();
+        let link = scratch("destination-link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_atomic(&link, b"cache").unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"secret");
+        assert_eq!(fs::read(&link).unwrap(), b"cache");
+        assert!(!fs::symlink_metadata(&link).unwrap().is_symlink());
     }
 
     #[test]

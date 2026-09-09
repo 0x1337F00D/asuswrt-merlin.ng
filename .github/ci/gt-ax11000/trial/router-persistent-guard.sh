@@ -13,10 +13,14 @@ EXPECTED_BUILDNO=102.9
 EXPECTED_EXTENDNO=alpha1
 WEB_PAYLOAD_MANIFEST_SHA256=7d4e623cde8c177acc66607ed70c8fa87956b8d8f4409d93047008cfe37957c9
 WEB_SYMLINK_MANIFEST_SHA256=e651541e58c5ae985d833ccc6782752281b2c4f6f8d0b2782bf0000fc5f6b0bf
+EXPECTED_HTTPD_SHA256=RENDER_REQUIRED
+EXPECTED_RC_SHA256=RENDER_REQUIRED
+EXPECTED_SHARED_SHA256=RENDER_REQUIRED
+EXPECTED_WGET_SHA256=RENDER_REQUIRED
 
-# This guard deliberately has asymmetric roles. The known-good image remains
-# on partition 2 and the candidate is installed on partition 1. Inferring the
-# roles from the currently booted slot lets a baseline boot re-arm an unsafe
+# render_guard.py sets these asymmetric roles before installation. The template
+# defaults to candidate 1/fallback 2 but cannot pass identity until rendered.
+# Inferring the roles from the currently booted slot lets a baseline boot re-arm an unsafe
 # candidate, defeating the rollback guarantee.
 CANDIDATE_STATE=BOOT_SET_PART1_IMAGE
 FALLBACK_STATE=BOOT_SET_PART2_IMAGE
@@ -93,7 +97,11 @@ is_candidate_identity() {
 	[ -s /usr/share/codex/web-symlinks.manifest ] &&
 	[ "$(/usr/sbin/openssl dgst -sha256 /usr/share/codex/web-payload.sha256 2>/dev/null | awk '{print $NF}')" = "$WEB_PAYLOAD_MANIFEST_SHA256" ] &&
 	[ "$(/usr/sbin/openssl dgst -sha256 /usr/share/codex/web-symlinks.manifest 2>/dev/null | awk '{print $NF}')" = "$WEB_SYMLINK_MANIFEST_SHA256" ] &&
-	grep -aFq 'rust_regulatory_testlab_ack_v1' /usr/sbin/httpd
+	grep -aFq 'rust_regulatory_testlab_ack_v1' /usr/sbin/httpd &&
+	[ "$(/usr/sbin/openssl dgst -sha256 /usr/sbin/httpd 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_HTTPD_SHA256" ] &&
+	[ "$(/usr/sbin/openssl dgst -sha256 /sbin/rc 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_RC_SHA256" ] &&
+	[ "$(/usr/sbin/openssl dgst -sha256 /usr/lib/libshared.so 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_SHARED_SHA256" ] &&
+	[ "$(/usr/sbin/openssl dgst -sha256 /usr/sbin/wget 2>/dev/null | awk '{print $NF}')" = "$EXPECTED_WGET_SHA256"
 }
 
 is_candidate() {
@@ -105,9 +113,12 @@ is_candidate() {
 healthy() {
 	is_candidate || return 1
 	[ ! -e /data/commit_image_after_reboot ] || return 1
-	for service in httpd dnsmasq wanduck infosvr rstats nt_monitor; do
+	for service in httpd dnsmasq wanduck infosvr rstats nt_monitor networkmap; do
 		pidof "$service" >/dev/null 2>&1 || return 1
 	done
+	if [ "$(nvram get smart_connect_x)" != 0 ]; then
+		pidof bsd >/dev/null 2>&1 || return 1
+	fi
 	[ "$(nvram get wan0_state_t)" = "2" ] || return 1
 	ping -c 1 -W 3 8.8.8.8 >/dev/null 2>&1 || return 1
 	nslookup www.asus.com 127.0.0.1 >/dev/null 2>&1 || return 1

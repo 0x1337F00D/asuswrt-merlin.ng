@@ -41,7 +41,8 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 @@ -9085,11 +9113,16 @@
  		OPENSSL_LIBS="-L$(TOP)/openssl -lcrypto -lssl" \
  		OPENSSL_CFLAGS="-I$(TOP)/openssl/include" \
- 		ZLIB_CFLAGS="-I$(TOP)zlib" \
+-		ZLIB_CFLAGS="-I$(TOP)zlib" \
++		ZLIB_CFLAGS="-I$(TOP)/zlib" \
 -		ZLIB_LIBS="-L$(TOP)/zlib -lz "\
 +		ZLIB_LIBS="$(WGET_ZLIB_LIBS)" \
  		CFLAGS="-Os -Wall $(EXTRACFLAGS) -ffunction-sections -fdata-sections -I$(STAGEDIR)/usr/include $(if $(RTCONFIG_PIPEFW),-I$(TOP)/shared -DHAVE_PIPEFW) -std=gnu99 -DASUSWRT" \

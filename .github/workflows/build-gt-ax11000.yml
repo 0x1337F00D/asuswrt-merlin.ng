@@ -8,6 +8,7 @@ on:
       - codex/network-hardening-2026
       - codex/gt-ax11000-parallel-dag-ci
       - codex/gt-ax11000-parallel-dag-v2
+      - codex/gt-ax11000-rust-wifi-integration
       - claude/**
     paths:
       - release/**
@@ -596,6 +597,9 @@ jobs:
               usr/sbin/Notify_Event2NC
               usr/sbin/httpd
               sbin/rc
+              usr/sbin/networkmap
+              usr/lib/libbwdpi.so
+              usr/sbin/wget
             )
           fi
           bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \
@@ -699,6 +703,9 @@ jobs:
               usr/sbin/Notify_Event2NC
               usr/sbin/httpd
               sbin/rc
+              usr/sbin/networkmap
+              usr/lib/libbwdpi.so
+              usr/sbin/wget
             )
           fi
           bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \

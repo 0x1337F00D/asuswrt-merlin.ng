@@ -77,7 +77,8 @@ done
 # own image and must not load the vendor libz.so.1 that every other package
 # still uses.
 wget="$rootfs/usr/sbin/wget"
-if "$readelf" -d "$wget" | grep -q 'Shared library: \[libz\.so'; then
+"$readelf" -d "$wget" > "$temporary/wget-dynamic"
+if grep -q 'Shared library: \[libz\.so' "$temporary/wget-dynamic"; then
 	echo "wget still depends on the vendor libz.so.1" >&2
 	exit 1
 fi
@@ -85,13 +86,9 @@ if ! grep -aq '1\.3\.0-zlib-rs-' "$wget"; then
 	echo "wget does not carry the zlib-rs version marker" >&2
 	exit 1
 fi
-if ! "$objdump" -T "$wget" 2>/dev/null | grep -Eq '\b(inflate|gzwrite)\b'; then
-	# Static archive symbols are not dynamic; confirm they are linked at all.
-	"$objdump" -d "$wget" | grep -Eq '<(inflate|gzwrite)>:' || {
-		echo "wget does not contain the zlib-rs inflate/gzwrite entry points" >&2
-		exit 1
-	}
-fi
+# Production binaries are stripped; static function names need not survive.
+# Prove inflate/gzwrite through the actual consumer instead of symbol guesses.
+python3 "$(dirname "$0")/wget-zlib-runtime.py" "$rootfs" "$qemu_arm"
 
 run_expected_exit() {
 	local expected=$1

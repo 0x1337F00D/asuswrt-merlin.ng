@@ -381,6 +381,32 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Wireless test-lab debt
 
+- [x] Fix connection-panel timeout/authentication confusion and add finite,
+  read-only Rust Wi-Fi correlation on the diagnostics branch. The native
+  600-round test exited automatically; no WLAN restart or NVRAM changes.
+  The moving **MacBook** (previously misidentified as a tablet) lost 44/144
+  local probes; a captured weak-signal slice stayed on 5 GHz-1 at reported
+  -87 dBm with 23 reverse-probe misses. See
+  `.github/ci/gt-ax11000/diagnostics/WIFI_STEERING_REVIEW.md` for original-source
+  comparison, blob hashes, synthetic-test limitations and release gates.
+- [ ] Repair steering under ALL without reintroducing historical bsd/roamast
+  crashes. The quarantine demonstrably suppresses configured Smart Connect;
+  the 2026-09-09 approved native test now **reproduced the real bsd crash**:
+  legacy bsd/roamast pass `(idx, buffer, size)`, but current libshared expects
+  `(idx, vidx, buffer, size)` and writes through 0x1000. A corrected fixture
+  reproduces it; the process-scoped ABI adapter survived a native 30-second
+  trial and stopped cleanly. The model-limited source candidate is in
+  `diagnostics/compat/gt-ax11000-maclist-abi.patch`, not the firmware series.
+  Full rebuild, native roamast validation, active movement test and soak remain.
+  Do not remove quarantine on the strength of this short startup test alone.
+- [ ] Harden `retrieve_static_maclist_from_nvram` independently of the ABI fix:
+  current C append loops do not enforce capacity and memset uses sizeof(int)
+  rather than the passed buffer size. Preserve allow/deny/AiMesh semantics;
+  do not silently turn parse/overflow errors into an empty permissive ACL.
+- [ ] Retain a bounded whole Wi-Fi experiment in private RAM; the current
+  panel ring contains only the last 60 rounds. Distinguish failed pidof
+  capture from confirmed process absence before using service status as a gate.
+
 - [x] Retire the unmerged `codex/gt-ax11000-testlab-ui` branch at `e8ba9d2832e`.
   No code salvage: per-radio controls, the ALL restriction and the temporary
   IPv6 chain conflict with the current country-only policy. Exact contents
@@ -477,9 +503,9 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `crc32_combine_gen*`/`crc32_combine_op` are exported by zlib-rs but were not
   visible in the host archive and need a link check. `libbz2` is deferred: no
   dynamic user was found in the examined rootfs.
-- [x] Port the client list completely to Rust (size- and layout-checked
+- [x] Port the selected client-list read/render paths to Rust (size- and layout-checked
   shared-memory snapshot, own data model, bounded JSON string; no
-  `json_object*` across the boundary; `serde_json` only for output).
+  `json_object*` across the boundary; `serde_json` for parsing and output).
   `rust/clientlist` decodes the legacy 174,964-byte GT-AX11000 layout only
   for `productid` `GT-AX11000` and the public 173,436-byte layout only at
   exactly that size (anything else fails closed), takes the vendor
@@ -727,7 +753,7 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   the upload on a cancelled run. Verified on 2026-09-07 by YAML parse and
   review only; `actionlint` is unavailable and no Actions run has executed the
   changed workflow.
-- [ ] Close the `bwdpi-compat` staleness gap on the vendor-cache-hit path. An
+- [x] Implement closure of the `bwdpi-compat`/wget staleness gap on the vendor-cache-hit path. An
   exact vendor cache hit selects `rust-fast`, which relinks only the five
   consumers and never runs `networkmap-install`, while the vendor cache key
   excludes `rust/`. A change confined to `rust/bwdpi-compat` therefore ships
@@ -738,7 +764,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   closed, or make `rust-fast` also run `networkmap-rust-compat-rebuild` and
   treat all seven consumers as relinked. Since 2026-09-09 the same gap covers
   `wget`, the eighth manifested consumer: a change confined to
-  `rust/zlib-static` is carried from the cached tree by `rust-fast`.
+  `rust/zlib-static` was carried from the cached tree by `rust-fast`.
+  Integration now invokes `networkmap-install`, `wget` and `wget-install`,
+  promotes their exact staging payloads and applies freshness/equivalence
+  gates to all eight consumers. Host syntax/fixture checks pass; an actual
+  hosted cache-hit run must still confirm the end-to-end path.
 - [x] Let Dependabot propose weekly pinned-SHA bumps for GitHub Actions and
   lockfile-only Cargo bumps for `rust/`; each lands as a normal PR through the
   same checks. Since 2026-09-09 the workspace carries its crates.io
@@ -846,3 +876,48 @@ image-boot blocker.
   the delayed health gate passed, and `promote` restored partition 1 as the
   permanent boot target. Partition 2 remains available as the known-good
   rollback image.
+
+## 2026-09-09 combined Rust/client-list/Wi-Fi integration
+
+- Preserved Claude's interrupted client-list WIP in a checkpoint; reviewed
+  the zlib-rs/wget commits and merged the connection-diagnostics branch into
+  `codex/gt-ax11000-rust-wifi-integration`. Neither source worktree was reset.
+- Corrected GT-AX11000's `retrieve_static_maclist_from_nvram` to the three-
+  argument ABI actually used by the unchanged vendor `bsd` and `roamast`
+  objects. Only the `bsd` ALL-profile quarantine is removed. `roamast`
+  remains quarantined pending its own native trial; country/power/radio
+  settings remain untouched. The native adapter probe succeeded earlier,
+  but it is not shipped; the new libshared must pass the vendor-daemon QEMU
+  regression without an adapter and a subsequent hardware soak.
+- Client-list hardening added during review: 100 ms bounded record-lock
+  acquisition, persistent bounded lock descriptors that preserve nested C
+  lock ownership, no-follow/nonblocking regular-file cache reads, exclusive
+  atomic cache writes, depth/width/input/output JSON bounds, and inline-HTML
+  `<`, `>` and `&` escaping. No claim that remaining C writers or json-c
+  consumers have been replaced. Known model-variant limitations above remain.
+- Gates passed: complete Rust host tests and warnings-as-errors Clippy;
+  C-to-Rust fixtures on host AND ARM under QEMU, including live SysV memory,
+  contended record-lock deadline, FIFO/symlink cache rejection and zlib;
+  750,000 deterministic fuzz-smoke iterations across three seeds; Node panel/
+  CI fixtures; input-lock tests; 31 trial/deployment utility tests. Vendored
+  crates compare byte-for-byte to a fresh locked crates.io vendor operation.
+  These fuzz-smoke runs are not coverage-guided fuzzing or a hardware proof.
+- Combined 24-patch replay on `6be5bc84b50` gives patched-diff SHA-256
+  `5c02e6b4f5d849f680b95c530015ff3b59bb833b75676b64c333c513ffa7354a`.
+  Security/network overlays and the private firewall capture fixtures pass.
+- Full clean build is in progress in tmpfs, swap disabled. The first attempt
+  stopped at a local ccache host `libhiredis` dependency: the vendor Makefile
+  overwrites LD_LIBRARY_PATH. Added that existing host library to the RAM-only
+  toolchain view; no firmware/source/security gate was weakened. A fresh
+  locked-source retry is running. Firmware/native verification is PENDING.
+- The firmware verifier now includes actual ARM wget gzip HTTP and gzip WARC
+  consumers with independent Python gzip generation/verification, rather
+  than assuming stripped static function names survive in the image.
+- Before any flash, a fresh encrypted settings/JFFS/data backup was copied
+  off-router to persistent private storage and independently decrypted/
+  verified: 4,552 settings, 18 essential comparisons, 329 JFFS/26 data members.
+  This is not a factory-reset hardware restore test. The deployment guard
+  renderer binds explicit candidate/fallback roles and exact candidate binary
+  hashes; tests prove baseline never re-arms candidate, hold prevents promotion
+  and failed health selects fallback in both slot orientations. Not deployed
+  yet; partition 1 remains the current known-good baseline.

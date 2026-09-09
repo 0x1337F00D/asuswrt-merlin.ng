@@ -53,6 +53,7 @@ rustc +"$RUST_TOOLCHAIN" --version --verbose >/dev/null
 cargo +"$RUST_TOOLCHAIN" --version >/dev/null
 
 echo "Checking Rust workspace with toolchain $RUST_TOOLCHAIN"
+cd "$RUST_ROOT"
 cargo +"$RUST_TOOLCHAIN" fmt \
 	--manifest-path "$RUST_ROOT/Cargo.toml" \
 	--all -- --check

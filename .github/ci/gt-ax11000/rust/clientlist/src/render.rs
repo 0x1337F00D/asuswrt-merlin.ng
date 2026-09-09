@@ -8,6 +8,8 @@ use crate::amas;
 use crate::json::{self, Object, Value};
 use crate::model::ClientList;
 use crate::nvram::{self, c_atoi, KeyedList};
+use serde::Serialize;
+use std::io::{self, Write};
 
 /// Upper bound of any rendered document (255 clients with maximal escaped
 /// fields stay well below this; the persistent DB is limited to 256 KiB by
@@ -24,20 +26,60 @@ pub enum RenderError {
 }
 
 pub fn document_to_string(document: &Object, capacity: usize) -> Result<String, RenderError> {
-    let text =
-        json::to_string(&Value::Object(document.clone())).map_err(|_| RenderError::Serialize)?;
-    if text.len() > MAX_OUTPUT || text.len() > capacity {
-        return Err(RenderError::Oversized);
-    }
-    Ok(text)
+    bounded_json(document, capacity)
 }
 
 fn value_to_string(value: &Value, capacity: usize) -> Result<String, RenderError> {
-    let text = json::to_string(value).map_err(|_| RenderError::Serialize)?;
-    if text.len() > MAX_OUTPUT || text.len() > capacity {
-        return Err(RenderError::Oversized);
+    bounded_json(value, capacity)
+}
+
+/// These handlers are also expanded inside inline ASP script elements.
+/// JSON escaping alone does not prevent a client name containing </script>
+/// from ending the HTML element. Escape HTML metacharacters while enforcing
+/// the bound during serialization, not after allocating an oversized string.
+struct HtmlJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    overflow: bool,
+}
+
+impl Write for HtmlJsonWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for &byte in bytes {
+            let escaped: &[u8] = match byte {
+                b'<' => b"\\u003c",
+                b'>' => b"\\u003e",
+                b'&' => b"\\u0026",
+                _ => std::slice::from_ref(&byte),
+            };
+            if escaped.len() > self.limit.saturating_sub(self.bytes.len()) {
+                self.overflow = true;
+                return Err(io::Error::other("clientlist output limit"));
+            }
+            self.bytes.extend_from_slice(escaped);
+        }
+        Ok(bytes.len())
     }
-    Ok(text)
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn bounded_json(value: &impl Serialize, capacity: usize) -> Result<String, RenderError> {
+    let mut writer = HtmlJsonWriter {
+        bytes: Vec::new(),
+        limit: capacity.min(MAX_OUTPUT),
+        overflow: false,
+    };
+    if serde_json::to_writer(&mut writer, value).is_err() {
+        return Err(if writer.overflow {
+            RenderError::Oversized
+        } else {
+            RenderError::Serialize
+        });
+    }
+    String::from_utf8(writer.bytes).map_err(|_| RenderError::Serialize)
 }
 
 /// `{"maclist": [], "ClientAPILevel":"7"}` exactly as `ej_get_clientlist()`
@@ -386,5 +428,14 @@ mod tests {
             render_all_basic(&database, "", 4),
             Err(RenderError::Oversized)
         );
+    }
+
+    #[test]
+    fn inline_script_data_is_html_safe_without_changing_the_value() {
+        let value = Value::string("</script><script>alert(1)</script>&");
+        let text = value_to_string(&value, 1024).unwrap();
+        assert!(!text.contains(['<', '>', '&']));
+        assert_eq!(json::parse(text.as_bytes()).unwrap(), value);
+        assert_eq!(value_to_string(&value, 16), Err(RenderError::Oversized));
     }
 }
