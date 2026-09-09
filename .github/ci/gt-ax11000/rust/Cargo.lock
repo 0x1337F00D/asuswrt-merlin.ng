@@ -60,6 +60,13 @@ name = "nt-event"
 version = "0.1.0"
 
 [[package]]
+name = "ntp"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -91,6 +98,7 @@ dependencies = [
  "clientlist",
  "httpd-parsers",
  "infosvr",
+ "ntp",
  "router-policy",
  "rstats",
  "serde_json",

@@ -26,3 +26,4 @@ networkmap-shm-abi.patch
 private-firewall-capture.patch
 zlib-rs-wget.patch
 clientlist-rust.patch
+ntp-rust.patch

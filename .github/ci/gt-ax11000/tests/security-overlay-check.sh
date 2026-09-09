@@ -67,6 +67,8 @@ www_makefile="$router/www/Makefile"
 networkmap_makefile="$router/networkmap/Makefile"
 router_makefile="$router/Makefile"
 cargo_config="$router/.cargo/config.toml"
+rc_makefile="$router/rc/Makefile"
+ntp_rust="$router/rust-components/ntp/src"
 zlib_static="$router/rust-components/zlib-static/src/lib.rs"
 zlib_static_manifest="$router/rust-components/zlib-static/Cargo.toml"
 bwdpi_compat="$router/rust-components/bwdpi-compat/src/lib.rs"
@@ -80,6 +82,9 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
 	"$networkmap_makefile" "$bwdpi_compat" \
 	"$router_makefile" "$cargo_config" "$zlib_static" "$zlib_static_manifest" \
+	"$rc_makefile" "$ntp_rust/lib.rs" "$ntp_rust/packet.rs" "$ntp_rust/client.rs" \
+	"$ntp_rust/server.rs" "$ntp_rust/clock.rs" "$ntp_rust/cli.rs" \
+	"$ntp_rust/script.rs" "$ntp_rust/main.rs" "$ntp_rust/sys.rs" \
 	"$clientlist_rust/lib.rs" "$clientlist_rust/layout.rs" \
 	"$clientlist_rust/snapshot.rs" "$clientlist_rust/shm.rs" \
 	"$clientlist_rust/render.rs" "$clientlist_rust/cache.rs" \
@@ -214,6 +219,50 @@ require_text "$cargo_config" 'directory = "rust-components/vendor"'
 require_text "$zlib_static" '#![forbid(unsafe_code)]'
 require_text "$zlib_static_manifest" 'features = ["std", "c-allocator", "export-symbols", "gz"]'
 reject_text "$zlib_static_manifest" 'gzprintf'
+
+# The time daemon is the Rust /usr/sbin/ntp, not the busybox ntpd applet.
+# CONFIG_FEATURE_NTPD_NTP_ALIAS is what made busybox install itself as
+# /usr/sbin/ntp, so it must stay off and the applet itself must not be built.
+require_text "$src_rt_makefile" 'echo "# CONFIG_FEATURE_NTPD_NTP_ALIAS is not set" >>$(1);'
+require_text "$src_rt_makefile" 'echo "# CONFIG_NTPD is not set" >>$(1);'
+reject_text "$src_rt_makefile" 'echo "CONFIG_FEATURE_NTPD_NTP_ALIAS=y"'
+require_text "$rc_makefile" 'RUST_NTP_MANIFEST := $(RUST_COMPONENTS_DIR)/ntp/Cargo.toml'
+require_text "$rc_makefile" '--bin ntp --release --target "$(RUST_TARGET)"'
+require_text "$rc_makefile" '@install -D $(RUST_NTP_BINARY) $(INSTALLDIR)/usr/sbin/ntp'
+require_text "$rc_makefile" 'all: PB rc $(RUST_NTP_BINARY)'
+# Exactly one package Makefile may produce that path.  rc/ntpd.c execs it and
+# matches the process by the name "ntp", so a second producer would be a race
+# over which daemon actually owns the clock.
+ntp_producers=$(grep -rlE 'usr/sbin/ntp([^a-zA-Z0-9_]|$)' "$root" --include=Makefile | sort)
+if [ "$ntp_producers" != "$rc_makefile" ]; then
+	echo "/usr/sbin/ntp must have exactly one producer, found: $ntp_producers" >&2
+	exit 1
+fi
+
+# The daemon keeps every system call in one module, never runs a shell and
+# offers no mode-6/mode-7 control surface for an amplifier to reflect off.
+require_text "$ntp_rust/lib.rs" '#![forbid(unsafe_code)]'
+require_text "$ntp_rust/main.rs" '#![forbid(unsafe_op_in_unsafe_fn)]'
+for module in cli.rs client.rs clock.rs logging.rs packet.rs script.rs server.rs; do
+	reject_text "$ntp_rust/$module" 'unsafe'
+done
+if [ "$(grep -c 'unsafe {' "$ntp_rust/main.rs")" -ne 0 ]; then
+	echo 'all unsafe in the ntp daemon must live in sys.rs' >&2
+	exit 1
+fi
+reject_text "$ntp_rust/script.rs" '"sh"'
+reject_text "$ntp_rust/script.rs" '-c'
+require_text "$ntp_rust/script.rs" 'command.spawn().map(|child| child.id())'
+require_text "$ntp_rust/server.rs" 'if packet.mode != Mode::Client {'
+require_text "$ntp_rust/server.rs" 'return Err(Refusal::UnsupportedMode(packet.mode));'
+require_text "$ntp_rust/server.rs" 'return Err(Refusal::Unsynchronised);'
+require_text "$ntp_rust/server.rs" 'origin: packet.transmit,'
+require_text "$ntp_rust/client.rs" 'if packet.origin != query.nonce {'
+require_text "$ntp_rust/client.rs" 'return Err(Rejection::OriginMismatch);'
+require_text "$ntp_rust/client.rs" 'MIN_PLAUSIBLE_NTP_SECONDS: u32 = 3_913_056_000;'
+require_text "$ntp_rust/packet.rs" 'pub fn encode(&self) -> [u8; PACKET_LEN] {'
+require_text "$ntp_rust/main.rs" 'sys::bind_to_device(&socket, interface)?;'
+require_text "$ntp_rust/sys.rs" 'libc::SO_BINDTODEVICE,'
 
 # Compatibility gaps must fail closed instead of reporting successful work.
 require_text "$rc_stubs" 'return rust_validate_apply_input_value(name, value);'

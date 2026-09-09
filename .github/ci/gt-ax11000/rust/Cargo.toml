@@ -5,6 +5,7 @@ members = [
     "httpd-parsers",
     "infosvr",
     "nt-event",
+    "ntp",
     "router-policy",
     "router-security",
     "router-fuzz",

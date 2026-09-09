@@ -548,6 +548,78 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `rustls-ffi` for HTTPS; the latter needs a crypto-backend decision (the
   default is `aws-lc-rs`) and ARM build, ABI and consumer tests before use.
 
+### BusyBox applet replacements (ntpd first)
+
+- [x] Replace the BusyBox `ntpd` applet with a self-contained Rust SNTP/NTPv4
+  daemon. There is no `ntp` package for this profile: `release/src/router/
+  Makefile` builds `ntpclient` only when `RTCONFIG_NTPD != y` and
+  `ntp-4.2.8p15` only for RT-AX82_XD6/XD6_V2, so on GT-AX11000
+  (`NTPD=y` in `release/src-rt/target.mak`) the daemon was BusyBox 1.25.1's
+  `networking/ntpd.c`, installed at `/usr/sbin/ntp` by the
+  `CONFIG_FEATURE_NTPD_NTP_ALIAS` applet alias that
+  `release/src-rt/Makefile` enabled. `ntpd-rs` was evaluated and rejected: it
+  is a multi-crate tree with a large transitive dependency set, a TOML
+  configuration model and a different operational contract, none of which fits
+  the fork's hard rule that `rust/vendor` gains no new crates.io dependency.
+  `rust/ntp` is therefore written from scratch against RFC 5905 with `libc` as
+  its only dependency, matching `infosvr`, `rstats` and `nt-event`.
+  `ntp-rust.patch` turns the alias and `CONFIG_NTPD` off and adds the build and
+  install rules to `rc/Makefile`, which leaves exactly one producer of
+  `/usr/sbin/ntp`; `rc/ntpd.c` is unchanged. Evidence on 2026-09-10, host only:
+  54 crate tests (byte-level RFC 5905 fixtures for a valid reply, every wrong
+  mode, every wrong version, `RATE`/`DENY`/`RSTR`/opaque kiss-o'-death,
+  stratum 16, a one-bit origin-timestamp forgery, truncated, oversized and
+  authenticated lengths, an unusable root distance, an unusable delay, leap
+  values, the server round trip and the absence of any mode-6/mode-7
+  handler; discipline tests against an injected clock; the exact `rc/ntpd.c`
+  argument vectors plus every option BusyBox silently ignored; and a recording
+  shell script that proves the hook runs as `PROG step` with the four
+  environment variables), the fuzz smoke extended with the client and server
+  parsers at three fixed seeds, `cargo fmt`, Clippy with warnings denied, the
+  armv7 workspace check, an armv7 release binary inspected with the Broadcom
+  `readelf`/`objdump` (ARMv7, soft-float, `/lib/ld-linux.so.3`, no `Tag_ABI_
+  VFP_args`, no CP15 barriers), a full 27-patch replay re-locked to
+  `10979875de18d601e05a07767f0681ecdbb1f8f433491c7f9e89152025a3f754` and the
+  three overlay checks. The host binary was also run for real in an
+  unprivileged network namespace: against a scripted stratum-2 server on
+  loopback it queried, matched the nonce, accepted the reply and reported
+  `offset +3.000023s`, and with `-l -I lo` its socket showed up as
+  `0.0.0.0%lo:123` in `ss`, refused a mode-3 request while unsynchronised and
+  refused a mode-7 `monlist` outright, then exited cleanly on `SIGTERM`.
+  Watch-only mode (`-w`) was used so no test touched the host clock. No
+  firmware build, hosted build, QEMU run or hardware test has exercised the
+  daemon; `qemu-arm` is not installed on this host, so the `--self-test` and
+  no-argument expectations added to `verify-rust-firmware.sh` have only been
+  run on the host binary. A live server *reply* has not been observed on a
+  socket, only in the byte-exact unit tests and the fuzzer, because the
+  upstream peer and the server both need UDP/123 in one namespace.
+- [ ] Prove the Rust `ntp` on a hosted build and on hardware. Owed: a real
+  boot with a dead or wrong RTC, where the first reply is years off and must
+  step rather than slew; `/sbin/ntpd_synced step` actually setting
+  `ntp_ready=1` and `ntp_diff_ts`, calling `update_ntp_ts()` and
+  `setup_timezone()`, and triggering the DDNS restart, `start_ovpn_eas()`,
+  the dnsmasq `SIGINT` for DNSSEC and the `cfg_server`/`cfg_client` `SIGUSR1`;
+  `stop_ntpd()`'s `pids("ntp")`/`killall_tk("ntp")` against the daemonised
+  process; `watchdog.c` restarting the service; LAN server mode answering real
+  clients on `br0` while `ntpd_enable=1`; and long-run drift with `adjtimex`
+  against the previous BusyBox behaviour.
+- [ ] Deliberate deviations from BusyBox that need a decision or a field
+  check. The RFC-4330 sanity checks are applied even under `-t` (BusyBox
+  disabled leap-alarm, stratum-0 and stratum-16 rejection entirely when `-t`
+  was given, which is exactly how `rc` starts it); `-t` now only waives the
+  root-distance fitness test. Server mode stays silent until the clock is
+  disciplined instead of answering with `LI_ALARM`, answers no symmetric-active
+  request, always replies with 48 bytes and never with an echoed
+  authenticator, does not use `IP_PKTINFO` to pick the reply source address on
+  a multi-address LAN interface, and applies a 64-replies-per-second budget
+  that BusyBox did not have. `-l` without `-p` is refused rather than
+  publishing stratum 1 from an undisciplined clock. Replies whose transmit
+  timestamp is before 2024-01-01 are rejected; like BusyBox, the daemon is
+  NTP era-0 only and stops working in February 2036. The eight-deep clock
+  filter and the Marzullo selection are reproduced, but the
+  discard-highest-jitter clustering loop is not, because it only takes effect
+  above three peers and `rc` configures at most two.
+
 ## Local client view and QoS debt
 
 - [x] Disable the GT-AX11000 `BWDPI`/Trend Micro feature set at profile and

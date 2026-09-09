@@ -18,6 +18,9 @@ use httpd_parsers::{
     query_is_valid, url_decode_in_place,
 };
 use infosvr::{build_response, parse_request, DeviceState, PDU_LEN};
+use ntp::client::{evaluate_reply, Query as NtpQuery};
+use ntp::packet::{Packet as NtpPacket, Timestamp as NtpTimestamp, PACKET_LEN as NTP_PACKET_LEN};
+use ntp::server::{build_reply as build_ntp_reply, ServerState as NtpServerState};
 use router_policy::testlab::TestlabRequest;
 use router_policy::vpn::openvpn_custom_config_allowed;
 use router_policy::vpn::{AllowedIpSet, Identity, IpsecProfile, OpenVpnProfile, WireGuardEndpoint};
@@ -111,6 +114,63 @@ fn fuzz_infosvr(input: &[u8]) {
     }
     if input.len() != PDU_LEN {
         assert!(parse_request(input, [0; 6]).is_none());
+    }
+}
+
+/// The NTP daemon runs with `panic = "abort"`, so any panic reachable from a
+/// datagram is a remote kill. Drive the client and server parsers with random
+/// bytes at random lengths, and with the nonce both matched and mismatched.
+fn fuzz_ntp(rng: &mut Rng, input: &[u8]) {
+    let _ = NtpPacket::decode(input);
+
+    let nonce = NtpTimestamp {
+        seconds: rng.next_u64() as u32,
+        fraction: rng.next_u64() as u32,
+    };
+    let sent_at = 3_913_056_000.0_f64 + (rng.next_u64() % 1_000_000) as f64;
+    let received_at = sent_at + (rng.next_u64() % 64) as f64;
+    let query = NtpQuery { nonce, sent_at };
+
+    let mut datagram = input.to_vec();
+    datagram.resize(NTP_PACKET_LEN, 0);
+    // Half the iterations get the nonce written into the origin field, so the
+    // checks past the anti-spoofing gate are exercised too.
+    if rng.next_u64() % 2 == 0 && datagram.len() >= NTP_PACKET_LEN {
+        datagram[24..28].copy_from_slice(&nonce.seconds.to_be_bytes());
+        datagram[28..32].copy_from_slice(&nonce.fraction.to_be_bytes());
+    }
+    if let Ok(sample) = evaluate_reply(&datagram, query, received_at, 0.002) {
+        assert!(sample.offset.is_finite());
+        assert!(sample.delay.is_finite());
+        assert!(sample.stratum >= 1 && sample.stratum < 16);
+    }
+    // Truncations and the authenticated length must be refused or accepted,
+    // never crash.
+    for length in [0, 1, 47, NTP_PACKET_LEN, 49, 67, 68, 69] {
+        let mut resized = datagram.clone();
+        resized.resize(length, 0);
+        let _ = evaluate_reply(&resized, query, received_at, 0.002);
+    }
+
+    let state = NtpServerState {
+        leap: ntp::packet::Leap::NoWarning,
+        stratum: (rng.next_u64() % 18) as u8,
+        poll: 6,
+        precision: -9,
+        root_delay: 0.01,
+        root_dispersion: 0.01,
+        reference_id: *b"FUZZ",
+        reference: NtpTimestamp::from_secs_f64(sent_at),
+    };
+    let receive = NtpTimestamp::from_secs_f64(received_at);
+    let transmit = NtpTimestamp::from_secs_f64(received_at + 0.001);
+    if let Ok(reply) = build_ntp_reply(input, &state, receive, transmit) {
+        // A reply is never larger than the request, so it can never amplify.
+        assert_eq!(reply.len(), NTP_PACKET_LEN);
+        assert!(input.len() >= NTP_PACKET_LEN);
+        let decoded = NtpPacket::decode(&reply).expect("our own reply decodes");
+        assert_eq!(decoded.mode, ntp::packet::Mode::Server);
+        assert!(decoded.stratum >= 1 && decoded.stratum < 16);
     }
 }
 
@@ -299,6 +359,18 @@ fn regression_edges() {
     assert!(!cache_is_servable(br#"{"maclist":[]}"#));
     assert!(parse_database(&vec![b' '; clientlist::render::MAX_DATABASE + 1]).is_none());
 
+    // Every NTP mode and every stratum boundary, against a fixed nonce.
+    let mut edge_rng = Rng(DEFAULT_SEED);
+    for mode in 0_u8..8 {
+        for stratum in [0_u8, 1, 15, 16, 17, 255] {
+            let mut packet = [0_u8; NTP_PACKET_LEN];
+            packet[0] = (4 << 3) | mode;
+            packet[1] = stratum;
+            packet[12..16].copy_from_slice(b"RATE");
+            fuzz_ntp(&mut edge_rng, &packet);
+        }
+    }
+
     for opcode in [31_u16, 52, 53, 54, u16::MAX] {
         let mut packet = [0_u8; PDU_LEN];
         packet[0] = 12;
@@ -313,13 +385,14 @@ fn run(iterations: u64, seed: u64) {
     let mut rng = Rng(seed.max(1));
     for index in 0..iterations {
         let input = rng.bytes();
-        match index % 7 {
+        match index % 8 {
             0 => fuzz_http(&input),
             1 => fuzz_policy(&input),
             2 => fuzz_infosvr(&input),
             3 => fuzz_rstats(&input),
             4 => fuzz_clientlist_text(&input),
             5 => fuzz_clientlist_segment(&mut rng, &input),
+            6 => fuzz_ntp(&mut rng, &input),
             _ => fuzz_wanduck(&mut rng),
         }
     }

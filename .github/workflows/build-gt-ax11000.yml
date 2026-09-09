@@ -584,22 +584,25 @@ jobs:
             (
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
-                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
-            # rust-fast relinks only these five (rust-repack.mk
-            # rust-components-relink). networkmap and libbwdpi.so are carried
-            # from the cached tree, so they stay inside the equivalence gate
-            # and must not change even when the Rust state differs.
+            # rust-fast relinks only the Rust consumers listed here
+            # (rust-repack.mk rust-components-relink); /usr/sbin/ntp comes
+            # from rc-install alongside sbin/rc. networkmap and libbwdpi.so
+            # are carried from the cached tree, so they stay inside the
+            # equivalence gate and must not change even when the Rust state
+            # differs.
             rootfs_excludes+=(
               usr/sbin/infosvr
               bin/rstats
               usr/sbin/Notify_Event2NC
               usr/sbin/httpd
               sbin/rc
+              usr/sbin/ntp
               usr/sbin/networkmap
               usr/lib/libbwdpi.so
               usr/sbin/wget
@@ -684,7 +687,7 @@ jobs:
             (
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
-                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget
             ) > cache-equivalence/consumers.after
             diff -u cache-equivalence/consumers.before \
@@ -697,7 +700,7 @@ jobs:
           grep -Eq '^HND[0-9]{7}$' "$image_version"
           rootfs_excludes=(rom/etc/image_version)
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
-            # Keep this list identical to the snapshot step: only the five
+            # Keep this list identical to the snapshot step: only the
             # relinked consumers may differ; networkmap and libbwdpi.so are
             # not rebuilt on the cached path.
             rootfs_excludes+=(
@@ -706,6 +709,7 @@ jobs:
               usr/sbin/Notify_Event2NC
               usr/sbin/httpd
               sbin/rc
+              usr/sbin/ntp
               usr/sbin/networkmap
               usr/lib/libbwdpi.so
               usr/sbin/wget

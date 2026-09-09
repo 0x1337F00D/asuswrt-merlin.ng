@@ -1,0 +1,76 @@
+diff --git a/release/src/router/rc/Makefile b/release/src/router/rc/Makefile
+--- a/release/src/router/rc/Makefile
++++ b/release/src/router/rc/Makefile
+@@ -1335,6 +1335,7 @@
+ RUST_WORKSPACE_MANIFEST := $(RUST_COMPONENTS_DIR)/Cargo.toml
+ RUST_WANDUCK_MANIFEST := $(RUST_COMPONENTS_DIR)/wanduck-transition/Cargo.toml
+ RUST_SECURITY_MANIFEST := $(RUST_COMPONENTS_DIR)/router-security/Cargo.toml
++RUST_NTP_MANIFEST := $(RUST_COMPONENTS_DIR)/ntp/Cargo.toml
+ RUST_TOOLCHAIN ?= 1.85.1
+ RUST_TARGET ?= armv7-unknown-linux-gnueabi
+ RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
+@@ -1360,7 +1361,33 @@
+ $(RUST_WANDUCK_LIB) $(RUST_SECURITY_LIB): rust-rc-libs
+ endif
+ 
+-all: PB rc $(if $(RTCONFIG_BRCM_HOSTAPD), $(WPS_PBCD)) init.prep
++# The memory-safe replacement for the busybox ntpd applet.  rc is the only
++# consumer: start_ntpd() in ntpd.c execs /usr/sbin/ntp and stop_ntpd() matches
++# the process by the name "ntp", so the binary is owned by this package and is
++# installed alongside the /sbin/ntpd_synced symlink that it calls back into.
++# Built only for RTCONFIG_NTPD profiles; the others still use ntpclient and
++# have their own unrelated /sbin/ntp dispatcher symlink.
++ifeq ($(RTCONFIG_NTPD),y)
++ifneq ($(wildcard $(RUST_NTP_MANIFEST)),)
++RUST_NTP_BINARY := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/ntp
++
++.DEFAULT_GOAL := all
++
++.PHONY: rust-ntp
++
++rust-ntp:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_NTP_MANIFEST)" \
++			-p ntp --bin ntp --release --target "$(RUST_TARGET)" \
++			--locked --offline
++
++$(RUST_NTP_BINARY): rust-ntp
++endif
++endif
++
++all: PB rc $(RUST_NTP_BINARY) $(if $(RTCONFIG_BRCM_HOSTAPD), $(WPS_PBCD)) init.prep
+ 
+ PB:
+ 	[ ! -d prebuild ] || cp prebuild/*.o ./
+@@ -1396,6 +1423,11 @@
+ 	$(if $(RTCONFIG_DEBUG),,@$(STRIP) $(INSTALLDIR)/sbin/rc)
+ 	@chmod 0500 $(INSTALLDIR)/sbin/rc
+ 
++ifneq ($(RUST_NTP_BINARY),)
++	@install -D $(RUST_NTP_BINARY) $(INSTALLDIR)/usr/sbin/ntp
++	$(if $(RTCONFIG_DEBUG),,@$(STRIP) $(INSTALLDIR)/usr/sbin/ntp)
++endif
++
+ ifeq ($(RTCONFIG_BRCM_HOSTAPD),y)
+ 	@install $(WPS_PBCD) $(INSTALLDIR)/sbin
+ 	@$(STRIP) $(INSTALLDIR)/sbin/$(WPS_PBCD)
+diff --git a/release/src-rt/Makefile b/release/src-rt/Makefile
+--- a/release/src-rt/Makefile
++++ b/release/src-rt/Makefile
+@@ -5513,7 +5513,13 @@
+ 	fi;
+ 	if [ "$(NTPD)" = "y" ]; then \
+ 		sed -i "/CONFIG_FEATURE_NTPD_NTP_ALIAS/d" $(1); \
+-		echo "CONFIG_FEATURE_NTPD_NTP_ALIAS=y" >>$(1); \
++		echo "# CONFIG_FEATURE_NTPD_NTP_ALIAS is not set" >>$(1); \
++		sed -i "/CONFIG_NTPD\>/d" $(1); \
++		echo "# CONFIG_NTPD is not set" >>$(1); \
++		sed -i "/CONFIG_FEATURE_NTPD_SERVER/d" $(1); \
++		echo "# CONFIG_FEATURE_NTPD_SERVER is not set" >>$(1); \
++		sed -i "/CONFIG_FEATURE_NTPD_CONF/d" $(1); \
++		echo "# CONFIG_FEATURE_NTPD_CONF is not set" >>$(1); \
+ 	fi;
+ 	if [ "$(RSYSLOGD)" = "y" ]; then \
+ 		sed -i "/CONFIG_FEATURE_SYSLOG/d" $(1); \

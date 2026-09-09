@@ -1,0 +1,19 @@
+[package]
+name = "ntp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-only"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# The binary is installed as /usr/sbin/ntp because rc/ntpd.c execs that exact
+# path and stop_ntpd() matches the process by the name "ntp".
+[[bin]]
+name = "ntp"
+path = "src/main.rs"
+
+[dependencies]
+libc = { version = "0.2.189", default-features = false }

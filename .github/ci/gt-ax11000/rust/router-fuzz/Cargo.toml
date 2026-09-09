@@ -11,6 +11,7 @@ clientlist = { path = "../clientlist" }
 serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
 httpd-parsers = { path = "../httpd-parsers" }
 infosvr = { path = "../infosvr" }
+ntp = { path = "../ntp" }
 router-policy = { path = "../router-policy" }
 rstats = { path = "../rstats" }
 wanduck-transition = { path = "../wanduck-transition" }
