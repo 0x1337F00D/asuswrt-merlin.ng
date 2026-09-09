@@ -210,7 +210,7 @@ ensure_gnu_make() {
 	local actual_sha256
 
 	if [ -x "$GNU_MAKE_BIN" ] &&
-		[ "$($GNU_MAKE_BIN --version | sed -n '1s/^GNU Make //p')" = "$GNU_MAKE_VERSION" ]; then
+		[ "$("$GNU_MAKE_BIN" --version | sed -n '1s/^GNU Make //p')" = "$GNU_MAKE_VERSION" ]; then
 		echo "Reusing GNU Make $GNU_MAKE_VERSION from $GNU_MAKE_BIN"
 		return
 	fi
@@ -249,8 +249,9 @@ ensure_gnu_make() {
 		/usr/bin/make -j"$(nproc)" >/dev/null
 		/usr/bin/make install >/dev/null
 	)
+	mkdir -p "$(dirname "$GNU_MAKE_ROOT")"
 	mv "$build_root/install" "$GNU_MAKE_ROOT"
-	if [ "$($GNU_MAKE_BIN --version | sed -n '1s/^GNU Make //p')" != "$GNU_MAKE_VERSION" ]; then
+	if [ "$("$GNU_MAKE_BIN" --version | sed -n '1s/^GNU Make //p')" != "$GNU_MAKE_VERSION" ]; then
 		echo "Built GNU Make failed its version check" >&2
 		exit 1
 	fi

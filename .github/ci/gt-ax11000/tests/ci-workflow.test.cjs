@@ -56,6 +56,9 @@ test("the Rust gate actually receives and tests the workflow file", () => {
   assert.match(job("rust"), /sparse-checkout set \.github\/ci\/gt-ax11000 \.github\/workflows/);
   assert.match(job("rust"), /node --test .*tests\/ci-workflow\.test\.cjs/);
 });
+test("the host gate executes GNU Make bootstrap regressions", () => {
+  assert.match(job("rust"), /python3 "\$root\/tests\/test_gnu_make_bootstrap\.py"/);
+});
 
 const sync = fs.readFileSync(path.join(__dirname, "../../../workflows/sync-upstream.yml"), "utf8");
 function scriptSection(start, end) {

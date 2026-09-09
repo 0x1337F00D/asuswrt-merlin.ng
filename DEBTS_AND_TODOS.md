@@ -1036,3 +1036,50 @@ image-boot blocker.
   permissions equivalence, actual final wget differential and vendor BSD
   regression, authenticated client-list WebUI, candidate-slot-2 one-shot
   boot and soak. No flash, reboot, promotion or GitHub push occurred.
+
+### 2026-09-09 WSL recovery and clock isolation
+
+- WSL was restarted outside this task, clearing all old RAM build trees and
+  tools. The integration branch was restored at `425695cbe4c` from its durable
+  Git bundle, with prerequisite objects verified in the persistent repository.
+  New source and toolchain checkouts live only in RAM; the 26-patch replay
+  again matches `392f14cbcb57a5794a9bd6ebf2069ea3ae29f5c97859cd6aea8a8dd6edff228a`.
+- Switching from TSC to Hyper-V TSC-page and then MSR did not remove the
+  approximately two-second NTP corrections every 32 seconds. Independent
+  NTP samples agreed with CLOCK_MONOTONIC_RAW but not the disciplined clock;
+  read-only adjtimex reported tick=10833 us instead of nominal 10000 us.
+  The installed `/init` contains WSL's StartTimeSyncAgent/chronyd/PHC setup,
+  while Ubuntu's systemd-timesyncd was also active. This strongly indicates
+  competing time disciplines; no trace of the hidden chronyd process was made.
+- The user temporarily stopped systemd-timesyncd (not disabled). The tick
+  value subsequently returned to 10000 without manual adjustment, and two
+  90-second sampling windows contained zero clock-step events. NTP peer
+  agreement and lasting stability must still be checked before treating the
+  host-time problem as permanently resolved. MSR remains the selected source.
+  Do not reuse earlier affected local durations as reliable speed evidence.
+- Restored trial-controller tests: 31 PASS. Read-only native client-list
+  recheck on the unchanged baseline router at 23:35 CEST: 13 live clients,
+  105 database clients, maximum render 2.408 ms, maximum RSS 3220 KiB.
+  Baseline remains First / BOOT_SET_PART1_IMAGE, ALL unchanged, no deployment.
+- The user explicitly waived browser automation for this iteration. Keep the
+  visual/authenticated WebUI gate marked NOT RUN; native parser, rootfs Web
+  manifest and service checks are not equivalent evidence.
+- After settling, independent NTP samples track the disciplined clock again
+  (example: monotonic 10.039850 s versus server 10.038994 s). The remaining
+  roughly +1.414 s absolute offset is not a new backwards jump. Three bounded
+  90-second post-stop probes passed with no step events; this is not proof
+  that the problem stays fixed across a WSL restart.
+- The fresh host bootstrap exposed a missing parent directory before moving
+  GNU Make into its configured RAM location. Create that parent explicitly;
+  also quote both executable-path version checks. A checksum-bound synthetic
+  archive exercises the actual function without network or compilation:
+  missing nested parent, a path containing spaces, reuse, and the original
+  missing-parent failure as a negative control. Three tests pass and are
+  wired into CI. These host-only fixes do not change the runtime patch lock.
+- The in-flight clean firmware build uses the unchanged frozen `425695cbe4c`
+  overlay. Its checksum-built GNU Make was placed after manually creating
+  the missing RAM parent; the running Bash driver was not edited. Do not
+  attribute this artifact to later host-bootstrap or documentation commits.
+- Restored Rust workspace format, all-target tests and Clippy with warnings
+  as errors passed. Firmware completion, extracted-image checks and the
+  hardware trial remain pending; no flash, reboot, promotion or push yet.

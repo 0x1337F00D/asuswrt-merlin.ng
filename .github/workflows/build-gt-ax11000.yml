@@ -97,6 +97,7 @@ jobs:
           root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           python3 "$root/tests/test_input_lock.py"
           python3 "$root/tests/test_ccache_frontends.py"
+          python3 "$root/tests/test_gnu_make_bootstrap.py"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
           # Cargo resolves the vendored crates.io mapping (rust/.cargo) from
           # the working directory, not from --manifest-path.
