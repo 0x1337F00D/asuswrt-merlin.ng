@@ -921,3 +921,30 @@ image-boot blocker.
   hashes; tests prove baseline never re-arms candidate, hold prevents promotion
   and failed health selects fallback in both slot orientations. Not deployed
   yet; partition 1 remains the current known-good baseline.
+
+### Follow-up during the clean integration build
+
+- The full cold package graph exposed a real netatalk/Berkeley DB race:
+  `netaconfig` recursively launched another top-level Make that configured
+  `db-4.8.30` concurrently with its existing top-level job. Missing/changing
+  `conftest.c` corrupted generated type headers; netatalk then also attempted
+  to configure before libgcrypt existed. This was not a Rust compiler error.
+  `netatalk-parallel-dependencies.patch` moves shared producers into the same
+  DAG, makes `netaconfig` an alias of the single stamp owner and makes failed
+  configure fail closed before stamping. A fixture extracted from the actual
+  patched Makefile proves exactly one producer/config owner at -j2/-j4/-j8.
+  It is part of the security-overlay gate. Nine host input/DAG tests pass.
+- The complete 25-patch replay now binds patched-diff SHA-256
+  `abcb8727f854a7ab1022def7f26e884f201621423cf0ca798d3b27454c190fc9`.
+  A fresh locked clean build with the corrected graph is running; old failed
+  build trees are preserved, ccache is reused, all compilation stays in RAM.
+- Native read-only client-list probe on the still-running known-good router:
+  ten successful real shared-memory snapshots, 14 live clients / 12,140 JSON
+  bytes, maximum Rust render time 2.650 ms; persistent database 105 clients /
+  29,412 bytes; process maximum RSS 3,280 KiB. The vendor json-c independently
+  parsed the text and verified every maclist reference. No NVRAM/cache/database
+  writes or service restarts; only ordinary temporary advisory lock ownership.
+  Probe binary SHA-256 `87680d532c1c4a5e50cfe44a355264da75913e9f0d5a1ec2d66f22bc61b5f2cd`.
+  This proves the Rust consumer on actual data, not the complete HTTP/UI path
+  or the 255-client worst-case memory bound. Browser automation remains blocked
+  by the helper's WSL sandboxCwd URI error, even after a kernel reset.

@@ -1,0 +1,18 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -8537,10 +8537,14 @@
+ netatalk-3.0.5-dep: openssl libgcrypt-1.5.1 db-4.8.30 libevent-2.0.21
+ 
+-netaconfig netatalk-3.0.5/stamp-h1:
+-	if [ ! -f netatalk-3.0.5/stamp-h1 ] ; then \
+-		$(MAKE) netatalk-3.0.5-dep ; \
++.PHONY: netaconfig netatalk-3.0.5-dep
++netaconfig: netatalk-3.0.5/stamp-h1
++# Keep every producer in the same Make graph. Recursive make here can race
++# a top-level db/libgcrypt configure and corrupt its conftest/config headers.
++netatalk-3.0.5/stamp-h1: | netatalk-3.0.5-dep
++	set -e; if [ ! -f netatalk-3.0.5/stamp-h1 ] ; then \
+ 		touch $(TOP)/netatalk-3.0.5/* ; \
+ 		cd $(TOP)/netatalk-3.0.5 && \
+ 		CC=$(CC) CFLAGS="-Os -Wall -ffunction-sections -fdata-sections -I$(TOP)/db-4.8.30/build_unix -I$(TOP)/libgcrypt-1.5.1/src $(if $(HND_ROUTER_BE_4916),-fcommon)"  \

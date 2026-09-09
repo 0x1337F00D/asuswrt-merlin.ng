@@ -363,4 +363,6 @@ for wifi_tree in hostapd wpa_supplicant; do
 	require_text "$wifi_base/$wifi_tree/src/rsn_supp/wpa.c" 'sm->network_ctx, sm->key_mgmt'
 done
 
+# Exercise the shared-producer race that a successful warm build can hide.
+python3 "$(dirname "$0")/test_netatalk_parallel.py" "$router_makefile"
 echo "security overlay invariants verified"
