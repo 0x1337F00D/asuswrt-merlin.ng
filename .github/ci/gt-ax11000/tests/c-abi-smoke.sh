@@ -29,7 +29,7 @@ export CARGO_HOME="$CARGO_DIR"
 cd "$(dirname "$MANIFEST")"
 cargo +"$RUST_TOOLCHAIN" build --manifest-path "$MANIFEST" --release \
 	--locked --offline -p httpd-parsers -p router-security -p wanduck-transition \
-	-p zlib-static -p zlib-shared
+	-p wlif-policy -p zlib-static -p zlib-shared
 
 common=(-std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2)
 libraries=(-ldl -lpthread -lm -lrt -lutil)
@@ -48,6 +48,11 @@ cc "${common[@]}" "$SCRIPT_ROOT/c-abi/router-security.c" \
 cc "${common[@]}" "$SCRIPT_ROOT/c-abi/wanduck.c" \
 	"$TARGET_DIR/release/libwanduck_transition.a" "${libraries[@]}" \
 	-o "$FIXTURE_DIR/wanduck"
+# The wireless-interface policy is the archive libshared.so links; the vendor
+# shared/wlif_utils_ax.c calls exactly these entry points before _eval().
+cc "${common[@]}" "$SCRIPT_ROOT/c-abi/wlif-policy.c" \
+	"$TARGET_DIR/release/libwlif_policy.a" "${libraries[@]}" \
+	-o "$FIXTURE_DIR/wlif-policy"
 # The vendor zlib.h/zconf.h (locked upstream copy) is what wget compiles
 # against; the fixture links the same archive the firmware wget links.
 cc "${common[@]}" -I"$SCRIPT_ROOT/c-abi/include" "$SCRIPT_ROOT/c-abi/zlib.c" \
@@ -82,6 +87,7 @@ readelf -d "$FIXTURE_DIR/zlib-shared" | grep -q 'Shared library: \[libz\.so\.1\]
 "$FIXTURE_DIR/clientlist" "$FIXTURE_DIR"
 "$FIXTURE_DIR/router-security" "$FIXTURE_DIR"
 "$FIXTURE_DIR/wanduck"
+"$FIXTURE_DIR/wlif-policy"
 "$FIXTURE_DIR/zlib"
 LD_LIBRARY_PATH="$FIXTURE_DIR" "$FIXTURE_DIR/zlib-shared"
 echo "RESULT=PASS"
