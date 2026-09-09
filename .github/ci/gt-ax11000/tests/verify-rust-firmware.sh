@@ -109,7 +109,7 @@ run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/infosvr"
 run_expected_exit 2 "${qemu[@]}" "$rootfs/usr/sbin/Notify_Event2NC"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/bin/rstats" --self-test
 grep -q 'runtime self-test passed' "$temporary/qemu.stdout"
-run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --version
+run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
 
 echo "verified ${#artifacts[@]} ARMv7 soft-float consumers and 4 QEMU runtime paths"

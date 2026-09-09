@@ -982,3 +982,57 @@ image-boot blocker.
 - The focused httpd `web.o` C translation unit, including the new Rust ABI
   calls, compiled successfully with the direct vendor GCC 5.5. This does not
   yet prove final httpd linking or authenticated browser response handling.
+
+- The next cold -j4 run passed the former LPRng failure and then stopped in
+  usbmuxd's Autoconf environment sanity check: newly created file older than
+  distributed files. A direct traced rerun passed that check; the cause is
+  not yet reproduced, so there is no speculative clock-check bypass or
+  firmware change for it. This failed run published no image either.
+  A release attempt with the CI-default one-token package path from another
+  pristine locked source also stopped at the same sanity check, now in
+  libusbmuxd-2.0.2. No full-build process is running and no image was published.
+  Four-token full-build validation remains OPEN, not a release speed claim.
+- Read-only router recheck at 20:13 CEST: still First / PART1 persistent,
+  uptime over 26 hours, httpd PID 1362 and networkmap PID 1391 unchanged,
+  ALL and Smart Connect configuration unchanged. No firmware was installed.
+  A tool policy rejected cleanup of two disposable failed RAM build trees;
+  neither was removed and original/user worktrees remain untouched.
+
+### 2026-09-09 integration follow-up: host clock blocks release
+
+- The serial GCC 5.5 build did complete the full httpd link, including all
+  nine Rust client-list entry points. This supersedes the translation-unit
+  evidence above, but still is not an authenticated WebUI or firmware test.
+- Both `/bin/bash -x` and the actual `/bin/sh` (dash), with Make's exported
+  vendor environment, passed an isolated autoreconf/sanity reproduction.
+  There is no evidence for a shell-specific fix or a reason to bypass the
+  upstream environment check.
+- A bounded realtime-versus-monotonic clock probe then directly measured
+  three WSL realtime jumps of -2071.300278 ms, -1974.403263 ms and
+  -1999.452082 ms over 90 monotonic seconds (8,375 samples), at elapsed times
+  4020.326551, 36265.003751 and 68524.927809 ms. System journals independently
+  report repeated backwards clock jumps. This proves an unstable host clock
+  and is consistent with the configure failures; the failed full-build shell
+  was not traced, so exact causal attribution for each failure remains open.
+  No host time service, clock source, Windows setting or router was changed.
+  Stabilize and remeasure host time before a fresh reference build; do not
+  normalize away failures or promote any of these incomplete build trees.
+- `wget-zlib-differential.py` adds 15 actual ARM-consumer gzip cases against
+  the known-good C wget: valid binary/empty/optional headers, concatenated
+  members, trailing data, corrupted headers/trailers and six truncations.
+  It requires real HTTP requests and successful positive controls before
+  comparing exit codes and exact output bytes. Baseline-versus-baseline
+  harness validation passes; comparison against the final candidate remains
+  OPEN. This is a small deterministic corpus, not coverage-guided fuzzing.
+- Existing wget runtime/version tests now ignore ambient wget configuration;
+  runtime fixtures use an empty regular RAM-local wgetrc, since `/dev/null`
+  was rejected in this QEMU setup. The baseline ARM gzip-download and
+  independently decoded WARC-compression tests pass with this harness.
+- The baseline wget returns success for some truncated gzip inputs. Merely
+  replacing zlib does not fix the C consumer's completeness policy. Track a
+  separate fail-closed download review; do not claim truncation rejection
+  from parity or the Rust memory-safety boundary.
+- Release gates still OPEN: full clean image, extracted-image manifest and
+  permissions equivalence, actual final wget differential and vendor BSD
+  regression, authenticated client-list WebUI, candidate-slot-2 one-shot
+  boot and soak. No flash, reboot, promotion or GitHub push occurred.

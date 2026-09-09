@@ -43,9 +43,11 @@ def main():
         try:
             command = [str(qemu), "-cpu", "cortex-a7", "-L", str(rootfs),
                        "-E", f"LD_LIBRARY_PATH={rootfs}/lib:{rootfs}/usr/lib",
-                       str(rootfs / "usr/sbin/wget"), "--no-proxy", "--no-hsts",
+                       str(rootfs / "usr/sbin/wget"), "--no-config", "--no-proxy", "--no-hsts",
                        "--tries=1", "--timeout=4"]
-            environment = {**os.environ, "WGETRC": "/dev/null"}
+            config = directory / "wgetrc"
+            config.write_text("")
+            environment = {**os.environ, "WGETRC": str(config)}
             url = f"http://127.0.0.1:{server.server_port}"
             for endpoint, options in [("gzip", ["--compression=auto"]),
                                       ("plain", [f"--warc-file={directory / 'capture'}"])]:
