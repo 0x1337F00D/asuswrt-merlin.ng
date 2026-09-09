@@ -96,6 +96,7 @@ jobs:
           set -euo pipefail
           root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           python3 "$root/tests/test_input_lock.py"
+          python3 "$root/tests/test_ccache_frontends.py"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
           # Cargo resolves the vendored crates.io mapping (rust/.cargo) from
           # the working directory, not from --manifest-path.
@@ -302,6 +303,7 @@ jobs:
           printf 'build_contract_sha=%s\n' "$build_contract_sha" >> "$GITHUB_OUTPUT"
           vendor_state_sha="$({
             sha256sum overlay/.github/ci/gt-ax11000/build.sh
+            sha256sum overlay/.github/ci/gt-ax11000/tools/ccache_frontends.py
             sha256sum overlay/.github/ci/gt-ax11000/inputs.lock
             # The finalizer is always consumed live from this overlay and is
             # guarded by the complete before/after rootfs equivalence gate. It
@@ -472,10 +474,10 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/asuswrt-ccache
-          key: gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.overlay_sha }}
+          key: gt-ax11000-ccache-v2-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-${{ steps.inputs.outputs.overlay_sha }}
           restore-keys: |
-            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-
-            gt-ax11000-ccache-v1-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-
+            gt-ax11000-ccache-v2-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-${{ steps.inputs.outputs.upstream_sha }}-
+            gt-ax11000-ccache-v2-${{ runner.os }}-${{ steps.inputs.outputs.toolchains_sha }}-
 
       - name: Apply local CI overlay
         if: steps.vendor-cache.outputs.cache-hit != 'true'

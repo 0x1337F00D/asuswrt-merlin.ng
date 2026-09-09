@@ -41,6 +41,7 @@ Environment overrides:
                                               (auto-disabled when no ccache executable exists)
   ASUSWRT_CCACHE_DIR=/path                    default: /tmp/asuswrt-ccache
   ASUSWRT_CCACHE_MAXSIZE=size                 default: 2G
+  ASUSWRT_CCACHE_RUNTIME_DIR=/path            optional private host libraries for ccache
   ASUSWRT_KERNEL_CACHE_RESTORE=0|1            trust an exact successful CI kernel cache
   ASUSWRT_DIRECT_TOOLCHAIN=0|1                use /opt symlink instead of unshare (CI)
   ASUSWRT_REQUIRE_TMPFS=0|1                   reject non-tmpfs build paths, default: 0
@@ -258,83 +259,26 @@ ensure_gnu_make() {
 
 prepare_ccache_toolchain_view() {
 	local bin_dir
-	local ccache_bin
 	local compiler
-	local smoke_compiler=""
 	local smoke_ld_library_path
 	local smoke_object
 	local smoke_source
-	local wrapped=0
-	local -a compiler_paths=()
 	local -a library_paths=()
+	local -a runtime_args=()
 
 	require_cmd ccache
-	ccache_bin="$(command -v ccache)"
-
-	if [ -e "$TOOLCHAIN_VIEW" ] || [ -L "$TOOLCHAIN_VIEW" ]; then
-		smoke_compiler="$(find "$TOOLCHAIN_VIEW" -type l \
-			\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
-			-print -quit)"
-		if [ -z "$smoke_compiler" ] || [ "$(readlink -f "$smoke_compiler")" != "$(readlink -f "$ccache_bin")" ]; then
-			echo "Existing ccache toolchain view is incomplete or uses another ccache: $TOOLCHAIN_VIEW" >&2
-			exit 1
-		fi
-		while IFS= read -r bin_dir; do
-			compiler_paths+=("$bin_dir")
-		done < <(
-			find "$TOOLCHAIN_SRC" \( -type f -o -type l \) \
-				\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
-				-printf '%h\n' | sort -u
-		)
-		if [ "${#compiler_paths[@]}" -eq 0 ]; then
-			echo "No HND cross-compilers found for reused ccache view" >&2
-			exit 1
-		fi
-		# A prior view can predate host-runtime libraries added to the RAM copy.
-		# Merge only missing immutable toolchain files while preserving the ccache
-		# compiler symlinks already installed in the view.
-		cp -aln "$TOOLCHAIN_SRC/." "$TOOLCHAIN_VIEW/"
-		CCACHE_PATH_VALUE="$(IFS=:; echo "${compiler_paths[*]}")"
-		TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_VIEW"
-		mkdir -p "$CCACHE_DIR"
-		CCACHE_DIR="$CCACHE_DIR" ccache --set-config="max_size=$CCACHE_MAXSIZE"
-		echo "Reusing ccache compiler frontends in $TOOLCHAIN_VIEW"
-		return
-	fi
-	mkdir -p "$TOOLCHAIN_VIEW"
-	cp -al "$TOOLCHAIN_SRC/." "$TOOLCHAIN_VIEW/"
-
-	while IFS= read -r -d '' compiler; do
-		rm -f -- "$compiler"
-		ln -s "$ccache_bin" "$compiler"
-		if [ -z "$smoke_compiler" ]; then
-			smoke_compiler="$compiler"
-		fi
-		wrapped=$((wrapped + 1))
-	done < <(
-		find "$TOOLCHAIN_VIEW" \( -type f -o -type l \) \
-			\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
-			-print0
-	)
-
-	while IFS= read -r bin_dir; do
-		compiler_paths+=("$bin_dir")
-	done < <(
-		find "$TOOLCHAIN_SRC" \( -type f -o -type l \) \
-			\( -name '*-gcc' -o -name '*-g++' -o -name '*-cc' -o -name '*-c++' \) \
-			-printf '%h\n' | sort -u
-	)
 	while IFS= read -r bin_dir; do
 		library_paths+=("$bin_dir")
-	done < <(find "$TOOLCHAIN_SRC" -type d -path '*/usr/lib' -print | sort -u)
-
-	if [ "$wrapped" -eq 0 ] || [ "${#compiler_paths[@]}" -eq 0 ]; then
-		echo "No HND cross-compilers found for ccache" >&2
-		exit 1
-	fi
-
-	CCACHE_PATH_VALUE="$(IFS=:; echo "${compiler_paths[*]}")"
+	done < <(find "$TOOLCHAIN_SRC" -type d \( -path '*/usr/lib' -o -path '*/lib' \) -print | sort -u)
 	smoke_ld_library_path="$(IFS=:; echo "${library_paths[*]}")"
+	if [ -n "${ASUSWRT_CCACHE_RUNTIME_DIR:-}" ]; then
+		runtime_args+=(--runtime "$ASUSWRT_CCACHE_RUNTIME_DIR")
+	fi
+	LD_LIBRARY_PATH="$smoke_ld_library_path:${LD_LIBRARY_PATH:-}" \
+		python3 "$SCRIPT_ROOT/tools/ccache_frontends.py" --source "$TOOLCHAIN_SRC" \
+			--view "$TOOLCHAIN_VIEW" --ccache "$(command -v ccache)" "${runtime_args[@]}"
+	# Every wrapper names its exact source compiler; no basename search path.
+	CCACHE_PATH_VALUE=""
 	TOOLCHAIN_MOUNT_SRC="$TOOLCHAIN_VIEW"
 	mkdir -p "$CCACHE_DIR"
 	CCACHE_DIR="$CCACHE_DIR" ccache --set-config="max_size=$CCACHE_MAXSIZE"
@@ -342,14 +286,14 @@ prepare_ccache_toolchain_view() {
 	smoke_source="$(mktemp --tmpdir asuswrt-ccache-smoke.XXXXXX.c)"
 	smoke_object="${smoke_source%.c}.o"
 	printf 'int main(void) { return 0; }\n' > "$smoke_source"
-	CCACHE_DIR="$CCACHE_DIR" CCACHE_PATH="$CCACHE_PATH_VALUE" \
-		LD_LIBRARY_PATH="$smoke_ld_library_path:${LD_LIBRARY_PATH:-}" \
-		"$smoke_compiler" -c -o "$smoke_object" "$smoke_source"
-	CCACHE_DIR="$CCACHE_DIR" CCACHE_PATH="$CCACHE_PATH_VALUE" \
-		LD_LIBRARY_PATH="$smoke_ld_library_path:${LD_LIBRARY_PATH:-}" \
-		"$smoke_compiler" -c -o "$smoke_object" "$smoke_source"
+	while IFS= read -r -d '' compiler; do
+		CCACHE_DIR="$CCACHE_DIR" LD_LIBRARY_PATH="$smoke_ld_library_path:${LD_LIBRARY_PATH:-}" \
+			"$compiler" -c -o "$smoke_object" "$smoke_source"
+		CCACHE_DIR="$CCACHE_DIR" LD_LIBRARY_PATH="$smoke_ld_library_path:${LD_LIBRARY_PATH:-}" \
+			"$compiler" -c -o "$smoke_object" "$smoke_source"
+	done < <(find "$TOOLCHAIN_VIEW" -type f -name '*-gcc' -print0)
 	rm -f -- "$smoke_source" "$smoke_object"
-	echo "Prepared $wrapped ccache compiler frontends in $TOOLCHAIN_VIEW"
+	echo "Verified exact ccache compiler frontends in $TOOLCHAIN_VIEW"
 }
 
 compute_source_state_id() {
@@ -537,6 +481,7 @@ compute_toolchain_state_id() {
 
 compute_full_build_contract_id() {
 	{
+		printf 'ccache_frontends=%s\n' "$(hash_file_or_missing "$SCRIPT_ROOT/tools/ccache_frontends.py")"
 		printf 'source=%s\n' "$ASUSWRT_SOURCE_STATE_ID"
 		printf 'profile=%s\n' "$PROFILE"
 		printf 'sdk_config=%s\n' "$(hash_file_or_missing "$SDK_DIR/.config")"
@@ -552,6 +497,7 @@ compute_full_build_contract_id() {
 
 compute_kernel_cache_contract_id() {
 	{
+		printf 'ccache_frontends=%s\n' "$(hash_file_or_missing "$SCRIPT_ROOT/tools/ccache_frontends.py")"
 		printf 'format=1\n'
 		printf 'source=%s\n' "$ASUSWRT_SOURCE_STATE_ID"
 		printf 'profile=%s\n' "$PROFILE"

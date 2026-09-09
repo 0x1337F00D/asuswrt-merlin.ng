@@ -948,3 +948,20 @@ image-boot blocker.
   This proves the Rust consumer on actual data, not the complete HTTP/UI path
   or the 255-client worst-case memory bound. Browser automation remains blocked
   by the helper's WSL sandboxCwd URI error, even after a kernel reset.
+
+- Critical compiler-cache review: the old symlink frontends searched a global
+  `CCACHE_PATH` by basename. Both ARM GCC versions use the same basename;
+  an explicit GCC 5.5 request therefore executed GCC 5.3 (`-dumpversion`
+  reproduced direct=5.5.0 / cached=5.3.0). Stopped the in-flight graph-fix
+  build; it cannot be a release candidate. The new cache frontend binds the
+  exact source compiler path, hashes its Buildroot `.br_real` payload too,
+  preserves optional local host runtime libraries and checks all 24 direct/
+  cached versions plus C compile smoke on every preparation. Old unbound
+  views fail closed. Two fake-toolchain regression tests, including identical
+  compiler basenames and paths with spaces, pass. CI cache namespace is v2;
+  vendor/full/kernel contracts also bind the frontend implementation.
+- Vendor BSD offline regression additionally passed with the newly compiled
+  libshared (`1c2591b1434513bc4576768f21b64447a73f50693d2e5e00c71489b9a507480f`)
+  and NO adapter: all three radio MACMODE paths execute without SIGSEGV.
+  This is preliminary evidence from the discarded cached-compiler build;
+  the final correctly bound image must pass again. No deployment yet.
