@@ -199,7 +199,13 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Stop duplicate expensive firmware jobs on development pushes. Pushes
   retain Rust/security/trial checks; PR merge results, `main`, manual dispatch
   and schedule retain full firmware gates and exact cache attestation.
-  The twelve-case Node policy test and actionlint 1.7.12 pass locally.
+  The fifteen-case Node policy/sync test and actionlint 1.7.12 pass locally.
+- [x] Fix the observed daily sync failure in run `34323809832`:
+  `gh repo clone` already creates `upstream` for forks, so use idempotent
+  set-url/add pinned to the lock. Make overlay/patch paths absolute for the
+  later `git -C` replay. Regression tests execute the real shell for absent,
+  pre-existing and repeated remotes without network access. This fix reaches
+  scheduled runs only after the reviewed workflow is merged into `main`.
 - [x] Local split gate: 164 Rust tests, fmt, Clippy with warnings denied,
   ARMv7 cross-check, 8 input-lock tests, 23 trial tests, unchanged patched diff
   `dad85e447...9f168`, security/network/relink checks and both C capture harness
