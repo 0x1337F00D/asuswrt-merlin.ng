@@ -14,8 +14,10 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - The 2026-09-09 W9 and latency work does **not** flash another firmware.
   Rust `vpn-policy-audit` and `link-health` are separately tested diagnostics;
   they neither reboot the router nor change NVRAM/radio/firewall settings.
-  The connection panel is `/ext/link-health/index.asp`. See
-  `.github/ci/gt-ax11000/diagnostics/README.md` for scope and measured overhead.
+  Connection sampling and its panel are isolated on
+  `codex/gt-ax11000-connection-diagnostics`; the firmware/security branch
+  retains only the observation-only `router-vpn-audit` crate. This Git split
+  neither uninstalls nor changes the already installed router add-on.
 
 ### Historical baseline: 2026-09-07 (superseded by the state above)
 
@@ -188,11 +190,27 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Security debt
 
+### 2026-09-09 CI and branch isolation
+
+- [x] Keep W9's read-only VPN audit on the security branch as
+  `router-vpn-audit`; move the connection collector/UI/install scripts and
+  browser tests to `codex/gt-ax11000-connection-diagnostics`. No history rewrite
+  or router mutation is needed.
+- [x] Stop duplicate expensive firmware jobs on development pushes. Pushes
+  retain Rust/security/trial checks; PR merge results, `main`, manual dispatch
+  and schedule retain full firmware gates and exact cache attestation.
+  The twelve-case Node policy test and actionlint 1.7.12 pass locally.
+- [x] Local split gate: 164 Rust tests, fmt, Clippy with warnings denied,
+  ARMv7 cross-check, 8 input-lock tests, 23 trial tests, unchanged patched diff
+  `dad85e447...9f168`, security/network/relink checks and both C capture harness
+  variants pass. Hosted firmware completion for the new tip is tracked
+  separately; these checks are not a deployment claim.
+
 ### 2026-09-09 W9 hardening follow-up (not yet flashed)
 
 - [x] Fix the architecture-specific file-open flags: ARM EABI `O_NOFOLLOW`
   is `0100000`, not the host x86-64 `0400000`. Share target-selected constants
-  between diagnostics and `router-security`; include `O_NONBLOCK` before
+  between `router-vpn-audit` and `router-security`; include `O_NONBLOCK` before
   rejecting special files. Host, QEMU and native-router C ABI fixtures verify
   symlink/FIFO rejection. Add the ARM execution gate to hosted CI.
 - [x] Protect the firewall capture **write and read** transaction with a
@@ -355,20 +373,19 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Wireless test-lab debt
 
-- [x] Add lightweight, authenticated connection diagnostics as a separately
-  installed Rust add-on at `/ext/link-health/index.asp`: three ICMP probes/s,
-  600-round RAM cap, browser-to-router timing, stale/background/error handling,
-  no NVRAM/radio/firewall mutations and no extra listener. Native 15-minute
-  pilot: about 1.7 MiB RSS and 0.4–0.5% of one CPU core including probe children;
-  no packet loss in the sampled interval. Persisted start hook is backed up.
-- [ ] Correlate a real POCO F3 / Samsung tablet call interruption with this
-  panel. Tablet logs show repeated weak-signal 5-GHz reassociation (-85 to
-  -87 dBm); later 2.4-GHz RSSI was about -78 dBm. This is a coverage/roaming
-  hypothesis, not proof of a driver or WAN fault. No WLAN tweak was applied.
-- [ ] Confirm the panel's authenticated rendering on the user's device;
-  headless Chromium fixture rendering and anonymous-access rejection passed.
-  Consider longer RAM-only event retention and opt-in Wi-Fi/DNS correlation
-  after baseline measurements, without adding automatic network restarts.
+- [x] Retire the unmerged `codex/gt-ax11000-testlab-ui` branch at `e8ba9d2832e`.
+  No code salvage: per-radio controls, the ALL restriction and the temporary
+  IPv6 chain conflict with the current country-only policy. Exact contents
+  remain recoverable through `archive/gt-ax11000-testlab-ui-20260909`.
+  See `.github/ci/gt-ax11000/TESTLAB_BRANCH_REVIEW.md` for the comparison,
+  rollback weaknesses and recovery commands; CI rejects accidental re-entry.
+
+- [x] Isolate the connection sampler, panel, installer, browser tests and
+  call-drop investigation on `codex/gt-ax11000-connection-diagnostics`.
+  Its `diagnostics/README.md` retains the 2026-09-09 native pilot evidence,
+  footprint and installation/rollback instructions. Keep future diagnosis
+  changes out of the firmware/security PR. No router operation is part of
+  this branch split.
 
 - [x] Make country selection—including explicit `ALL`—the only test-lab
   mutation. Direct per-radio country, channel-list, DFS, TX percentage,

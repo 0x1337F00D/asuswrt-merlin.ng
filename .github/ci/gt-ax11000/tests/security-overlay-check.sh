@@ -30,6 +30,14 @@ reject_text() {
 
 httpd_stubs="$router/httpd/httpd_compat_stubs.c"
 web="$router/httpd/web.c"
+# The retired test-lab branch must not reintroduce independent radio/power or
+# IPv6 mutations alongside the supported country-only endpoint.
+reject_text "$web" 'advanced_testlab.cgi'
+reject_text "$web" 'ASUS_TESTLAB_V6'
+test ! -e "$router/www/Advanced_TestLab_Content.asp" || {
+	echo 'retired standalone test-lab page must not ship' >&2
+	exit 1
+}
 rc_stubs="$router/rc/rc_compat_stubs.c"
 firewall="$router/rc/firewall.c"
 lan="$router/rc/lan.c"

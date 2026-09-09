@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! W9 hardware audit. Intentionally observation-only until active client modes
 //! have hardware fixtures: failure MUST NOT disable the household's forwarding.
-use router_diagnostics::{capture, read_bounded};
 use router_policy::vpn_runtime::audit;
+use router_vpn_audit::{capture, read_bounded};
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -110,7 +110,7 @@ fn normalize_save(input: &str) -> String {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().skip(1).collect::<Vec<_>>() == ["--self-test"] {
-        router_diagnostics::verify_open_flags()?;
+        router_vpn_audit::verify_open_flags()?;
         println!("OPEN_FLAGS_SELFTEST=PASS native O_NOFOLLOW rejected symlink with ELOOP");
         return Ok(());
     }

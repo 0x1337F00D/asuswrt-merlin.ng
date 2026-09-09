@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded, read-only diagnostic subprocesses. No shell, listener or NVRAM writes.
+//! Bounded, read-only VPN audit helpers. No shell, listener or NVRAM writes.
 use std::io::{self, Read};
 use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
@@ -59,8 +59,6 @@ pub fn capture(
         String::from_utf8(bytes).map_err(|_| io::Error::other("non-UTF8 diagnostic output"))?;
     Ok((status.success(), value))
 }
-
-pub mod health;
 
 pub fn read_bounded(path: &std::path::Path, limit: usize) -> io::Result<String> {
     // Reject special files and symlinks; do not block on a FIFO masquerading as data.

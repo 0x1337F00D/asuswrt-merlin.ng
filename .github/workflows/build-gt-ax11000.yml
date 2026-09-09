@@ -45,7 +45,7 @@ jobs:
           git init overlay
           git -C overlay remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           git -C overlay sparse-checkout init --cone
-          git -C overlay sparse-checkout set .github/ci/gt-ax11000
+          git -C overlay sparse-checkout set .github/ci/gt-ax11000 .github/workflows
           git -C overlay fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
           git -C overlay checkout --detach FETCH_HEAD
           test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
@@ -94,10 +94,7 @@ jobs:
           set -euo pipefail
           root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           python3 "$root/tests/test_input_lock.py"
-          node --test "$root/tests/diagnostics-panel.test.cjs"
-          bash -n "$root/diagnostics/build.sh"
-          sh -n "$root/diagnostics/control.sh"
-          sh -n "$root/diagnostics/install.sh"
+          node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" fmt \
             --manifest-path "$root/rust/Cargo.toml" --all -- --check
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" test \
@@ -228,6 +225,11 @@ jobs:
 
   build:
     name: Firmware
+    # Branch pushes retain Rust/security/trial feedback, but an open PR owns
+    # the expensive merge-result build. No API/token-based deduplication or
+    # shared push/PR concurrency key may cancel the required PR check.
+    # A branch without a PR can request firmware through workflow_dispatch.
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     needs:
       - rust
       - security-overlay

@@ -24,6 +24,18 @@ never contacts a router and is not a firmware gate. Dependabot proposes weekly
 pinned-SHA bumps for GitHub Actions and lockfile-only Cargo bumps for `rust/`,
 each as a normal pull request through the same checks.
 
+Development-branch pushes run the three inexpensive Rust, security-overlay
+and trial checks. **Firmware runs on PRs to `main`, `main` pushes, manual
+dispatches and the weekly schedule**, not a second time on a development push.
+The PR tests its exact merge-result `GITHUB_SHA`, not merely the source head.
+For a branch without a PR, use a manual dispatch when a firmware is needed.
+Push and PR concurrency groups remain independent so push events cannot cancel
+required PR checks. The checked-in event policy has a Node regression matrix.
+No new API permission, third-party deduplication action or self-hosted runner
+is required. Main pushes intentionally keep building the merged tree and
+seeding trusted default-branch caches; see the
+[GitHub cache-scope rules](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching).
+
 Local builds can set `ASUSWRT_REQUIRE_TMPFS=1` to fail closed unless the source
 repository, build worktree, firmware output, temporary directory, build home,
 Cargo directories, generated host tools and optional compiler cache all reside

@@ -7,7 +7,7 @@ members = [
     "router-policy",
     "router-security",
     "router-fuzz",
-    "router-diagnostics",
+    "router-vpn-audit",
     "rstats",
     "wanduck-transition",
 ]
