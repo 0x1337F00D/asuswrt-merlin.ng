@@ -224,7 +224,9 @@ jobs:
             -s overlay/.github/ci/gt-ax11000/trial -p 'test_*.py' -v
 
   build:
-    name: Firmware
+    # A skipped development-push job must not satisfy the required Firmware
+    # check on the source head while the actual PR merge build is pending.
+    name: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' && 'Firmware (PR or manual run required)' || 'Firmware' }}
     # Branch pushes retain Rust/security/trial feedback, but an open PR owns
     # the expensive merge-result build. No API/token-based deduplication or
     # shared push/PR concurrency key may cancel the required PR check.

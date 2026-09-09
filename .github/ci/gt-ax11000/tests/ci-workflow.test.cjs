@@ -16,6 +16,8 @@ function job(name) {
 }
 const expression = job("build").match(/^    if: (.+)$/m)?.[1];
 assert.ok(expression, "firmware has an explicit event policy");
+const checkName = job("build").match(/^    name: \$\{\{ (.+) \}\}$/m)?.[1];
+assert.ok(checkName, "skipped push and required firmware checks have distinct names");
 for (const [event, ref, expected] of [
   ["push", "refs/heads/main", true],
   ["push", "refs/heads/codex/gt-ax11000-parallel-dag-ci", false],
@@ -28,6 +30,9 @@ for (const [event, ref, expected] of [
 ]) {
   test(`firmware ${event} ${ref}: ${expected}`, () => {
     assert.equal(vm.runInNewContext(expression, { github: { event_name: event, ref } }, { timeout: 100 }), expected);
+    const name = vm.runInNewContext(checkName, { github: { event_name: event, ref } }, { timeout: 100 });
+    if (expected) assert.equal(name, "Firmware");
+    else assert.equal(name, "Firmware (PR or manual run required)");
   });
 }
 test("branch pushes still run all three inexpensive gates", () => {

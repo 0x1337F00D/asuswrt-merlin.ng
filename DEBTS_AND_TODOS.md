@@ -199,6 +199,8 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [x] Stop duplicate expensive firmware jobs on development pushes. Pushes
   retain Rust/security/trial checks; PR merge results, `main`, manual dispatch
   and schedule retain full firmware gates and exact cache attestation.
+  The skipped push job has a distinct check name and cannot satisfy the
+  required `Firmware` status while a PR merge build is still pending.
   The fifteen-case Node policy/sync test and actionlint 1.7.12 pass locally.
 - [x] Fix the observed daily sync failure in run `34323809832`:
   `gh repo clone` already creates `upstream` for forks, so use idempotent

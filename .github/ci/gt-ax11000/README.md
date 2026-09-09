@@ -36,6 +36,10 @@ The PR tests its exact merge-result `GITHUB_SHA`, not merely the source head.
 For a branch without a PR, use a manual dispatch when a firmware is needed.
 Push and PR concurrency groups remain independent so push events cannot cancel
 required PR checks. The checked-in event policy has a Node regression matrix.
+The deliberately skipped development-push job uses a different check name,
+so its skipped-success cannot satisfy the required `Firmware` check while
+the real PR merge-result build is still pending. See GitHub's
+[required-check handling](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
 No new API permission, third-party deduplication action or self-hosted runner
 is required. Main pushes intentionally keep building the merged tree and
 seeding trusted default-branch caches; see the
