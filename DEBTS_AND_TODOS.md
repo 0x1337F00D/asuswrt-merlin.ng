@@ -442,6 +442,54 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 - [ ] Measure memory, CPU, startup time, and crash/restart behavior of all five
   Rust ports on the router.
 
+### Rust library ports (zlib-rs first, then client list, httparse, rustls-ffi)
+
+- [x] Build `wget` against a static zlib-rs archive as the isolated first zlib
+  consumer. `rust/zlib-static` packages `libz-rs-sys 0.6.7` (`std`,
+  `c-allocator`, `export-symbols`, `gz`; no `gzprintf`) as `libzlib_static.a`;
+  `zlib-rs-wget.patch` replaces wget's `ZLIB_LIBS="-L$(TOP)/zlib -lz"` with the
+  archive plus `-lpthread -ldl -lm`, keeps the vendor `zlib` package for its
+  headers and for every other consumer, and forces a wget relink when the
+  archive is newer. Dependencies are vendored (`rust/vendor`, 6.7 MiB) with
+  the crates.io mapping in `rust/.cargo/config.toml` and, for the package
+  Makefiles, `release/src/router/.cargo/config.toml`. Verified on 2026-09-09:
+  host and armv7 archives build with `--locked --offline`; a C11 fixture and
+  `tests/c_abi_roundtrip.rs` run wget's exact call pattern (byte-wise
+  streaming `inflate`, `gzdopen("wb9")`, invalid descriptor rejected); a
+  cross-linked test program with the Broadcom gcc 5.5 toolchain has no
+  `libz.so` dependency and reports `1.3.0-zlib-rs-0.6.7`; the full patch
+  series replays on `6be5bc84b50` and re-locks to
+  `6b4d567a3ffac0fd574e537abee1c30a3677be044029dbc111a363c9a133426a`. No
+  firmware build, hosted run or hardware test has exercised the new wget yet.
+- [ ] Prove the zlib-rs wget on a hosted build and on hardware: the firmware
+  verifier now requires `usr/sbin/wget` without a `libz.so` dependency, with
+  the `1.3.0-zlib-rs-` marker and a clean `wget --version` under QEMU; still
+  owed are a gzip-encoded HTTP download and a `--warc-file` write on the
+  router, and the image-size delta of the static archive.
+- [ ] Replace `libz.so.1` for the remaining direct zlib users. The local 102.8
+  reference rootfs has seven direct zlib symbol users (wget, Tor and the media
+  libraries among them); OpenVPN links `libz` but imports no zlib function, so
+  it gains nothing from the swap. A drop-in library must carry the `libz.so.1`
+  SONAME, the `ZLIB_1.2.0`..`ZLIB_1.2.3.5` symbol versions from the vendor
+  `zlib.map`, and the internal symbols that map exports but zlib-rs lacks
+  (`deflate_copyright`, `inflate_copyright`, `inflate_fast`, `inflate_table`,
+  `z_errmsg`, `zcalloc`, `zcfree`, `gz_error`, `gz_intmax`, `gzvprintf`);
+  `crc32_combine_gen*`/`crc32_combine_op` are exported by zlib-rs but were not
+  visible in the host archive and need a link check. `libbz2` is deferred: no
+  dynamic user was found in the examined rootfs.
+- [ ] Port the client list completely to Rust (size- and layout-checked
+  shared-memory snapshot, own data model, bounded JSON string; no
+  `json_object*` across the boundary; `serde_json` only for output). The
+  2026-09-09 map of the data path lists the legacy 174,964-byte GT-AX11000
+  layout, the public 173,436-byte layout that diverges after `os_type`, the
+  unterminated fixed-width fields, the unused `commit_no`, the
+  `shmget(IPC_CREAT)` size race and the remaining json-c ownership defects in
+  `get_client_detail_info`, `ej_get_all_basic_clientlist` and
+  `get_basic_clientlist_info`.
+- [ ] Then `httparse` for the HTTP request line/header boundary and
+  `rustls-ffi` for HTTPS; the latter needs a crypto-backend decision (the
+  default is `aws-lc-rs`) and ARM build, ABI and consumer tests before use.
+
 ## Local client view and QoS debt
 
 - [x] Disable the GT-AX11000 `BWDPI`/Trend Micro feature set at profile and
@@ -646,12 +694,16 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   2026-09-08 consumer split, which only documents it. Either hash
   `rust/bwdpi-compat` separately in "Snapshot cached relink state" and fail
   closed, or make `rust-fast` also run `networkmap-rust-compat-rebuild` and
-  treat all seven consumers as relinked.
+  treat all seven consumers as relinked. Since 2026-09-09 the same gap covers
+  `wget`, the eighth manifested consumer: a change confined to
+  `rust/zlib-static` is carried from the cached tree by `rust-fast`.
 - [x] Let Dependabot propose weekly pinned-SHA bumps for GitHub Actions and
   lockfile-only Cargo bumps for `rust/`; each lands as a normal PR through the
-  same checks. The workspace currently has no external crates, and the vendor
-  build runs Cargo `--offline`, so the first external crate will need a fetch
-  step before the firmware build.
+  same checks. Since 2026-09-09 the workspace carries its crates.io
+  dependencies vendored under `rust/vendor` with the mapping in
+  `rust/.cargo/config.toml`, so the `--offline` firmware build needs no fetch
+  step; a lockfile-only Dependabot bump must regenerate `rust/vendor`, and the
+  `Rust` job's `cargo vendor` comparison fails closed until it does.
 - [x] Make one code path own patch application. CI applies the canonical
   `patches/series` exactly once to its prepared source tree; `build.sh` then
   verifies the complete actual source diff (including added files) against
