@@ -6,6 +6,11 @@ rust-components-relink:
 	+$(MAKE) -C router www-install
 	+$(MAKE) -C router \
 		infosvr-install rstats-install nt_center-install httpd-rust-install rc-install networkmap-install
+	# libz.so.1 is the one Rust artifact nothing has to be relinked against:
+	# every consumer resolves it by SONAME at run time, so reinstalling the
+	# shared object alone makes a zlib-rs change effective for the whole
+	# rootfs.  zlib-install rebuilds the crate and relinks the object.
+	+$(MAKE) -C router zlib-install
 	# wget's ordinary target rebuilds the Rust archive and refreshes the link.
 	+$(MAKE) -C router wget
 	+$(MAKE) -C router wget-install
@@ -112,7 +117,9 @@ rust-firmware-repack:
 	promote_artifact $(PROFILE_DIR)/fs.install/networkmap/usr/lib/libbwdpi.so \
 		$(PROFILE_DIR)/fs.install/usr/lib/libbwdpi.so; \
 	promote_artifact $(PROFILE_DIR)/fs.install/wget/usr/sbin/wget \
-		$(PROFILE_DIR)/fs.install/usr/sbin/wget
+		$(PROFILE_DIR)/fs.install/usr/sbin/wget; \
+	promote_artifact $(PROFILE_DIR)/fs.install/zlib/usr/lib/libz.so.1 \
+		$(PROFILE_DIR)/fs.install/usr/lib/libz.so.1
 	# Package install targets stage their complete payload below a package-named
 	# directory. The selected artifacts have now been promoted into the
 	# flat firmware tree, so remove only those known duplicate staging roots.
@@ -123,7 +130,8 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/httpd \
 		$(PROFILE_DIR)/fs.install/rc \
 		$(PROFILE_DIR)/fs.install/networkmap \
-		$(PROFILE_DIR)/fs.install/wget
+		$(PROFILE_DIR)/fs.install/wget \
+		$(PROFILE_DIR)/fs.install/zlib
 	# fsbuild creates these legacy containers for optional external payloads.
 	# On GT-AX11000 they are empty; leaving them behind only on a repeated
 	# build makes rust-fast rootfs topology differ from the clean reference.
@@ -141,7 +149,8 @@ rust-firmware-repack:
 		sbin/rc \
 		usr/sbin/networkmap \
 		usr/lib/libbwdpi.so \
-		usr/sbin/wget > $(RUST_CONSUMER_MANIFEST)
+		usr/sbin/wget \
+		usr/lib/libz.so.1 > $(RUST_CONSUMER_MANIFEST)
 	cd $(TARGETS_DIR); ./buildFS
 	cd $(TARGETS_DIR); ./buildFS2
 	+$(MAKE) buildimage_final

@@ -585,15 +585,18 @@ jobs:
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
-                usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget
+                usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
+                usr/lib/libz.so.1
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
-            # rust-fast relinks only these five (rust-repack.mk
+            # rust-fast reinstalls only these (rust-repack.mk
             # rust-components-relink). networkmap and libbwdpi.so are carried
             # from the cached tree, so they stay inside the equivalence gate
             # and must not change even when the Rust state differs.
+            # libz.so.1 is reinstalled but nothing is relinked against it:
+            # every consumer binds it by SONAME at run time.
             rootfs_excludes+=(
               usr/sbin/infosvr
               bin/rstats
@@ -603,6 +606,7 @@ jobs:
               usr/sbin/networkmap
               usr/lib/libbwdpi.so
               usr/sbin/wget
+              usr/lib/libz.so.1
             )
           fi
           bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \
@@ -685,7 +689,8 @@ jobs:
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
-                usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget
+                usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
+                usr/lib/libz.so.1
             ) > cache-equivalence/consumers.after
             diff -u cache-equivalence/consumers.before \
               cache-equivalence/consumers.after
@@ -697,8 +702,8 @@ jobs:
           grep -Eq '^HND[0-9]{7}$' "$image_version"
           rootfs_excludes=(rom/etc/image_version)
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
-            # Keep this list identical to the snapshot step: only the five
-            # relinked consumers may differ; networkmap and libbwdpi.so are
+            # Keep this list identical to the snapshot step: only the
+            # reinstalled consumers may differ; networkmap and libbwdpi.so are
             # not rebuilt on the cached path.
             rootfs_excludes+=(
               usr/sbin/infosvr
@@ -709,6 +714,7 @@ jobs:
               usr/sbin/networkmap
               usr/lib/libbwdpi.so
               usr/sbin/wget
+              usr/lib/libz.so.1
             )
           fi
           bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \

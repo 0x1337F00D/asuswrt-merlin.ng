@@ -21,6 +21,12 @@ grep -Fq 'networkmap-rust-compat-rebuild:' "$repack_make"
 grep -Fq '$(MAKE) -C router httpd-install' "$repack_make"
 grep -Fq '$(MAKE) -C router rc-install' "$repack_make"
 grep -Fq '$(MAKE) -C router networkmap-install' "$repack_make"
+# libz.so.1 is reinstalled, never relinked: consumers bind it by SONAME, so a
+# rust-fast build only has to replace the shared object itself.
+grep -Fq '$(MAKE) -C router zlib-install' "$repack_make"
+grep -Fq '$(PROFILE_DIR)/fs.install/zlib/usr/lib/libz.so.1' "$repack_make"
+grep -Fq 'usr/lib/libz.so.1 > $(RUST_CONSUMER_MANIFEST)' "$repack_make"
+grep -Fq 'zlib-install: $(RUST_ZLIB_SHARED_DEPS)' "$router_make"
 grep -Fq 'source_mode="$$(stat -c '\''%a'\'' "$$source_file")"' "$repack_make"
 grep -Fq 'install -D -m "$$source_mode" "$$source_file" "$$target_file"' "$repack_make"
 grep -Fq -- '-rmdir \' "$repack_make"

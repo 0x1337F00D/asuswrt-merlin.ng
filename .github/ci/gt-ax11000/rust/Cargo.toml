@@ -12,6 +12,7 @@ members = [
     "router-diagnostics",
     "rstats",
     "wanduck-transition",
+    "zlib-shared",
     "zlib-static",
 ]
 resolver = "2"

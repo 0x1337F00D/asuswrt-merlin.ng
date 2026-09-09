@@ -29,6 +29,8 @@ artifacts=(
 	"usr/sbin/wget"
 )
 
+elf_magic=$(printf '\177ELF')
+
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/gtax-rust-verify.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 
@@ -73,9 +75,125 @@ for relative in "${artifacts[@]}"; do
 	fi
 done
 
+# usr/lib/libz.so.1 is the zlib-rs replacement for the vendor libz.  It must
+# be a real ARMv7 soft-float shared object carrying the vendor SONAME and the
+# vendor ZLIB_* version nodes, and it must not publish the internal symbols
+# the vendor version script keeps local.
+libz="$rootfs/usr/lib/libz.so.1"
+if [ ! -f "$libz" ] || [ -L "$libz" ]; then
+	echo "missing or symlinked shared library: usr/lib/libz.so.1" >&2
+	exit 1
+fi
+identity=$(file -b "$libz")
+case "$identity" in
+	*"ELF 32-bit LSB"*"ARM"*"EABI5"*) ;;
+	*) echo "unexpected ELF identity for usr/lib/libz.so.1: $identity" >&2; exit 1 ;;
+esac
+"$readelf" -h "$libz" > "$temporary/libz-header"
+"$readelf" -A "$libz" > "$temporary/libz-attributes"
+"$readelf" -d "$libz" > "$temporary/libz-dynamic"
+"$readelf" -V "$libz" > "$temporary/libz-versions"
+grep -q 'Machine:.*ARM' "$temporary/libz-header"
+grep -q 'Flags:.*soft-float ABI' "$temporary/libz-header"
+grep -q 'Tag_CPU_arch: v7' "$temporary/libz-attributes"
+if grep -q 'Tag_ABI_VFP_args' "$temporary/libz-attributes"; then
+	echo "hard-float ABI is forbidden: usr/lib/libz.so.1" >&2
+	exit 1
+fi
+if ! grep -q 'SONAME.*\[libz\.so\.1\]' "$temporary/libz-dynamic"; then
+	echo "usr/lib/libz.so.1 does not carry SONAME libz.so.1" >&2
+	exit 1
+fi
+# zlibVersion() of the replacement; the vendor library reports "1.2.12".
+if ! grep -aq '1\.3\.0-zlib-rs-' "$libz"; then
+	echo "usr/lib/libz.so.1 is not the zlib-rs build" >&2
+	exit 1
+fi
+while IFS= read -r library; do
+	if ! find "$rootfs/lib" "$rootfs/usr/lib" \( -type f -o -type l \) \
+		-name "$library" -print -quit 2>/dev/null | grep -q .; then
+		echo "missing runtime library for usr/lib/libz.so.1: $library" >&2
+		exit 1
+	fi
+done < <(sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' "$temporary/libz-dynamic")
+
+# The complete node list of the vendor release/src/router/zlib/zlib.map.  A
+# missing node breaks every consumer that recorded a versioned reference.
+for node in ZLIB_1.2.0 ZLIB_1.2.0.2 ZLIB_1.2.0.8 ZLIB_1.2.2 ZLIB_1.2.2.3 \
+	ZLIB_1.2.2.4 ZLIB_1.2.3.3 ZLIB_1.2.3.4 ZLIB_1.2.3.5 ZLIB_1.2.5.1 \
+	ZLIB_1.2.5.2 ZLIB_1.2.7.1 ZLIB_1.2.9 ZLIB_1.2.12; do
+	if ! grep -q "Name: $node$" "$temporary/libz-versions"; then
+		echo "usr/lib/libz.so.1 does not define version node $node" >&2
+		exit 1
+	fi
+done
+
+# Defined dynamic exports, rendered as "name" or "name@@VERSION".
+"$readelf" --dyn-syms -W "$libz" | awk '
+	$4 ~ /^(FUNC|OBJECT|NOTYPE|IFUNC)$/ && $5 ~ /^(GLOBAL|WEAK)$/ && $7 != "UND" {print $8}
+' | sort -u > "$temporary/libz-exports"
+for expected in \
+	deflate inflate compress uncompress crc32 adler32 zlibVersion \
+	gzopen gzread gzwrite gzclose \
+	compressBound@@ZLIB_1.2.0 inflateBackInit_@@ZLIB_1.2.0 \
+	zlibCompileFlags@@ZLIB_1.2.0.2 deflatePrime@@ZLIB_1.2.0.8 \
+	inflateGetHeader@@ZLIB_1.2.2 gzdirect@@ZLIB_1.2.2.3 \
+	inflatePrime@@ZLIB_1.2.2.4 gzopen64@@ZLIB_1.2.3.3 \
+	inflateReset2@@ZLIB_1.2.3.4 gzbuffer@@ZLIB_1.2.3.5 \
+	deflatePending@@ZLIB_1.2.5.1 gzgetc_@@ZLIB_1.2.5.2 \
+	inflateGetDictionary@@ZLIB_1.2.7.1 uncompress2@@ZLIB_1.2.9 \
+	crc32_combine_gen@@ZLIB_1.2.12; do
+	if ! grep -qxF -- "$expected" "$temporary/libz-exports"; then
+		echo "usr/lib/libz.so.1 does not export $expected" >&2
+		exit 1
+	fi
+done
+# The vendor version script keeps these local; so must the replacement.  The
+# zlib-rs-only extensions must not widen the published ABI either.
+for forbidden in deflate_copyright inflate_copyright inflate_fast \
+	inflate_table zcalloc zcfree z_errmsg gz_error gz_intmax \
+	rust_eh_personality rust_begin_unwind rust_panic \
+	compress_z compress2_z compressBound_z deflateBound_z deflateUsed \
+	uncompress_z uncompress2_z; do
+	if grep -qE "^$forbidden(@|$)" "$temporary/libz-exports"; then
+		echo "usr/lib/libz.so.1 exports the internal symbol $forbidden" >&2
+		exit 1
+	fi
+done
+
+# Nothing installed may need a zlib entry point the replacement lacks.
+# zlib-rs has no gzprintf/gzvprintf (they need a nightly compiler), so prove
+# no consumer references them, and that every ZLIB_* version a consumer
+# recorded against libz.so.1 is one this object defines.
+libz_dependents=0
+while IFS= read -r candidate; do
+	[ "$(head -c 4 "$candidate" 2>/dev/null)" = "$elf_magic" ] || continue
+	"$readelf" -d "$candidate" 2>/dev/null > "$temporary/dep-dynamic" || continue
+	grep -q 'Shared library: \[libz\.so\.1\]' "$temporary/dep-dynamic" || continue
+	libz_dependents=$((libz_dependents + 1))
+	if "$readelf" --dyn-syms -W "$candidate" 2>/dev/null \
+		| awk '$7 == "UND" {sub(/@.*/, "", $8); print $8}' \
+		| grep -qxE 'gzprintf|gzvprintf'; then
+		echo "consumer needs gzprintf/gzvprintf: ${candidate#"$rootfs"/}" >&2
+		exit 1
+	fi
+	"$readelf" -V "$candidate" 2>/dev/null \
+		| sed -n '/File: libz\.so\.1/,/^$/p' \
+		| grep -oE 'ZLIB_[0-9.]+' | sort -u > "$temporary/dep-versions" || true
+	while IFS= read -r node; do
+		[ -n "$node" ] || continue
+		if ! grep -q "Name: $node$" "$temporary/libz-versions"; then
+			echo "${candidate#"$rootfs"/} needs $node, absent from libz.so.1" >&2
+			exit 1
+		fi
+	done < "$temporary/dep-versions"
+done < <(find "$rootfs/bin" "$rootfs/sbin" "$rootfs/lib" "$rootfs/usr/bin" \
+	"$rootfs/usr/sbin" "$rootfs/usr/lib" -type f 2>/dev/null)
+echo "libz.so.1 satisfies $libz_dependents installed consumers"
+
 # wget is the isolated zlib-rs consumer: it must carry the Rust zlib in its
-# own image and must not load the vendor libz.so.1 that every other package
-# still uses.
+# own image and must not load the shared libz.so.1 that every other package
+# resolves at run time.
 wget="$rootfs/usr/sbin/wget"
 "$readelf" -d "$wget" > "$temporary/wget-dynamic"
 if grep -q 'Shared library: \[libz\.so' "$temporary/wget-dynamic"; then
@@ -112,4 +230,4 @@ grep -q 'runtime self-test passed' "$temporary/qemu.stdout"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
 
-echo "verified ${#artifacts[@]} ARMv7 soft-float consumers and 4 QEMU runtime paths"
+echo "verified ${#artifacts[@]} ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 4 QEMU runtime paths"

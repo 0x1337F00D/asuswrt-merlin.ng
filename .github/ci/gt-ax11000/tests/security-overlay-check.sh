@@ -69,6 +69,9 @@ router_makefile="$router/Makefile"
 cargo_config="$router/.cargo/config.toml"
 zlib_static="$router/rust-components/zlib-static/src/lib.rs"
 zlib_static_manifest="$router/rust-components/zlib-static/Cargo.toml"
+zlib_shared="$router/rust-components/zlib-shared/src/lib.rs"
+zlib_shared_manifest="$router/rust-components/zlib-shared/Cargo.toml"
+zlib_version_script="$router/rust-components/zlib-shared/libz.map"
 bwdpi_compat="$router/rust-components/bwdpi-compat/src/lib.rs"
 wifi_base="$root/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools"
 
@@ -80,6 +83,7 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
 	"$networkmap_makefile" "$bwdpi_compat" \
 	"$router_makefile" "$cargo_config" "$zlib_static" "$zlib_static_manifest" \
+	"$zlib_shared" "$zlib_shared_manifest" "$zlib_version_script" \
 	"$clientlist_rust/lib.rs" "$clientlist_rust/layout.rs" \
 	"$clientlist_rust/snapshot.rs" "$clientlist_rust/shm.rs" \
 	"$clientlist_rust/render.rs" "$clientlist_rust/cache.rs" \
@@ -214,6 +218,45 @@ require_text "$cargo_config" 'directory = "rust-components/vendor"'
 require_text "$zlib_static" '#![forbid(unsafe_code)]'
 require_text "$zlib_static_manifest" 'features = ["std", "c-allocator", "export-symbols", "gz"]'
 reject_text "$zlib_static_manifest" 'gzprintf'
+
+# The rootfs libz.so.1 is the zlib-rs build, not the vendor object.  It is
+# linked here rather than emitted as a cdylib because rustc appends its own
+# anonymous version script to every cdylib, which GNU ld refuses to combine
+# with the named ZLIB_* nodes.  Both link arguments are load-bearing: without
+# the SONAME nothing resolves it, and without the version script every
+# consumer that recorded inflate@ZLIB_1.2.0 falls back to the base symbol.
+require_text "$router_makefile" 'RUST_ZLIB_SHARED_MANIFEST := $(RUST_COMPONENTS_DIR)/zlib-shared/Cargo.toml'
+require_text "$router_makefile" 'RUST_ZLIB_VERSION_SCRIPT := $(RUST_COMPONENTS_DIR)/zlib-shared/libz.map'
+require_text "$router_makefile" '-Wl,-soname,libz.so.1'
+require_text "$router_makefile" '-Wl,--version-script=$(RUST_ZLIB_VERSION_SCRIPT)'
+require_text "$router_makefile" '-Wl,--whole-archive $(RUST_ZLIB_SHARED_ARCHIVE) -Wl,--no-whole-archive'
+require_text "$router_makefile" 'ZLIB_INSTALL_SO := $(RUST_ZLIB_SHARED_LIB)'
+require_text "$router_makefile" 'zlib-install: $(RUST_ZLIB_SHARED_DEPS)'
+require_text "$router_makefile" 'install -D $(ZLIB_INSTALL_SO) $(INSTALLDIR)/zlib/usr/lib/libz.so.1'
+# The vendor fallback must survive for a tree without the Rust components.
+require_text "$router_makefile" 'ZLIB_INSTALL_SO := zlib/libz.so.1'
+reject_text "$router_makefile" 'install -D zlib/libz.so.1 $(INSTALLDIR)/zlib/usr/lib/'
+require_text "$zlib_shared" '#![forbid(unsafe_code)]'
+require_text "$zlib_shared_manifest" 'features = ["std", "c-allocator", "export-symbols", "gz"]'
+require_text "$zlib_shared_manifest" 'crate-type = ["staticlib", "rlib"]'
+reject_text "$zlib_shared_manifest" 'gzprintf'
+# The version script must reproduce the vendor node set and keep the vendor
+# local symbols plus the Rust runtime symbols out of the published ABI.
+for zlib_node in ZLIB_1.2.0 ZLIB_1.2.0.2 ZLIB_1.2.0.8 ZLIB_1.2.2 ZLIB_1.2.2.3 \
+	ZLIB_1.2.2.4 ZLIB_1.2.3.3 ZLIB_1.2.3.4 ZLIB_1.2.3.5 ZLIB_1.2.5.1 \
+	ZLIB_1.2.5.2 ZLIB_1.2.7.1 ZLIB_1.2.9 ZLIB_1.2.12; do
+	require_text "$zlib_version_script" "$zlib_node {"
+done
+for zlib_local in deflate_copyright inflate_copyright inflate_fast \
+	inflate_table zcalloc zcfree z_errmsg gz_error gz_intmax \
+	rust_eh_personality rust_begin_unwind rust_panic compress_z \
+	compress2_z compressBound_z deflateBound_z deflateUsed uncompress_z \
+	uncompress2_z; do
+	require_text "$zlib_version_script" "    $zlib_local;"
+done
+# zlib-rs has no gzprintf/gzvprintf; the script must not claim them.
+reject_text "$zlib_version_script" '    gzprintf;'
+reject_text "$zlib_version_script" '    gzvprintf;'
 
 # Compatibility gaps must fail closed instead of reporting successful work.
 require_text "$rc_stubs" 'return rust_validate_apply_input_value(name, value);'

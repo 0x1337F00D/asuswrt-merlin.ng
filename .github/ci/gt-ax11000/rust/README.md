@@ -51,11 +51,10 @@ The eighth component is `zlib-static`, a static C-ABI zlib built from
 `zlib-rs` (`libz-rs-sys` with `export-symbols`, `gz` and the C allocator).
 It is linked into exactly one isolated consumer, the vendor `wget`, which uses
 streaming `inflate` for HTTP gzip bodies and `gzdopen`/`gzwrite`/`gzclose` for
-WARC output. Every other zlib user keeps the vendor `libz.so.1`; replacing the
-shared library needs the `libz.so.1` SONAME, the `ZLIB_1.2.*` symbol versions
-from the vendor version script and the internal symbols it exports
-(`inflate_fast`, `inflate_table`, `z_errmsg`, `zcalloc`, `zcfree`, ...), which
-`zlib-rs` does not provide. `gzprintf` is not enabled (nightly only, unused).
+WARC output. Every other zlib user resolves the
+`zlib-shared` `libz.so.1` below at run time; `wget` keeps its own copy so a
+regression in the shared object cannot also take the firmware downloader
+down. `gzprintf` is not enabled (nightly only, unused).
 The crate forbids unsafe code; `tests/c_abi_roundtrip.rs` and the C ABI smoke
 fixture `tests/c-abi/zlib.c` exercise the exported entry points the way wget
 calls them, and `verify-rust-firmware.sh` checks that the installed `wget` has
@@ -90,6 +89,44 @@ re-exported by `httpd-parsers`, so `httpd` still links one Rust archive.
 `serde`/`serde_json` are the only new dependencies (the vendored
 `serde_derive`/`syn` tree is a `cfg(any())` placeholder of `serde_core` that
 is never compiled).
+
+The tenth component is `zlib-shared`, the rootfs `/usr/lib/libz.so.1`. It
+carries the same `libz-rs-sys` feature set as `zlib-static` (`std`,
+`c-allocator`, `export-symbols`, `gz`; no `gzprintf`) and replaces the vendor
+zlib 1.2.12 shared object for every package that links `-lz`: `rc`, `curl`,
+`libxml2`, `libpng`, `tor`, `strongswan`, `minidlna`, `rsyslog`, `mtd`,
+`mtd-utils`, `networkmap`, `nt_center`, `aws-iot`, `google_client`, `aaews`
+and `samba`. The vendor `zlib` package is still configured, built and staged:
+it owns `zlib.h`/`zconf.h`, the link-time `libz.so` every package compiles
+against and the `libz.a` archive. Only the object installed into the image
+changes.
+
+The crate is compiled to a static archive and
+`release/src/router/Makefile` performs the final `$(CC) -shared` link with
+`-Wl,-soname,libz.so.1` and `-Wl,--version-script=zlib-shared/libz.map`. A
+`cdylib` cannot be used: `rustc` unconditionally appends its own *anonymous*
+version script to every `cdylib` and GNU `ld` 2.28.1 rejects the combination
+("anonymous version tag cannot be combined with other version tags"), which
+would leave the library unversioned and make every consumer that recorded
+`inflate@ZLIB_1.2.0` fall back to the base definition with a loader warning.
+`libz.map` reproduces the vendor `zlib/zlib.map` node for node, so the
+exported versioned symbol set of the replacement is identical to the vendor
+object except for `gzprintf`/`gzvprintf`, which `zlib-rs` only provides on
+nightly and which no consumer in `release/src/router` calls. The vendor
+`local:` symbols (`inflate_fast`, `inflate_table`, `z_errmsg`, `zcalloc`,
+`zcfree`, `gz_error`, ...) were never exported by the vendor library either,
+and neither are the zlib-rs-only extensions (`compress_z`, `deflateUsed`,
+...).
+
+Nothing is relinked against `libz.so.1`; consumers bind it by SONAME, so
+`rust-repack.mk` only re-runs `zlib-install` on the rust-fast path. The crate
+forbids unsafe code and asserts the `z_stream`/`gz_header` sizes at compile
+time for whichever target is built. `tests/c_abi_roundtrip.rs`, the C ABI
+smoke fixture `tests/c-abi/zlib-shared.c` (linked with `-lz` against the real
+shared object) and `verify-rust-firmware.sh` cover it; the verifier checks the
+SONAME, all fourteen `ZLIB_*` nodes, the ARMv7 soft-float attributes, the
+`1.3.0-zlib-rs-` marker, that no internal symbol leaked, and that no installed
+consumer needs `gzprintf`/`gzvprintf` or a `ZLIB_*` node the object lacks.
 
 `infosvr` security boundary:
 

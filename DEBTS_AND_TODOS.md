@@ -492,17 +492,69 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   the `1.3.0-zlib-rs-` marker and a clean `wget --version` under QEMU; still
   owed are a gzip-encoded HTTP download and a `--warc-file` write on the
   router, and the image-size delta of the static archive.
-- [ ] Replace `libz.so.1` for the remaining direct zlib users. The local 102.8
-  reference rootfs has seven direct zlib symbol users (wget, Tor and the media
-  libraries among them); OpenVPN links `libz` but imports no zlib function, so
-  it gains nothing from the swap. A drop-in library must carry the `libz.so.1`
-  SONAME, the `ZLIB_1.2.0`..`ZLIB_1.2.3.5` symbol versions from the vendor
-  `zlib.map`, and the internal symbols that map exports but zlib-rs lacks
-  (`deflate_copyright`, `inflate_copyright`, `inflate_fast`, `inflate_table`,
-  `z_errmsg`, `zcalloc`, `zcfree`, `gz_error`, `gz_intmax`, `gzvprintf`);
-  `crc32_combine_gen*`/`crc32_combine_op` are exported by zlib-rs but were not
-  visible in the host archive and need a link check. `libbz2` is deferred: no
-  dynamic user was found in the examined rootfs.
+- [x] Replace `libz.so.1` for the remaining direct zlib users.
+  `rust/zlib-shared` carries the same `libz-rs-sys 0.6.7` feature set as
+  `zlib-static` (`std`, `c-allocator`, `export-symbols`, `gz`; no `gzprintf`)
+  and is compiled to `libzlib_shared.a`; `zlib-rs-libz.patch` links the shared
+  object in `release/src/router/Makefile` with `-Wl,-soname,libz.so.1`,
+  `-Wl,--version-script=rust-components/zlib-shared/libz.map`,
+  `--whole-archive`, `--gc-sections`, `--no-undefined` and `-static-libgcc`,
+  and `zlib-install` installs it as `$(INSTALLDIR)/zlib/usr/lib/libz.so.1`.
+  The vendor `zlib` package is still configured, built and staged for
+  `zlib.h`/`zconf.h`, the link-time `libz.so` and `libz.a`; only the object
+  in the image changes. Nothing is relinked: consumers bind the library by
+  SONAME, so `rust-repack.mk` re-runs `zlib-install` on the rust-fast path
+  and `usr/lib/libz.so.1` is the ninth manifested consumer.
+  The earlier entry here was wrong on three counts. `deflate_copyright`,
+  `inflate_copyright`, `inflate_fast`, `inflate_table`, `z_errmsg`, `zcalloc`,
+  `zcfree`, `gz_error` and `gz_intmax` are in the `local:` section of
+  `release/src/router/zlib/zlib.map` and are *not* exported by the vendor
+  `libz.so.1`, so nothing can depend on them; the vendor node list runs to
+  `ZLIB_1.2.12`, not `ZLIB_1.2.3.5`; and `crc32_combine_gen`,
+  `crc32_combine_gen64` and `crc32_combine_op` are exported by both
+  libraries. The one real gap is `gzprintf`/`gzvprintf`, which zlib-rs only
+  provides behind a nightly-only feature. A `cdylib` cannot be used at all:
+  `rustc` appends its own anonymous version script to every `cdylib` and GNU
+  `ld` 2.28.1 rejects "anonymous version tag cannot be combined with other
+  version tags", hence the static archive plus an explicit `$(CC) -shared`
+  link in the Makefile.
+  Verified on 2026-09-10 with the Broadcom gcc 5.5 / binutils 2.28.1
+  toolchain: the armv7 object reports SONAME `libz.so.1`, `Tag_CPU_arch: v7`,
+  soft-float, no `Tag_ABI_VFP_args`, and needs only `libpthread`, `libdl`,
+  `libm`, `libc` and `ld-linux.so.3` (the set `wget` already carries); its
+  version-definition table is byte-identical to a cross-built vendor zlib
+  1.2.12, and its exported versioned symbol set differs from that library in
+  exactly two entries, `gzprintf` and `gzvprintf@@ZLIB_1.2.7.1`. `git grep`
+  finds no `gzprintf`/`gzvprintf` caller in `release/src/router` outside
+  zlib's own sources, and `webdav_client` (not built: `RTCONFIG_CLOUDSYNC` is
+  off) is the only prebuilt vendor binary in the tree that names
+  `libz.so.1` at all. Run-verified on the host against a library linked with
+  the identical recipe: upstream zlib 1.2.12's own `test/example.c` (with a
+  local `gzprintf` shim) prints output identical to the C zlib;
+  `test/minigzip.c` round-trips 200 kB and GNU `gzip` decodes the result;
+  `mtd-utils`' real `compr_zlib.c` JFFS2 compressor round-trips to the same
+  323 bytes as the C zlib; libpng 1.6.37's own `pngtest` reports "libpng
+  passes test"; and `tests/c-abi/zlib-shared.c` exercises streaming
+  `deflate`/`inflate`, `compress`/`uncompress`, the checksums and the `gz*`
+  file API through `-lz`. Link-verified only for armv7 (no local qemu):
+  `zlib-shared.c`, `pngtest` and the JFFS2 compressor cross-link against both
+  the vendor and the Rust library with the same `NEEDED libz.so.1` and the
+  same `ZLIB_*` version requirements. Stripped size is 432 KiB against the
+  vendor's 86 KiB. `zlibVersion()` reports `1.3.0-zlib-rs-0.6.7` and
+  `compressBound()` returns a larger, still conservative bound than stock
+  zlib (about `9n/8`); no consumer in the tree calls `compressBound`. The
+  full patch series replays on `6be5bc84b50` and re-locks to
+  `975c696ce73cecaa32c79b81afa213fc862b85ccf4141d8ba1595d70ec953c24`.
+- [ ] Prove the zlib-rs `libz.so.1` on a hosted build and on hardware. The
+  firmware verifier now checks the installed object's SONAME, all fourteen
+  `ZLIB_*` nodes, ARMv7 soft-float, the `1.3.0-zlib-rs-` marker, that no
+  vendor `local:` or zlib-rs-only symbol leaked, and that no installed
+  consumer needs `gzprintf`/`gzvprintf` or a `ZLIB_*` node the object lacks.
+  Still owed: one hosted firmware build to see that gate run against the real
+  rootfs, the image-size delta, and router-side exercise of the actual
+  consumers (`httpd` HTTPS, `curl`/`aws-iot` TLS compression, `rsyslog`,
+  `minidlna`). `libbz2` is deferred: no dynamic user was found in the
+  examined rootfs.
 - [x] Port the selected client-list read/render paths to Rust (size- and layout-checked
   shared-memory snapshot, own data model, bounded JSON string; no
   `json_object*` across the boundary; `serde_json` for parsing and output).

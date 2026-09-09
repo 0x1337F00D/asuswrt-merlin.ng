@@ -1245,6 +1245,9 @@ rootfs_dir="$SDK_DIR/targets/$PROFILE/fs"
 dict_enum_file=$(find "$SDK_DIR" -type f -path '*/src/image/dictenum.txt' -print -quit)
 # Every Rust consumer is freshly installed in rust-fast as well as full mode.
 # networkmap itself stays the vendor blob; its libbwdpi provider is rebuilt.
+# usr/lib/libz.so.1 is the zlib-rs replacement for the vendor libz: nothing is
+# relinked against it, every package resolves it by SONAME at run time, so
+# reinstalling the shared object is all a rust-fast build has to do.
 rust_relinked_consumers=(
 	usr/sbin/infosvr
 	bin/rstats
@@ -1254,6 +1257,7 @@ rust_relinked_consumers=(
 	usr/sbin/networkmap
 	usr/lib/libbwdpi.so
 	usr/sbin/wget
+	usr/lib/libz.so.1
 )
 rust_consumers=("${rust_relinked_consumers[@]}")
 fresh_consumers=("${rust_consumers[@]}")

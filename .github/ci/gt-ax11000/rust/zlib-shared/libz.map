@@ -1,0 +1,142 @@
+/*
+ * Version script for the zlib-rs libz.so.1 replacement.
+ *
+ * Derived from the vendor script release/src/router/zlib/zlib.map (zlib
+ * 1.2.12).  Every version node and every `global:` member of the vendor script
+ * is reproduced verbatim, with two deliberate, documented deviations:
+ *
+ *   * gzprintf / gzvprintf are absent.  zlib-rs only provides them behind its
+ *     `gzprintf` feature, which requires `#![feature(c_variadic)]` and a
+ *     nightly compiler.  No consumer in release/src/router calls either
+ *     function, and no prebuilt vendor binary that this profile installs
+ *     references libz.so.1 at all, so the two symbols are not claimed here
+ *     rather than being exported as something they are not.  gzvprintf was the
+ *     only member of ZLIB_1.2.7.1 besides inflateGetDictionary; the node itself
+ *     is kept so that reference still resolves.
+ *
+ *   * The zlib-rs-only extensions (`*_z` size_t variants and deflateUsed) are
+ *     forced local.  The vendor library never exported them, and a replacement
+ *     must not widen the published ABI.
+ *
+ * Symbols the vendor script does not mention stay in the unversioned base
+ * definition and remain global, exactly as in the vendor object: that is how
+ * `deflate`, `inflate`, `compress`, `uncompress`, `crc32`, `adler32`,
+ * `zlibVersion` and the unversioned `gz*` entry points are published.
+ *
+ * The Rust internals are hidden by the `_*` pattern the vendor script already
+ * carries (`_ZN...`, `__rust_*`, `_init`, ...).  The Rust runtime symbols
+ * without that prefix (`rust_eh_personality`, `rust_begin_unwind`,
+ * `rust_panic`) are listed explicitly; the gate in
+ * tests/security-overlay-check.sh and the symbol diff in
+ * tests/verify-rust-firmware.sh fail if a future toolchain adds another.
+ */
+
+ZLIB_1.2.0 {
+  global:
+    compressBound;
+    deflateBound;
+    inflateBack;
+    inflateBackEnd;
+    inflateBackInit_;
+    inflateCopy;
+  local:
+    deflate_copyright;
+    inflate_copyright;
+    inflate_fast;
+    inflate_table;
+    zcalloc;
+    zcfree;
+    z_errmsg;
+    gz_error;
+    gz_intmax;
+    rust_eh_personality;
+    rust_begin_unwind;
+    rust_panic;
+    compress_z;
+    compress2_z;
+    compressBound_z;
+    deflateBound_z;
+    deflateUsed;
+    uncompress_z;
+    uncompress2_z;
+    _*;
+};
+
+ZLIB_1.2.0.2 {
+    gzclearerr;
+    gzungetc;
+    zlibCompileFlags;
+} ZLIB_1.2.0;
+
+ZLIB_1.2.0.8 {
+    deflatePrime;
+} ZLIB_1.2.0.2;
+
+ZLIB_1.2.2 {
+    adler32_combine;
+    crc32_combine;
+    deflateSetHeader;
+    inflateGetHeader;
+} ZLIB_1.2.0.8;
+
+ZLIB_1.2.2.3 {
+    deflateTune;
+    gzdirect;
+} ZLIB_1.2.2;
+
+ZLIB_1.2.2.4 {
+    inflatePrime;
+} ZLIB_1.2.2.3;
+
+ZLIB_1.2.3.3 {
+    adler32_combine64;
+    crc32_combine64;
+    gzopen64;
+    gzseek64;
+    gztell64;
+    inflateUndermine;
+} ZLIB_1.2.2.4;
+
+ZLIB_1.2.3.4 {
+    inflateReset2;
+    inflateMark;
+} ZLIB_1.2.3.3;
+
+ZLIB_1.2.3.5 {
+    gzbuffer;
+    gzoffset;
+    gzoffset64;
+    gzclose_r;
+    gzclose_w;
+} ZLIB_1.2.3.4;
+
+ZLIB_1.2.5.1 {
+    deflatePending;
+} ZLIB_1.2.3.5;
+
+ZLIB_1.2.5.2 {
+    deflateResetKeep;
+    gzgetc_;
+    inflateResetKeep;
+} ZLIB_1.2.5.1;
+
+ZLIB_1.2.7.1 {
+    inflateGetDictionary;
+} ZLIB_1.2.5.2;
+
+ZLIB_1.2.9 {
+    inflateCodesUsed;
+    inflateValidate;
+    uncompress2;
+    gzfread;
+    gzfwrite;
+    deflateGetDictionary;
+    adler32_z;
+    crc32_z;
+} ZLIB_1.2.7.1;
+
+ZLIB_1.2.12 {
+    crc32_combine_gen;
+    crc32_combine_gen64;
+    crc32_combine_op;
+} ZLIB_1.2.9;

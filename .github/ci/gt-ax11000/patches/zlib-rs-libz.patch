@@ -1,0 +1,110 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -6849,6 +6849,64 @@
+ 	$(STRIP) $(INSTALLDIR)/libexif/usr/lib/libexif.so.12
+ endif
+ 
++# GT-AX11000 overlay: definitions shared by every Rust component the router
++# build links.  They live here, ahead of the first consumer, because the
++# ifneq guards below are evaluated in Makefile order and zlib is built long
++# before wget.
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++# The memory-safe libz.so.1.  zlib-shared is compiled to a static archive and
++# linked into the shared object here rather than being emitted as a cdylib,
++# because rustc appends its own *anonymous* version script to every cdylib and
++# GNU ld refuses to combine that with the named ZLIB_* nodes the vendor
++# library publishes ("anonymous version tag cannot be combined with other
++# version tags").  Linking here keeps the SONAME and the version script under
++# this Makefile's control and leaves the crate build-system-free.
++#
++# The vendor zlib package is still configured, built and staged: it owns
++# zlib.h/zconf.h, the link-time libz.so every package compiles against, and
++# the libz.a archive a static consumer would use.  Only the object installed
++# into the rootfs changes.
++RUST_ZLIB_SHARED_MANIFEST := $(RUST_COMPONENTS_DIR)/zlib-shared/Cargo.toml
++RUST_ZLIB_VERSION_SCRIPT := $(RUST_COMPONENTS_DIR)/zlib-shared/libz.map
++
++ifneq ($(wildcard $(RUST_ZLIB_SHARED_MANIFEST)),)
++RUST_ZLIB_SHARED_ARCHIVE := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libzlib_shared.a
++RUST_ZLIB_SHARED_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libz.so.1
++RUST_ZLIB_SHARED_DEPS := $(RUST_ZLIB_SHARED_LIB)
++ZLIB_INSTALL_SO := $(RUST_ZLIB_SHARED_LIB)
++
++# Phony, so cargo decides whether anything changed and a fast rebuild can
++# never install a stale libz.so.1.
++.PHONY: $(RUST_ZLIB_SHARED_ARCHIVE)
++$(RUST_ZLIB_SHARED_ARCHIVE):
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_ZLIB_SHARED_MANIFEST)" \
++			-p zlib-shared --release --target "$(RUST_TARGET)" --locked --offline
++
++# --whole-archive: a shared object has no undefined reference that would
++# otherwise pull the archive members in.  --gc-sections then drops everything
++# unreachable from the exported set.  Never link this without the version
++# script: an unversioned libz.so.1 makes every consumer that references
++# inflate@ZLIB_1.2.0 fall back to the base definition with a loader warning.
++$(RUST_ZLIB_SHARED_LIB): $(RUST_ZLIB_SHARED_ARCHIVE) $(RUST_ZLIB_VERSION_SCRIPT)
++	$(CC) -shared -static-libgcc -o $@ \
++		-Wl,-soname,libz.so.1 \
++		-Wl,--version-script=$(RUST_ZLIB_VERSION_SCRIPT) \
++		-Wl,--gc-sections -Wl,--no-undefined \
++		-Wl,--whole-archive $(RUST_ZLIB_SHARED_ARCHIVE) -Wl,--no-whole-archive \
++		-lpthread -ldl -lm
++else
++RUST_ZLIB_SHARED_DEPS :=
++ZLIB_INSTALL_SO := zlib/libz.so.1
++endif
++
+ zlib/stamp-h1:
+ 	cd zlib && \
+ 	CC=$(CC) AR="ar rc" RANLIB=$(RANLIB) LD=$(LD) CFLAGS="-Os -Wall $(EXTRACFLAGS) -fPIC" LDSHAREDLIBC="$(EXTRALDFLAGS)" \
+@@ -6862,17 +6920,17 @@
+ 	-@$(MAKE) -C zlib clean
+ 	@rm -f zlib/stamp-h1
+ 
+-zlib-install:
++zlib-install: $(RUST_ZLIB_SHARED_DEPS)
+ 	@$(SEP)
+ # commented out for mt-daapd-svn-1696
+ ifneq ($(MEDIA_SERVER_STATIC),y)
+ 	install -d $(INSTALLDIR)/zlib/usr/lib
+-	install -D zlib/libz.so.1 $(INSTALLDIR)/zlib/usr/lib/
++	install -D $(ZLIB_INSTALL_SO) $(INSTALLDIR)/zlib/usr/lib/libz.so.1
+ 	$(STRIP) $(INSTALLDIR)/zlib/usr/lib/libz.so.1
+ endif
+ ifeq ($(or $(RTCONFIG_MEDIA_SERVER),$(RTCONFIG_CLOUDSYNC),$(RTCONFIG_FRS_FEEDBACK)),y)
+ 	install -d $(INSTALLDIR)/zlib/usr/lib
+-	install -D zlib/libz.so.1 $(INSTALLDIR)/zlib/usr/lib/
++	install -D $(ZLIB_INSTALL_SO) $(INSTALLDIR)/zlib/usr/lib/libz.so.1
+ 	$(STRIP) $(INSTALLDIR)/zlib/usr/lib/libz.so.1
+ endif
+ 
+@@ -9079,15 +9137,12 @@
+ endif
+ 
+ # GT-AX11000 overlay: link wget against the memory-safe zlib-rs archive when
+-# the Rust component tree is present.  wget is the isolated first consumer;
+-# every other zlib user keeps the vendor libz.so.1 until the shared-library
+-# replacement (SONAME, ZLIB_* symbol versions, version-script internals) lands.
+-RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++# the Rust component tree is present.  wget keeps the archive rather than
++# moving to the zlib-rs libz.so.1 above: it is the one consumer with a proven
++# differential and QEMU runtime gate around the static link, and carrying its
++# own copy keeps a zlib-rs regression in the shared object from taking the
++# firmware downloader down with it.
+ RUST_ZLIB_STATIC_MANIFEST := $(RUST_COMPONENTS_DIR)/zlib-static/Cargo.toml
+-RUST_TOOLCHAIN ?= 1.85.1
+-RUST_TARGET ?= armv7-unknown-linux-gnueabi
+-RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
+-RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
+ 
+ ifneq ($(wildcard $(RUST_ZLIB_STATIC_MANIFEST)),)
+ RUST_ZLIB_STATIC_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libzlib_static.a

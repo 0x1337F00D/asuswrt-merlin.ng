@@ -1,0 +1,14 @@
+[package]
+name = "zlib-shared"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "libz.so.1 for the GT-AX11000 rootfs, built from zlib-rs"
+
+[lib]
+name = "zlib_shared"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+libz-rs-sys = { version = "=0.6.7", default-features = false, features = ["std", "c-allocator", "export-symbols", "gz"] }
