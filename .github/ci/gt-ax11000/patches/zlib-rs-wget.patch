@@ -1,0 +1,73 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -9075,7 +9075,35 @@
+ 	@echo "==> automake 1.17 NOT found, skip autoreconf"
+ endif
+ 
+-wget/Makefile: wget/Makefile.in
++# GT-AX11000 overlay: link wget against the memory-safe zlib-rs archive when
++# the Rust component tree is present.  wget is the isolated first consumer;
++# every other zlib user keeps the vendor libz.so.1 until the shared-library
++# replacement (SONAME, ZLIB_* symbol versions, version-script internals) lands.
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_ZLIB_STATIC_MANIFEST := $(RUST_COMPONENTS_DIR)/zlib-static/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifneq ($(wildcard $(RUST_ZLIB_STATIC_MANIFEST)),)
++RUST_ZLIB_STATIC_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libzlib_static.a
++WGET_ZLIB_LIBS := $(RUST_ZLIB_STATIC_LIB) -lpthread -ldl -lm
++WGET_ZLIB_DEPS := $(RUST_ZLIB_STATIC_LIB)
++
++.PHONY: $(RUST_ZLIB_STATIC_LIB)
++$(RUST_ZLIB_STATIC_LIB):
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_ZLIB_STATIC_MANIFEST)" \
++			-p zlib-static --release --target "$(RUST_TARGET)" --locked --offline
++else
++WGET_ZLIB_LIBS := -L$(TOP)/zlib -lz
++WGET_ZLIB_DEPS :=
++endif
++
++wget/Makefile: wget/Makefile.in | $(WGET_ZLIB_DEPS)
+ 	cd wget && touch aclocal.m4 && touch configure && touch Makefile.in && touch src/Makefile.in && \
+ 		$(CONFIGURE) \
+ 		--with-ssl=openssl --prefix=/usr --sysconfdir=/etc \
+@@ -9085,11 +9113,16 @@
+ 		OPENSSL_LIBS="-L$(TOP)/openssl -lcrypto -lssl" \
+ 		OPENSSL_CFLAGS="-I$(TOP)/openssl/include" \
+ 		ZLIB_CFLAGS="-I$(TOP)zlib" \
+-		ZLIB_LIBS="-L$(TOP)/zlib -lz "\
++		ZLIB_LIBS="$(WGET_ZLIB_LIBS)" \
+ 		CFLAGS="-Os -Wall $(EXTRACFLAGS) -ffunction-sections -fdata-sections -I$(STAGEDIR)/usr/include $(if $(RTCONFIG_PIPEFW),-I$(TOP)/shared -DHAVE_PIPEFW) -std=gnu99 -DASUSWRT" \
+ 		LDFLAGS="$(EXTRALDFLAGS) -Wl,--gc-sections -L$(STAGEDIR)/usr/lib -pthread"
+ 
+-wget: openssl zlib wget/Makefile
++wget: openssl zlib $(WGET_ZLIB_DEPS) wget/Makefile
++ifneq ($(WGET_ZLIB_DEPS),)
++	# Automake does not track the archive as a link input; force the relink
++	# when zlib-static changed so a fast build cannot ship a stale wget.
++	[ ! -f wget/src/wget ] || [ ! wget/src/wget -ot $(RUST_ZLIB_STATIC_LIB) ] || rm -f wget/src/wget
++endif
+ ifeq ($(AUTOMAKE_117),yes)
+ 	$(MAKE) -C $@ $(PARALLEL_BUILD)
+ else
+diff --git a/release/src/router/.cargo/config.toml b/release/src/router/.cargo/config.toml
+new file mode 100644
+--- /dev/null
++++ b/release/src/router/.cargo/config.toml
+@@ -0,0 +1,9 @@
++# GT-AX11000 overlay.  The Rust components under rust-components/ carry their
++# crates.io dependencies as vendored sources so every cargo invocation from a
++# package directory resolves offline.  Cargo discovers this file relative to
++# the working directory of the build, which is always below release/src/router.
++[source.crates-io]
++replace-with = "vendored-sources"
++
++[source.vendored-sources]
++directory = "rust-components/vendor"

@@ -134,7 +134,8 @@ rust-firmware-repack:
 		usr/sbin/httpd \
 		sbin/rc \
 		usr/sbin/networkmap \
-		usr/lib/libbwdpi.so > $(RUST_CONSUMER_MANIFEST)
+		usr/lib/libbwdpi.so \
+		usr/sbin/wget > $(RUST_CONSUMER_MANIFEST)
 	cd $(TARGETS_DIR); ./buildFS
 	cd $(TARGETS_DIR); ./buildFS2
 	+$(MAKE) buildimage_final

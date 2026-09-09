@@ -8,6 +8,7 @@ on:
       - codex/network-hardening-2026
       - codex/gt-ax11000-parallel-dag-ci
       - codex/gt-ax11000-parallel-dag-v2
+      - claude/**
     paths:
       - release/**
       - .github/ci/gt-ax11000/**
@@ -95,6 +96,9 @@ jobs:
           root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           python3 "$root/tests/test_input_lock.py"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
+          # Cargo resolves the vendored crates.io mapping (rust/.cargo) from
+          # the working directory, not from --manifest-path.
+          cd "$root/rust"
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" fmt \
             --manifest-path "$root/rust/Cargo.toml" --all -- --check
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" test \
@@ -106,6 +110,15 @@ jobs:
             cargo +"${{ steps.inputs.outputs.rust_toolchain }}" check \
             --manifest-path "$root/rust/Cargo.toml" --workspace --locked \
             --target "${{ steps.inputs.outputs.rust_target }}"
+          # The firmware build is offline: the committed vendor directory
+          # must be exactly what the lockfile resolves to.
+          vendor_check="$RUNNER_TEMP/asuswrt-vendor-check"
+          rm -rf "$vendor_check"
+          CARGO_HOME="$RUNNER_TEMP/asuswrt-vendor-cargo" \
+            cargo +"${{ steps.inputs.outputs.rust_toolchain }}" vendor \
+            --manifest-path "$root/rust/Cargo.toml" --locked --versioned-dirs \
+            "$vendor_check" > /dev/null
+          diff -r "$vendor_check" "$root/rust/vendor"
           bash "$root/tests/rust-fuzz-smoke.sh"
           bash "$root/tests/c-abi-smoke.sh"
 
@@ -568,7 +581,7 @@ jobs:
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
-                usr/sbin/networkmap usr/lib/libbwdpi.so
+                usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
           rootfs_excludes=(rom/etc/image_version)
@@ -665,7 +678,7 @@ jobs:
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
-                usr/sbin/networkmap usr/lib/libbwdpi.so
+                usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget
             ) > cache-equivalence/consumers.after
             diff -u cache-equivalence/consumers.before \
               cache-equivalence/consumers.after

@@ -21,3 +21,4 @@ networkmap-rust-compat.patch
 local-qos-rust.patch
 networkmap-shm-abi.patch
 private-firewall-capture.patch
+zlib-rs-wget.patch

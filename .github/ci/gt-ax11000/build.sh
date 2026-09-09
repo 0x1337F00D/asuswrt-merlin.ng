@@ -1312,6 +1312,7 @@ rust_consumers=(
 	"${rust_relinked_consumers[@]}"
 	usr/sbin/networkmap
 	usr/lib/libbwdpi.so
+	usr/sbin/wget
 )
 fresh_consumers=("${rust_consumers[@]}")
 if [ "$BUILD_MODE" = "rust-fast" ]; then

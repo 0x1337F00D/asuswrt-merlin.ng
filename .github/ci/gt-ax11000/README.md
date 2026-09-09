@@ -110,10 +110,10 @@ CI therefore also stores the exact completed vendor build tree. Its key binds
 the upstream and toolchain revisions, runner image, Rust target, complete patch
 series, input lock, repack rules and build driver, but deliberately excludes
 Rust source. A hit selects `rust-fast`: the current Rust tree is synchronized,
-the five Rust-built binaries are relinked, the closed `networkmap` and its Rust
-`libbwdpi.so` provider are carried from the cached tree unchanged, all seven
-manifested consumers are checksum-bound into the rootfs, and the image is
-repacked and verified.
+the five Rust-built binaries are relinked, the closed `networkmap`, its Rust
+`libbwdpi.so` provider and the `wget` that links the static zlib-rs archive
+are carried from the cached tree unchanged, all eight manifested consumers are
+checksum-bound into the rootfs, and the image is repacked and verified.
 Patch, profile, toolchain, runner-image or upstream changes miss the cache and
 take the normal clean path. The weekly scheduled build and a manual
 `force_clean` dispatch never restore generated vendor state. A lookup-only
@@ -125,7 +125,7 @@ The cached `httpd` path is intentionally a relink, not a recursive package
 install. It requires every C object from the completed clean build, records
 their hashes, links only those objects against the current Rust archive and
 fails if any object changes. When the Rust state itself is unchanged, CI also
-requires all seven stripped firmware consumers to remain byte-identical across
+requires all eight stripped firmware consumers to remain byte-identical across
 the fast cycle. This gate caught an earlier generic `httpd-install` shortcut
 that silently rebuilt C objects outside the full router target context; that
 result is excluded from performance claims.
@@ -144,8 +144,8 @@ entire final rootfs—contents, paths, types, modes, symlinks and hardlink
 groups—with only the validated generated `rom/etc/image_version` excluded.
 Rust changes may
 additionally exclude exactly the five relinked consumers already covered by
-freshness, manifest, ISA and QEMU gates; `networkmap` and `libbwdpi.so` are not
-rebuilt on the cached path and stay inside the gate.
+freshness, manifest, ISA and QEMU gates; `networkmap`, `libbwdpi.so` and `wget`
+are not rebuilt on the cached path and stay inside the gate.
 
 The cache contains the expensive compiled vendor prerequisite tree. The common
 `rust-repack.mk` finalizer is deliberately consumed live rather than treated as
@@ -177,14 +177,16 @@ an upstream, patch, profile or preparation-state mismatch. Cargo is still
 invoked for every firmware consumer; its fingerprints decide what is reused.
 The build then requires fresh installs of `infosvr`, `rstats`,
 `Notify_Event2NC`, `httpd` and `rc` (a clean or fast build also of the closed
-`networkmap` and its Rust `libbwdpi.so` provider; `rust-fast` carries those two
-from the cached tree and only hash-verifies them), creates checksums for all
-seven, produces exactly one fresh firmware image and runs the ARM ISA/QEMU
-verifier. A change confined to the `bwdpi-compat` crate therefore needs
-`networkmap-rust-compat-rebuild` or a full build, not `rust-fast`.
+`networkmap`, its Rust `libbwdpi.so` provider and the `wget` linked against the
+static zlib-rs archive; `rust-fast` carries those three from the cached tree
+and only hash-verifies them), creates checksums for all eight, produces exactly
+one fresh firmware image and runs the ARM ISA/QEMU verifier. A change confined
+to the `bwdpi-compat` or `zlib-static` crate therefore needs
+`networkmap-rust-compat-rebuild`, a `wget` package rebuild or a full build, not
+`rust-fast`.
 The prerequisite full-build contract also binds the generated SDK/router/kernel
 configuration, toolchain identity, pinned Rust compiler, ARM target and CPU
-flags. The repack compares the exact SHA-256 values of all seven post-strip
+flags. The repack compares the exact SHA-256 values of all eight post-strip
 package artifacts with the completed rootfs, so a copied stale binary fails the
 cycle even if its timestamp is new.
 
@@ -205,7 +207,7 @@ platform exports, rebuilds only `httpd` and the complete AUTODICT Web payload,
 and then uses the same idempotent firmware repack. Compressed ASP pages and all
 language dictionaries are one inseparable generated set: the repack refuses a
 missing nested staging tree and atomically replaces the old flat `/www` tree
-with the complete new set. It also promotes only the seven known consumer
+with the complete new set. It also promotes only the eight known consumer
 artifacts and removes their package staging roots, preventing `/httpd`, `/rc`
 or `/www/www` duplicates.
 
@@ -234,3 +236,16 @@ the gate. The second sends only read-only discovery PDUs and
 checks exact sizes, rejected malformed inputs, transaction preservation and a
 stable AiMesh group ID. Neither test prints SSIDs, MAC addresses, keys or packet
 contents.
+
+## Vendored Rust dependencies
+
+`rust/vendor/` carries the crates.io sources the workspace depends on
+(`zlib-rs`, `libz-rs-sys`, `libc`), and `rust/.cargo/config.toml` maps
+crates.io to that directory. Cargo discovers that file from the working
+directory, not from `--manifest-path`, so every host command (CI, the smoke
+tests, `dev-cycle.sh`) runs from `rust/`, and `zlib-rs-wget.patch` installs the
+same mapping as `release/src/router/.cargo/config.toml` for the package
+Makefiles, which invoke Cargo from `release/src/router/<package>` with
+`--locked --offline`. The `Rust` job re-runs `cargo vendor` and fails when the
+committed directory differs from the lockfile, so a Dependabot lockfile bump
+cannot silently break the offline firmware build.

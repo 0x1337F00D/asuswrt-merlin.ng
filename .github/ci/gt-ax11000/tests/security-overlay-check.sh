@@ -64,6 +64,10 @@ clientlist_shipped="$router/www/client_function.js"
 qos_ui="$router/www/QoS_EZQoS.asp"
 www_makefile="$router/www/Makefile"
 networkmap_makefile="$router/networkmap/Makefile"
+router_makefile="$router/Makefile"
+cargo_config="$router/.cargo/config.toml"
+zlib_static="$router/rust-components/zlib-static/src/lib.rs"
+zlib_static_manifest="$router/rust-components/zlib-static/Cargo.toml"
 bwdpi_compat="$router/rust-components/bwdpi-compat/src/lib.rs"
 wifi_base="$root/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main/components/opensource/router_tools"
 
@@ -74,6 +78,7 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$rstats_makefile" "$router_config_base" "$target_mak" "$src_rt_makefile" \
 	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
 	"$networkmap_makefile" "$bwdpi_compat" \
+	"$router_makefile" "$cargo_config" "$zlib_static" "$zlib_static_manifest" \
 	"$wifi_base/hostapd/src/common/sae.c" \
 	"$wifi_base/hostapd/src/radius/radius.c" \
 	"$wifi_base/hostapd/src/rsn_supp/wpa.c" \
@@ -156,6 +161,19 @@ require_text "$networkmap_makefile" '$(INSTALLDIR)/usr/lib/libbwdpi.so'
 require_text "$bwdpi_compat" 'pub extern "C" fn check_bwdpi_nvram_setting() -> c_int'
 require_text "$bwdpi_compat" 'pub unsafe extern "C" fn bwdpi_client_info('
 require_text "$bwdpi_compat" 'pub extern "C" fn rust_bwdpi_compat_v1() -> c_int'
+
+# wget is the isolated zlib-rs consumer: it links the static Rust archive and
+# never the vendor libz; the vendored crates.io mapping must be discoverable
+# from every package directory.
+require_text "$router_makefile" 'RUST_ZLIB_STATIC_MANIFEST := $(RUST_COMPONENTS_DIR)/zlib-static/Cargo.toml'
+require_text "$router_makefile" 'WGET_ZLIB_LIBS := $(RUST_ZLIB_STATIC_LIB) -lpthread -ldl -lm'
+require_text "$router_makefile" 'ZLIB_LIBS="$(WGET_ZLIB_LIBS)"'
+require_text "$router_makefile" 'wget: openssl zlib $(WGET_ZLIB_DEPS) wget/Makefile'
+reject_text "$router_makefile" 'ZLIB_LIBS="-L$(TOP)/zlib -lz "'
+require_text "$cargo_config" 'directory = "rust-components/vendor"'
+require_text "$zlib_static" '#![forbid(unsafe_code)]'
+require_text "$zlib_static_manifest" 'features = ["std", "c-allocator", "export-symbols", "gz"]'
+reject_text "$zlib_static_manifest" 'gzprintf'
 
 # Compatibility gaps must fail closed instead of reporting successful work.
 require_text "$rc_stubs" 'return rust_validate_apply_input_value(name, value);'
