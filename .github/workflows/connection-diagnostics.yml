@@ -62,6 +62,7 @@ jobs:
           sh -n "$root/diagnostics/install.sh"
           sh -n "$root/diagnostics/update-panel.sh"
           bash -n "$root/tests/wifi-vendor-reference.sh"
+          bash "$root/tests/bsd-maclist-adapter-test.sh"
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" fmt \
             --manifest-path "$root/rust/Cargo.toml" --all -- --check
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" test \

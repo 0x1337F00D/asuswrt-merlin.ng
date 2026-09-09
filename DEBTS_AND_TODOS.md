@@ -389,8 +389,18 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   comparison, blob hashes, synthetic-test limitations and release gates.
 - [ ] Repair steering under ALL without reintroducing historical bsd/roamast
   crashes. The quarantine demonstrably suppresses configured Smart Connect;
-  the isolated original-binary test has **not reproduced the real crash**.
-  Do not remove the quarantine or replace it with an untested disconnect loop.
+  the 2026-09-09 approved native test now **reproduced the real bsd crash**:
+  legacy bsd/roamast pass `(idx, buffer, size)`, but current libshared expects
+  `(idx, vidx, buffer, size)` and writes through 0x1000. A corrected fixture
+  reproduces it; the process-scoped ABI adapter survived a native 30-second
+  trial and stopped cleanly. The model-limited source candidate is in
+  `diagnostics/compat/gt-ax11000-maclist-abi.patch`, not the firmware series.
+  Full rebuild, native roamast validation, active movement test and soak remain.
+  Do not remove quarantine on the strength of this short startup test alone.
+- [ ] Harden `retrieve_static_maclist_from_nvram` independently of the ABI fix:
+  current C append loops do not enforce capacity and memset uses sizeof(int)
+  rather than the passed buffer size. Preserve allow/deny/AiMesh semantics;
+  do not silently turn parse/overflow errors into an empty permissive ACL.
 - [ ] Retain a bounded whole Wi-Fi experiment in private RAM; the current
   panel ring contains only the last 60 rounds. Distinguish failed pidof
   capture from confirmed process absence before using service status as a gate.

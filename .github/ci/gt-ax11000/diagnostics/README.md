@@ -7,8 +7,8 @@ the W9 audit remains independently buildable and tested on the security branch.
 The dedicated **Connection diagnostics** push workflow tests this add-on only;
 it does not start a firmware build, contact the router or install anything.
 
-Still open: restore reliable steering under ALL after reproducing the historical
-vendor crashes, correlate an actual POCO F3/Samsung tablet call interruption,
+Still open: integrate the reproduced legacy MAC-list ABI correction into the
+firmware and qualify steering under ALL, correlate an actual POCO F3/Samsung tablet call interruption,
 and add bounded whole-test Wi-Fi retention. The user's moving MacBook test now
 correlates local packet loss with a weak 5-GHz association; this is not proof of
 a specific driver defect. See `WIFI_STEERING_REVIEW.md`. Do not auto-restart
@@ -219,8 +219,12 @@ The old device attribution must not be used as tablet-specific evidence.
   retrieved. No claim is made to a preserved 600-round RF trace or precise
   packet-by-packet alignment with the user's timestamp-free ping transcript.
 
-The ALL-specific bsd/roamast quarantine remains unchanged and still needs an
-actual fix. The new panel/observer do **not** repair coverage or band steering.
+The ALL-specific bsd/roamast quarantine remains unchanged. A later approved
+native test reproduced a three-vs-four argument ABI mismatch; the corrected
+process-local 30-second trial passed and stopped cleanly. See
+`WIFI_STEERING_REVIEW.md` for the core/callsite evidence and permanent-source
+candidate. This is not a deployed firmware repair or a validated handover.
+The new panel/observer themselves do **not** repair coverage or band steering.
 
 Correlate an actual call glitch with the two measurement legs first. A
 controlled 80-MHz/non-DFS test on 5 GHz-1 and comparison near the router are

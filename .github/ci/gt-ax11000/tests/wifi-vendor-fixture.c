@@ -25,6 +25,7 @@ char *nvram_get(const char *key)
     if (!strcmp(key, "bsd_primary")) return "127.0.0.1";
     if (!strcmp(key, "bsd_helper")) return "127.0.0.2";
     if (!strcmp(key, "bsd_msglevel")) return "7";
+    if (!strcmp(key, "bsd_scheme")) return "2";
     if (!strcmp(key, "wl0_ifname")) return "eth6";
     if (!strcmp(key, "wl1_ifname")) return "eth7";
     if (!strcmp(key, "wl2_ifname")) return "eth8";
@@ -37,6 +38,7 @@ char *nvram_get(const char *key)
     if (strstr(key, "_radio") || strstr(key, "_bss_enabled")) return "1";
     if (strstr(key, "_ssid")) return "offline-fixture";
     if (strstr(key, "_country_code")) return "#a";
+    if (strstr(key, "_macmode")) return "disabled";
     return NULL;
 }
 int nvram_get_int(const char *key) { char *p = nvram_get(key); return p ? atoi(p) : 0; }
@@ -51,6 +53,9 @@ int kill(pid_t pid, int sig) { (void)pid; (void)sig; errno = EPERM; return -1; }
 static int fixture_wl_ioctl(char *name, int cmd, void *buf, int len)
 {
     fprintf(stderr, "fixture wl_ioctl %s %d\n", name, cmd);
+    /* Successful MACMODE is essential: an unsupported reply makes bsd skip
+     * the legacy static-MAC-list call and hides the real 3-vs-4 argument bug. */
+    if (cmd == 105 && len == 4) { *(int *)buf = 0; return 0; }
     if (cmd == 14 && len == 4) { *(int *)buf = name[3] - '6'; return 0; }
     if (cmd == 141 && len == 4) { *(int *)buf = name[3] == '6' ? 2 : 1; return 0; }
     if (cmd == 25 && len >= 36) { memset(buf, 0, len); *(int *)buf=15; memcpy((char *)buf+4, "offline-fixture",15); return 0; }

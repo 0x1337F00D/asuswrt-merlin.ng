@@ -27,8 +27,12 @@ cp "$qemu" "$trial/qemu-arm"
 chmod 700 "$trial/bsd" "$trial/qemu-arm"
 "$DIAGNOSTICS_LINKER" -Wall -Wextra -Werror -fPIC -shared \
     "$tests/wifi-vendor-fixture.c" -o "$trial/fixture.so"
-set +e
-(
+"$DIAGNOSTICS_LINKER" -Wall -Wextra -Werror -fPIC -shared \
+    "$tests/../diagnostics/compat/bsd-maclist-v3.c" -ldl -o "$trial/compat.so"
+run_case() {
+  local variant=$1 preload=$2 expected=$3 result
+  set +e
+  (
     ulimit -c 0
     ulimit -f 4096
     # The shell, not qemu, must be PID 1 so guest fatal signals work normally.
@@ -37,15 +41,19 @@ set +e
       /bin/sh -c '
         mount -t tmpfs tmpfs /tmp && mount -t tmpfs tmpfs /run && cd /tmp || exit 70
         "$1/qemu-arm" -L "$1" -E "LD_LIBRARY_PATH=$1/lib:$1/usr/lib" \
-          -E "LD_PRELOAD=$1/fixture.so" "$1/bsd" -F
+          -E "LD_PRELOAD=$2" "$1/bsd" -F
         result=$?; exit "$result"
-      ' sh "$trial"
-) > "$trial/initialization.log" 2>&1
-result=$?
-set -e
-[[ $result == 124 ]] || { echo "Fixture exited with $result; inspect $trial/initialization.log" >&2; exit 1; }
-! rg -qi 'segmentation fault|uncaught target signal|core dumped' "$trial/initialization.log"
-rg -q 'Tri-Band Smart Connect' "$trial/initialization.log"
-for radio in eth6 eth7 eth8; do rg -q "fixture wl_ioctl $radio 14" "$trial/initialization.log"; done
-echo "BSD_FIXTURE_INITIALIZATION_ONLY=PASS log=$trial/initialization.log"
-echo "No real station/steering/driver test; historical crashes remain unreproduced."
+      ' sh "$trial" "$preload"
+  ) > "$trial/$variant.log" 2>&1
+  result=$?
+  set -e
+  [[ $result == "$expected" ]] || { echo "Fixture $variant exited with $result; inspect $trial/$variant.log" >&2; exit 1; }
+}
+run_case broken "$trial/fixture.so" 139
+rg -qi 'segmentation fault|uncaught target signal' "$trial/broken.log"
+run_case adapted "$trial/fixture.so:$trial/compat.so" 124
+! rg -qi 'segmentation fault|uncaught target signal|core dumped' "$trial/adapted.log"
+rg -q 'Tri-Band Smart Connect' "$trial/adapted.log"
+for radio in eth6 eth7 eth8; do rg -q "fixture wl_ioctl $radio 105" "$trial/adapted.log"; done
+echo "BSD_MACLIST_ABI_REGRESSION=PASS broken=SIGSEGV adapted=deadline logs=$trial"
+echo "Synthetic driver: this is not a full station/steering/soak test."
