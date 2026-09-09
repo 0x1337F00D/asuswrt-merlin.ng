@@ -329,7 +329,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `_eval()` (`shutils.c`, `execvp`, no shell), or through a local
   pipe-capturing `execvp` helper for the two that read output, and routes
   every interpolated value through the new `wlif-policy` Rust archive that
-  `shared/Makefile` links into `libshared.so`. No exported symbol name,
+  `shared/Makefile` links into `libshared.so`. `wl_wlif_wps_pbc_hdlr` and
+  `wl_wlif_wps_stop_session` re-encode the `_eval()` exit code as the wait
+  status `system()` used to return, because their only caller is the prebuilt
+  `wps_pbcd` object and a caller extracting `WEXITSTATUS()` would otherwise
+  read a failure as a success. No exported symbol name,
   signature or return value changed, so the seventeen prebuilt vendor blobs
   that load `libshared.so` by unversioned SONAME are unaffected.
   - Audit SEC-6a (2026-09-07, source scan at `6be5bc84b50`, no build or

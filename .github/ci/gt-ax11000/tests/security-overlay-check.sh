@@ -441,6 +441,14 @@ reject_text "$wlif" 'set_network %lu'
 reject_text "$wlif" 'cmd->encr, cmd->key);'
 require_text "$wlif" '? "<redacted>" : ""'
 
+# The two WPS entry points are called only by the prebuilt wps_pbcd object,
+# which may extract the result with WEXITSTATUS().  system() reported the raw
+# wait status and _eval() reports the plain exit code, so the exit code has to
+# be re-encoded or a failure would read as a success.
+require_text "$wlif" 'wl_wlif_wait_status(int status)'
+require_text "$wlif" 'return status << 8;'
+require_text "$wlif" 'ret = wl_wlif_wait_status(_eval(argv, NULL, 0, NULL));'
+reject_text "$wlif" 'ret = _eval(argv, NULL, 0, NULL);'
 require_text "$wlif" 'argv[argc++] = "hostapd_cli";'
 require_text "$wlif" 'argv[5] = "get_config";'
 require_text "$wlif" 'wl_wlif_popen_argv(argv, &child)'

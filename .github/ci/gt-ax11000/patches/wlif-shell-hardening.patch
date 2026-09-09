@@ -199,8 +199,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +		cprintf("Err: shared %s rejected interface name\n", __func__);
 +		return -1;
 +	}
- 
--	fp = popen(cmd, "r");
++
 +	argv[0] = "hostapd_cli";
 +	argv[1] = "-p";
 +	argv[2] = WLIF_HAPD_DIR;
@@ -215,7 +214,8 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +			__func__, ifname);
 +		return -1;
 +	}
-+
+ 
+-	fp = popen(cmd, "r");
 +	fp = fdopen(fd, "r");
  	if (fp == NULL) {
 -		dprintf("Err: shared %s failed to open cmd = [%s] \n", __func__, cmd);
@@ -235,7 +235,27 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  	return 0;
  }
-@@ -1951,10 +2079,11 @@
+@@ -1948,13 +2076,31 @@
+  * If bh_ifname is non null than the backhaul credentials will be updated with the
+  * settings of bh_ifname.
+  */
++/*
++ * The two WPS entry points below returned system()'s raw wait status, and
++ * their only caller is the prebuilt wps_pbcd object, which may extract it
++ * with WEXITSTATUS().  _eval() has already applied that macro, so re-encode
++ * a plain exit code the way system() would have reported it and leave the
++ * negative policy-rejection value and an already-encoded status alone.
++ */
++static int
++wl_wlif_wait_status(int status)
++{
++	if (status <= 0 || status > 0xff) {
++		return status;
++	}
++
++	return status << 8;
++}
++
  int
  wl_wlif_wps_pbc_hdlr(char *wps_ifname, char *bh_ifname)
  {
@@ -249,7 +269,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	int ret = -1;
  
  	if (!wps_ifname) {
-@@ -1962,6 +2091,11 @@
+@@ -1962,6 +2108,11 @@
  		goto end;
  	}
  
@@ -261,7 +281,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	if (bh_ifname) {
  		cprintf("Info: shared inside %s wps ifname %s backhaul ifname %s\n",
  			__func__, wps_ifname, bh_ifname);
-@@ -1982,25 +2116,27 @@
+@@ -1982,25 +2133,28 @@
  	}
  	snprintf(mode, sizeof(mode), "%s_mode", nvifname);
  	if (nvram_match(mode, "ap")) {
@@ -276,7 +296,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +		argv[argc] = NULL;
  		status_code = WLIF_WPS_UI_FINDING_PBC_STA;
 +
-+		ret = _eval(argv, NULL, 0, NULL);
++		ret = wl_wlif_wait_status(_eval(argv, NULL, 0, NULL));
  	} else {
  		/* Before starting WPS set ap_scan parameter to 1 in supplicant */
  		wl_wlif_wpa_supplicant_update_ap_scan(wps_ifname, nvifname, 1);
@@ -288,7 +308,8 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 -			"%s_wpa_supplicant -i %s wps_pbc", WPA_CLI_APP, nvifname, wps_ifname);
 -#endif
  		status_code = WLIF_WPS_UI_FIND_PBC_AP;
-+		ret = wl_wlif_wpa_cli_run(WPA_CLI_APP, wps_ifname, nvifname, "wps_pbc", NULL);
++		ret = wl_wlif_wait_status(wl_wlif_wpa_cli_run(WPA_CLI_APP, wps_ifname,
++			nvifname, "wps_pbc", NULL));
  	}
  
 -	if ((ret = system(cmd)) != 0) {
@@ -300,7 +321,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	}
  
  	wl_wlif_update_wps_ui(status_code);
-@@ -2016,9 +2152,10 @@
+@@ -2016,9 +2170,10 @@
  wl_wlif_wps_stop_session(char *wps_ifname)
  #endif
  {
@@ -312,7 +333,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	int ret = -1;
  
  	if (!wps_ifname) {
-@@ -2026,6 +2163,11 @@
+@@ -2026,6 +2181,11 @@
  		goto end;
  	}
  
@@ -324,7 +345,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	_dprintf("%s:: stop wps_if:%s\n", __func__, wps_ifname);
  
  #if defined(RPBE58)
-@@ -2042,20 +2184,22 @@
+@@ -2042,20 +2202,23 @@
  
  	snprintf(mode, sizeof(mode), "%s_mode", nvifname);
  	if (nvram_match(mode, "ap")) {
@@ -338,7 +359,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +		argv[argc++] = "wps_cancel";
 +		argv[argc] = NULL;
 +
-+		ret = _eval(argv, NULL, 0, NULL);
++		ret = wl_wlif_wait_status(_eval(argv, NULL, 0, NULL));
  	} else {
 -#if defined(NEW_WPA_CLI)
 -		snprintf(cmd, sizeof(cmd), "%s -i %s wps_cancel", WPA_CLI_APP, wps_ifname);
@@ -346,7 +367,8 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 -		snprintf(cmd, sizeof(cmd), "%s -p /var/run/"
 -			"%s_wpa_supplicant -i %s wps_cancel", WPA_CLI_APP, nvifname, wps_ifname);
 -#endif
-+		ret = wl_wlif_wpa_cli_run(WPA_CLI_APP, wps_ifname, nvifname, "wps_cancel", NULL);
++		ret = wl_wlif_wait_status(wl_wlif_wpa_cli_run(WPA_CLI_APP, wps_ifname,
++			nvifname, "wps_cancel", NULL));
  	}
  
 -	if ((ret = system(cmd)) != 0) {
@@ -358,7 +380,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	}
  #if defined(RTCONFIG_WIFI6E) || defined(RTCONFIG_HND_ROUTER_AX_6756) || defined(RTCONFIG_HND_ROUTER_BE_4916) || defined(RTCONFIG_BCM_502L07P2)
  	if (bUpdateUI)
-@@ -2067,11 +2211,58 @@
+@@ -2067,11 +2230,58 @@
  	return ret;
  }
  
@@ -418,7 +440,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  	if (val < 0 || val > 2) {
  		cprintf("Err: %s invalid value %d is provided for ap scan parameter\n",
-@@ -2079,14 +2270,8 @@
+@@ -2079,14 +2289,8 @@
  		return;
  	}
  
@@ -435,7 +457,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  }
  
  #if defined(RTCONFIG_HND_ROUTER_BE_4916)
-@@ -2126,14 +2311,90 @@
+@@ -2126,14 +2330,90 @@
  #endif	/* RTCONFIG_HND_ROUTER_BE_4916 */
  
  #if defined(WIFI7_SDK_20250506) || defined(WIFI8_SDK_20251126)
@@ -527,7 +549,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	bool is_sae = FALSE;
  	int link_id = WLIFU_MLO_INVALID;
  
-@@ -2143,114 +2404,119 @@
+@@ -2143,114 +2423,119 @@
  		return;
  	}
  
@@ -710,7 +732,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  	/* For WPS case, we should set ap_scan to 1 and issue reconnect because during scan we
  	 * called disconnect. Without calling reconnect it will not try to connect.
-@@ -2261,21 +2527,15 @@
+@@ -2261,21 +2546,15 @@
  	if (connection_type == WPA_CONNECTION_TYPE_WPS &&
  			(link_id == WLIFU_MLO_INVALID || link_id == WLIFU_MLO_MAP_LINKID)) {
  		/* set ap_scan to 1 */
@@ -735,7 +757,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	}
  }
  
-@@ -3840,7 +4100,8 @@
+@@ -3840,7 +4119,8 @@
  	}
  
  	cprintf("Info: shared inside %s bh_ssid[%s] bh_auth[%s] bh_encr[%s] bh_psk[%s]\n",
@@ -745,7 +767,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	return 0;
  }
  
-@@ -3852,10 +4113,16 @@
+@@ -3852,10 +4132,16 @@
  {
  	wlif_bh_creds_hapd_clicmd_data_t clidata;
  	char nvifname[IFNAMSIZ] = {0};
@@ -763,7 +785,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	if (osifname_to_nvifname(bh_ifname, nvifname, sizeof(nvifname))) {
  		cprintf("Info: shared %s osifname_to_nvifname failed for %s\n",
  			__func__, bh_ifname);
-@@ -3864,19 +4131,36 @@
+@@ -3864,19 +4150,36 @@
  
  	memset(&clidata, 0, sizeof(clidata));
  	if (wl_wlif_fill_bh_creds_from_nvram(nvifname, &clidata) == 0) {
@@ -810,7 +832,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  		}
  	}
  }
-@@ -4044,29 +4328,16 @@
+@@ -4044,29 +4347,16 @@
  		wl_ioctl(bss->ifname, WLC_GET_BAND, &val, sizeof(val));
  
  		while (count++ < WLIF_SCAN_TRY_COUNT) {
@@ -844,7 +866,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  			if (wl_wlif_scan(bss->ifname, bh_ssid)) {
  				sleep(4);
-@@ -5298,7 +5569,11 @@
+@@ -5298,7 +5588,11 @@
  #ifdef RTCONFIG_BRCM_HOSTAPD
  int get_wpacli_status(int unit)
  {
@@ -857,7 +879,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	FILE *pfp = NULL;
  	char tmp[16], prefix[] = "wlXXXXXXXXXX_";
  	char ifname[IFNAMSIZ] = { 0 };
-@@ -5317,25 +5592,53 @@
+@@ -5317,25 +5611,53 @@
  	if ((wl_ioctl(ifname, WLC_GET_BSSID, &bssid, ETHER_ADDR_LEN) != 0) || !memcmp(&bssid, bssid_null, 6))
  		goto exit;
  
@@ -897,14 +919,14 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +	fd = wl_wlif_popen_argv(argv, &child);
 +	if (fd < 0)
 +		goto exit;
- 
--		pclose(pfp);
++
 +	pfp = fdopen(fd, "r");
 +	if (pfp == NULL) {
 +		wl_wlif_pclose_argv(fd, child);
 +		goto exit;
- 	}
-+
++	}
+ 
+-		pclose(pfp);
 +	while (fgets(line, sizeof(line), pfp) != NULL) {
 +		line[strcspn(line, "\r\n")] = '\0';
 +		if (strncmp(line, "wpa_state=", strlen("wpa_state=")))
@@ -916,7 +938,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +		else if (!strcmp(buf, "4WAY_HANDSHAKE"))
 +			ret = 1;
 +		break;
-+	}
+ 	}
 +
 +	fclose(pfp);
 +	wl_wlif_pclose_argv(-1, child);
