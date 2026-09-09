@@ -25,8 +25,11 @@ mkdir -p "$TARGET_DIR" "$FIXTURE_DIR" "$CARGO_DIR"
 export CARGO_TARGET_DIR="$TARGET_DIR"
 export CARGO_HOME="$CARGO_DIR"
 
+# Cargo resolves the vendored crates.io mapping from the working directory.
+cd "$(dirname "$MANIFEST")"
 cargo +"$RUST_TOOLCHAIN" build --manifest-path "$MANIFEST" --release \
-	--locked --offline -p httpd-parsers -p router-security -p wanduck-transition
+	--locked --offline -p httpd-parsers -p router-security -p wanduck-transition \
+	-p zlib-static
 
 common=(-std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2)
 libraries=(-ldl -lpthread -lm -lrt -lutil)
@@ -39,8 +42,14 @@ cc "${common[@]}" "$SCRIPT_ROOT/c-abi/router-security.c" \
 cc "${common[@]}" "$SCRIPT_ROOT/c-abi/wanduck.c" \
 	"$TARGET_DIR/release/libwanduck_transition.a" "${libraries[@]}" \
 	-o "$FIXTURE_DIR/wanduck"
+# The vendor zlib.h/zconf.h (locked upstream copy) is what wget compiles
+# against; the fixture links the same archive the firmware wget links.
+cc "${common[@]}" -I"$SCRIPT_ROOT/c-abi/include" "$SCRIPT_ROOT/c-abi/zlib.c" \
+	"$TARGET_DIR/release/libzlib_static.a" "${libraries[@]}" \
+	-o "$FIXTURE_DIR/zlib"
 
 "$FIXTURE_DIR/httpd"
 "$FIXTURE_DIR/router-security" "$FIXTURE_DIR"
 "$FIXTURE_DIR/wanduck"
+"$FIXTURE_DIR/zlib"
 echo "RESULT=PASS"

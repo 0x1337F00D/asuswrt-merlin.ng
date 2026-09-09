@@ -30,6 +30,9 @@ mkdir -p "$TARGET_DIR" "$CARGO_DIR"
 export CARGO_TARGET_DIR="$TARGET_DIR"
 export CARGO_HOME="$CARGO_DIR"
 
+# Cargo resolves the vendored crates.io mapping from the working directory.
+cd "$(dirname "$MANIFEST")"
+
 for seed in 1 11400714819323198485 18446744073709551615; do
 	cargo +"$RUST_TOOLCHAIN" run \
 		--manifest-path "$MANIFEST" \

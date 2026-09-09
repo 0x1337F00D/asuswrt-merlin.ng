@@ -10,6 +10,7 @@ members = [
     "router-vpn-audit",
     "rstats",
     "wanduck-transition",
+    "zlib-static",
 ]
 resolver = "2"
 

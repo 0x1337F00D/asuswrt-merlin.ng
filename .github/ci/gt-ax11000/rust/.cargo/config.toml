@@ -1,0 +1,10 @@
+# Cargo resolves this file relative to the working directory, not the manifest.
+# Every host command (tests, fuzz, C ABI smoke, dev-cycle, CI) therefore runs
+# from this directory, and the firmware tree carries the same mapping in
+# release/src/router/.cargo/config.toml (zlib-rs-wget.patch) because the
+# vendor Makefiles invoke cargo from release/src/router/<package>.
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"

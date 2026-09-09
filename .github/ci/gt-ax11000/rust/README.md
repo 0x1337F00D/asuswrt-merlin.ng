@@ -47,6 +47,21 @@ per-profile OpenVPN/WireGuard inbound-block and policy-route kill-switch
 validator is typed, fuzzed and exercised through its C ABI, but is not yet
 wired into the running firewall.
 
+The eighth component is `zlib-static`, a static C-ABI zlib built from
+`zlib-rs` (`libz-rs-sys` with `export-symbols`, `gz` and the C allocator).
+It is linked into exactly one isolated consumer, the vendor `wget`, which uses
+streaming `inflate` for HTTP gzip bodies and `gzdopen`/`gzwrite`/`gzclose` for
+WARC output. Every other zlib user keeps the vendor `libz.so.1`; replacing the
+shared library needs the `libz.so.1` SONAME, the `ZLIB_1.2.*` symbol versions
+from the vendor version script and the internal symbols it exports
+(`inflate_fast`, `inflate_table`, `z_errmsg`, `zcalloc`, `zcfree`, ...), which
+`zlib-rs` does not provide. `gzprintf` is not enabled (nightly only, unused).
+The crate forbids unsafe code; `tests/c_abi_roundtrip.rs` and the C ABI smoke
+fixture `tests/c-abi/zlib.c` exercise the exported entry points the way wget
+calls them, and `verify-rust-firmware.sh` checks that the installed `wget` has
+no `libz.so` dependency, carries the `1.3.0-zlib-rs-` marker and starts under
+QEMU.
+
 `infosvr` security boundary:
 
 - the packet parser requires an exact 512-byte PDU and accepts only the four

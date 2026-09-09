@@ -1,0 +1,13 @@
+[package]
+name = "zlib-static"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Static C-ABI zlib built from zlib-rs for isolated GT-AX11000 consumers"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+libz-rs-sys = { version = "=0.6.7", default-features = false, features = ["std", "c-allocator", "export-symbols", "gz"] }

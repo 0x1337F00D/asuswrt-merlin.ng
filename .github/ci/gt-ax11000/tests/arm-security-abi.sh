@@ -8,6 +8,8 @@ ARM_CC=${ARM_CC:-arm-linux-gnueabi-gcc}
 ARM_QEMU=${ARM_QEMU:-qemu-arm}
 ARM_SYSROOT=${ARM_SYSROOT:-/usr/arm-linux-gnueabi}
 fixture_dir=$(mktemp -d "${TMPDIR:-/tmp}/arm-security-abi.XXXXXX")
+# Cargo resolves the vendored crates.io mapping from the working directory.
+cd "$root/rust"
 cargo +1.85.1 build --manifest-path "$root/rust/Cargo.toml" --release \
     --locked --offline --target armv7-unknown-linux-gnueabi -p router-security
 "$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 \
