@@ -584,25 +584,27 @@ jobs:
             (
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
-                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
                 usr/lib/libz.so.1
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
-            # rust-fast reinstalls only these (rust-repack.mk
-            # rust-components-relink). networkmap and libbwdpi.so are carried
+            # rust-fast reinstalls only the Rust consumers listed here
+            # (rust-repack.mk rust-components-relink); /usr/sbin/ntp comes
+            # from rc-install alongside sbin/rc, and libz.so.1 is reinstalled
+            # although nothing is relinked against it: every consumer binds it
+            # by SONAME at run time. networkmap and libbwdpi.so are carried
             # from the cached tree, so they stay inside the equivalence gate
             # and must not change even when the Rust state differs.
-            # libz.so.1 is reinstalled but nothing is relinked against it:
-            # every consumer binds it by SONAME at run time.
             rootfs_excludes+=(
               usr/sbin/infosvr
               bin/rstats
               usr/sbin/Notify_Event2NC
               usr/sbin/httpd
               sbin/rc
+              usr/sbin/ntp
               usr/sbin/networkmap
               usr/lib/libbwdpi.so
               usr/sbin/wget
@@ -688,7 +690,7 @@ jobs:
             (
               cd "$root"
               sha256sum usr/sbin/infosvr bin/rstats \
-                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc \
+                usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
                 usr/lib/libz.so.1
             ) > cache-equivalence/consumers.after
@@ -711,6 +713,7 @@ jobs:
               usr/sbin/Notify_Event2NC
               usr/sbin/httpd
               sbin/rc
+              usr/sbin/ntp
               usr/sbin/networkmap
               usr/lib/libbwdpi.so
               usr/sbin/wget

@@ -28,3 +28,4 @@ zlib-rs-wget.patch
 clientlist-rust.patch
 zlib-rs-libz.patch
 wlif-shell-hardening.patch
+ntp-rust.patch

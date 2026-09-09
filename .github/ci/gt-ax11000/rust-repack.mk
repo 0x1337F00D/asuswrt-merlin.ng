@@ -112,6 +112,8 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/usr/sbin/httpd; \
 	promote_artifact $(PROFILE_DIR)/fs.install/rc/sbin/rc \
 		$(PROFILE_DIR)/fs.install/sbin/rc; \
+	promote_artifact $(PROFILE_DIR)/fs.install/rc/usr/sbin/ntp \
+		$(PROFILE_DIR)/fs.install/usr/sbin/ntp; \
 	promote_artifact $(PROFILE_DIR)/fs.install/networkmap/usr/sbin/networkmap \
 		$(PROFILE_DIR)/fs.install/usr/sbin/networkmap; \
 	promote_artifact $(PROFILE_DIR)/fs.install/networkmap/usr/lib/libbwdpi.so \
@@ -147,6 +149,7 @@ rust-firmware-repack:
 		usr/sbin/Notify_Event2NC \
 		usr/sbin/httpd \
 		sbin/rc \
+		usr/sbin/ntp \
 		usr/sbin/networkmap \
 		usr/lib/libbwdpi.so \
 		usr/sbin/wget \

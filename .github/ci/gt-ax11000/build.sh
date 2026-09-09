@@ -1254,6 +1254,7 @@ rust_relinked_consumers=(
 	usr/sbin/Notify_Event2NC
 	usr/sbin/httpd
 	sbin/rc
+	usr/sbin/ntp
 	usr/sbin/networkmap
 	usr/lib/libbwdpi.so
 	usr/sbin/wget

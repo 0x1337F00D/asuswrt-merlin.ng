@@ -127,7 +127,7 @@ shared object) and `verify-rust-firmware.sh` cover it; the verifier checks the
 SONAME, all fourteen `ZLIB_*` nodes, the ARMv7 soft-float attributes, the
 `1.3.0-zlib-rs-` marker, that no internal symbol leaked, and that no installed
 consumer needs `gzprintf`/`gzvprintf` or a `ZLIB_*` node the object lacks.
-The tenth component is `wlif-policy`, the only Rust archive linked into
+The eleventh component is `wlif-policy`, the only Rust archive linked into
 `libshared.so`. The vendor `shared/wlif_utils_ax.c` is compiled into that
 library for this profile (`shared/Makefile` adds `wlif_utils_ax.o` when
 `RTCONFIG_HND_ROUTER_AX=y`, and the HND-94908 GT-AX11000 sets it) and used to
@@ -157,6 +157,41 @@ object built from the archive is 9,664 bytes stripped (6,129 bytes of text)
 against 1,130,592 bytes for the same code calling `core::str::from_utf8`, and
 it needs no shared library beyond `libc` and `libgcc_s`. `libshared.a` keeps
 the plain object list: nothing in the tree links it.
+
+The twelfth component is `ntp`, the SNTP/NTPv4 time daemon installed as
+`/usr/sbin/ntp`. It replaces the busybox `ntpd` applet, which reached that
+path through the `CONFIG_FEATURE_NTPD_NTP_ALIAS` applet alias; `ntp-rust.patch`
+turns that alias and `CONFIG_NTPD` off, so `rc/Makefile` is the only remaining
+producer of the path. Nothing in `rc/ntpd.c` changes: `start_ntpd()` still
+execs `/usr/sbin/ntp -t -S /sbin/ntpd_synced -p SERVER [-p SERVER] [-l -I
+IFACE]` through `_eval`, `stop_ntpd()` still matches the process by the name
+`ntp`, and the daemon still runs `/sbin/ntpd_synced step` (one argument, plus
+the `stratum`/`freq_drift_ppm`/`poll_interval`/`offset` environment variables)
+when it steps the clock, which is what sets `ntp_ready`, `ntp_diff_ts` and the
+DDNS/OpenVPN restarts hanging off it. The library half forbids unsafe Rust and
+holds the wire format, reply validation, the peer clock filter, Marzullo peer
+selection and the step/slew state machine; the daemon half keeps every system
+call in `src/sys.rs`.
+
+`ntp` security boundary:
+
+- a reply is matched against the 64-bit random transmit nonce before any other
+  field is read, so an off-path spoofer has to guess it first;
+- only mode-4 replies at version 3 or 4 and stratum 1..=15 are used; stratum 0
+  is decoded as a kiss-o'-death (`DENY`/`RSTR` retire the peer, `RATE` backs
+  it off) and never as time;
+- root distance, round-trip delay and the absolute time the server claims are
+  all range-checked, and a datagram that is neither 48 nor 68 bytes is rejected
+  before decoding;
+- the reply the local clock is disciplined with is the one Marzullo
+  intersection agrees on, so a single lying peer out of three cannot move it;
+- server mode binds to the LAN interface with `SO_BINDTODEVICE`, stays silent
+  until the local clock is disciplined, answers only mode-3 requests with a
+  fixed 48-byte reply, echoes nothing but the mandatory origin timestamp and
+  has no mode-6 (control) or mode-7 (`monlist`) handler at all;
+- the `-S` program is executed argv-only, never through a shell, and unknown
+  command-line options are a startup error rather than silently ignored;
+- the daemon touches no NVRAM, exactly as the busybox applet did not.
 
 `infosvr` security boundary:
 
@@ -220,11 +255,13 @@ bash ../tests/security-overlay-check.sh /path/to/patched/source
 The structured fuzz runner covers the HTTP query/URL and multipart
 boundaries, NVRAM-facing WLAN/test-lab policy, OpenVPN/IPsec/WireGuard
 parsers, the wireless-interface identifier/credential policy, infosvr PDUs,
-rstats codecs, the wanduck transition machine and the client-list parsers
+rstats codecs, the wanduck transition machine, the client-list parsers
 (synthetic legacy/public shared-memory segments with random counts and
-unterminated fields, the NVRAM list/schedule parsers, the
-AiMesh details file, the cache check and the persistent-database transform).
-It is deterministic and keeps Cargo state and artifacts in tmpfs:
+unterminated fields, the NVRAM list/schedule parsers, the AiMesh details
+file, the cache check and the persistent-database transform) and the NTP
+client and server parsers (random datagrams at random lengths, with the
+query nonce both matched and mismatched, plus every mode and stratum
+boundary). It is deterministic and keeps Cargo state and artifacts in tmpfs:
 
 ```sh
 ASUSWRT_REQUIRE_TMPFS=1 \
@@ -261,15 +298,19 @@ not emulate. A CPU flag alone cannot repair instructions in Rust's precompiled
 standard library. The ARMv7 soft-float target matches the Broadcom C toolchain
 and uses architectural `dmb` barriers instead.
 
-After the firmware build, `tests/verify-rust-firmware.sh` inspects the three
+After the firmware build, `tests/verify-rust-firmware.sh` inspects the four
 standalone Rust programs and the `httpd`/`rc` consumers. It rejects obsolete
 CP15 barriers, hard-float or non-ARMv7 output, and then executes safe startup
-paths for `infosvr`, `Notify_Event2NC` and `rstats` under `qemu-arm` using the
-generated firmware root filesystem.
+paths for `infosvr`, `Notify_Event2NC`, `rstats` and `ntp` under `qemu-arm`
+using the generated firmware root filesystem. `ntp --self-test` runs the
+packet, discipline and refusal paths without opening a socket or writing the
+clock; `ntp` with no arguments must refuse to start.
 
 The firmware Makefiles cross-compile with the existing Broadcom
 `arm-buildroot-linux-gnueabi` linker and install the results as
-`/usr/sbin/infosvr` and `/bin/rstats`.
+`/usr/sbin/infosvr`, `/bin/rstats` and `/usr/sbin/ntp`. The time daemon is
+owned by `rc/Makefile` because `rc` is its only consumer, so it is staged and
+promoted on the `rust-fast` relink path together with `sbin/rc`.
 
 Rust sources are not added to `release/src/router` in the fork. The build
 script copies this directory to the ephemeral build tree and

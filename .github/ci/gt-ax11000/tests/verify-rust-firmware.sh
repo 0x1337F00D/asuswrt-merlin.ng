@@ -26,6 +26,7 @@ artifacts=(
 	"usr/sbin/httpd"
 	"usr/sbin/networkmap"
 	"sbin/rc"
+	"usr/sbin/ntp"
 	"usr/sbin/wget"
 )
 
@@ -227,7 +228,14 @@ run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/infosvr"
 run_expected_exit 2 "${qemu[@]}" "$rootfs/usr/sbin/Notify_Event2NC"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/bin/rstats" --self-test
 grep -q 'runtime self-test passed' "$temporary/qemu.stdout"
+# The NTP daemon exercises its packet, discipline and refusal paths without a
+# socket or a clock write, then exits 0. With no arguments it must refuse to
+# start rather than silently do nothing.
+run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/ntp" --self-test
+grep -q '^ntp-rs: runtime self-test passed$' "$temporary/qemu.stdout"
+run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/ntp"
+grep -q 'no -p PEER was given' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
 
-echo "verified ${#artifacts[@]} ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 4 QEMU runtime paths"
+echo "verified ${#artifacts[@]} ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 6 QEMU runtime paths"
