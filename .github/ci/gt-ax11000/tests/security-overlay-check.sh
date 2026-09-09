@@ -47,6 +47,9 @@ watchdog="$router/rc/watchdog.c"
 ipsec="$router/rc/rc_ipsec.c"
 wireguard="$router/rc/wireguard.c"
 wps="$router/rc/sysdeps/wps-broadcom.c"
+wlif="$router/shared/wlif_utils_ax.c"
+shared_makefile="$router/shared/Makefile"
+wlif_rust="$router/rust-components/wlif-policy/src/lib.rs"
 openvpn="$router/libovpn/openvpn_options.c"
 openvpn_setup="$router/libovpn/openvpn_setup.c"
 rstats_makefile="$router/rstats/Makefile"
@@ -74,7 +77,8 @@ wifi_base="$root/release/src-rt-5.02axhnd/bcmdrivers/broadcom/net/wl/impl51/main
 
 for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$services" "$watchdog" "$ipsec" \
-	"$wireguard" "$wps" "$openvpn" "$httpd_rust" "$security_rust" \
+	"$wireguard" "$wps" "$wlif" "$shared_makefile" "$wlif_rust" \
+	"$openvpn" "$httpd_rust" "$security_rust" \
 	"$policy_rust" "$wireless_ui" "$clientlist_ui" "$clientlist_shipped" "$openvpn_setup" \
 	"$rstats_makefile" "$router_config_base" "$target_mak" "$src_rt_makefile" \
 	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
@@ -325,6 +329,55 @@ require_text "$ipsec" 'unlink(password_file);'
 require_text "$wireguard" 'rust_update_wireguard_endpoint(path, address)'
 require_text "$wps" 'argv[argc++] = "/usr/sbin/hostapd_cli";'
 reject_text "$wps" 'popen(cmd'
+
+# shared/wlif_utils_ax.c is compiled into libshared.so for this profile
+# (shared/Makefile adds wlif_utils_ax.o when RTCONFIG_HND_ROUTER_AX=y, and
+# HND-94908 sets it), so its hostapd_cli/wpa_cli boundary must be argv only.
+# All 25 vendor system()/popen() sites are gone, including the ones that are
+# compiled out here, so these rejections are exact whole-call-site strings.
+reject_text "$wlif" 'system(cmd)'
+reject_text "$wlif" 'popen(cmd, "r")'
+reject_text "$wlif" 'pclose(fp)'
+reject_text "$wlif" 'pclose(pfp)'
+reject_text "$wlif" 'snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s wps_pbc"'
+reject_text "$wlif" 'snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s wps_cancel"'
+reject_text "$wlif" 'snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s get_config"'
+reject_text "$wlif" '_wpa_supplicant -i %s ap_scan %d'
+reject_text "$wlif" 'status | grep wpa_state | cut'
+reject_text "$wlif" 'wps_mapbh_config "'
+reject_text "$wlif" 'set_network %lu'
+# The backhaul PSK must not be printed to the console either.
+reject_text "$wlif" 'cmd->encr, cmd->key);'
+require_text "$wlif" '? "<redacted>" : ""'
+
+require_text "$wlif" 'argv[argc++] = "hostapd_cli";'
+require_text "$wlif" 'argv[5] = "get_config";'
+require_text "$wlif" 'wl_wlif_popen_argv(argv, &child)'
+require_text "$wlif" 'execvp(argv[0], argv);'
+require_text "$wlif" '_eval(argv, NULL, 0, NULL)'
+require_text "$wlif" 'rust_wlif_ifname_ok(wps_ifname)'
+require_text "$wlif" 'rust_wlif_supplicant_ctrl_path(ctrl_path, sizeof(ctrl_path), nvifname)'
+require_text "$wlif" 'rust_wlif_supplicant_ctrl_dir(ctrl_dir, sizeof(ctrl_dir), prefix)'
+require_text "$wlif" 'rust_wlif_ssid_ok(clidata.ssid)'
+require_text "$wlif" 'rust_wlif_passphrase_ok(clidata.key)'
+require_text "$wlif" 'rust_wlif_network_id_ok(network_id)'
+require_text "$wlif" 'rust_wlif_cli_word_list_ok(out_buf)'
+require_text "$wlif" 'rust_wlif_dpp_value_ok(value)'
+
+# The policy archive is linked into libshared.so itself; libshared.a stays
+# object-only because nothing in the tree links it.
+require_text "$shared_makefile" 'RUST_WLIF_MANIFEST := $(RUST_COMPONENTS_DIR)/wlif-policy/Cargo.toml'
+require_text "$shared_makefile" 'libshared.so: $(OBJS) $(RUST_WLIF_LIB)'
+require_text "$shared_makefile" '-shared -o $@ $(OBJS) $(RUST_WLIF_LIB)'
+require_text "$shared_makefile" 'libshared.a: $(OBJS)'
+require_text "$wlif_rust" 'rust_wlif_ifname_ok => interface_name_ok'
+require_text "$wlif_rust" 'rust_wlif_ssid_ok => ssid_ok'
+require_text "$wlif_rust" 'rust_wlif_passphrase_ok => passphrase_ok'
+require_text "$wlif_rust" 'pub unsafe extern "C" fn rust_wlif_supplicant_ctrl_path'
+require_text "$wlif_rust" 'pub fn is_shell_metacharacter'
+# core::str::from_utf8 would drag the whole Rust panic/backtrace runtime into
+# a library every firmware process loads; the validator is written out.
+reject_text "$wlif_rust" 'core::str::from_utf8(value)'
 
 # Imported OpenVPN profiles are checked by the same bounded Rust policy in the
 # one existing Rust archive of each libovpn consumer (httpd and rc).

@@ -25,6 +25,11 @@ use router_policy::wlan::WlanSecurityTuple;
 use rstats::{base64_decode, decode_history, decode_speeds};
 use std::str::FromStr;
 use wanduck_transition::{transition, WanduckTransitionInput};
+use wlif_policy::{
+    cli_token_ok, cli_word_list_ok, control_prefix_ok, dpp_value_ok, interface_name_ok, is_control,
+    is_shell_metacharacter, network_id_ok, passphrase_ok, ssid_ok, supplicant_control_dir,
+    supplicant_control_path, wps_pin_ok, MAX_CONTROL_PATH,
+};
 
 const DEFAULT_ITERATIONS: u64 = 250_000;
 const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -97,6 +102,82 @@ fn fuzz_policy(input: &[u8]) {
     let pmf = fields.get(2).copied().unwrap_or_default();
     let wps = fields.get(3).copied().unwrap_or_default();
     let _ = asus_wlan_security_is_valid(authentication, cipher, pmf, wps);
+}
+
+fn fuzz_wlif(input: &[u8]) {
+    // Nothing an accepted identifier carries may be shell syntax, a control
+    // character or a leading option marker, and every accepted value stays
+    // inside its documented bound.
+    if interface_name_ok(input) {
+        assert!(!input.is_empty() && input.len() <= wlif_policy::MAX_INTERFACE_NAME);
+        assert!(!input.iter().copied().any(is_shell_metacharacter));
+        assert!(!input.iter().copied().any(is_control));
+        assert!(input[0] != b'-');
+    }
+    if control_prefix_ok(input) {
+        assert!(!input.iter().copied().any(is_shell_metacharacter));
+        assert!(input[0] != b'-');
+    }
+    if cli_token_ok(input) {
+        assert!(!input.iter().copied().any(is_shell_metacharacter));
+        assert!(!input.iter().copied().any(is_control));
+        assert!(!input.contains(&b'/'));
+        assert!(input[0] != b'-');
+    }
+    if cli_word_list_ok(input) {
+        assert!(!input.iter().copied().any(is_control));
+        assert!(input.split(|&byte| byte == b' ').all(cli_token_ok));
+        assert!(input.len() <= wlif_policy::MAX_CLI_WORD_LIST);
+    }
+    if dpp_value_ok(input) {
+        assert!(input.iter().all(|&byte| byte.is_ascii_alphanumeric()
+            || matches!(byte, b'+' | b'/' | b'.' | b'_' | b'-' | b'=')));
+        assert!(!input.is_empty() && input.len() <= wlif_policy::MAX_DPP_VALUE);
+        assert!(input[0] != b'-');
+    }
+    if wps_pin_ok(input) {
+        assert!(matches!(input.len(), 4 | 8));
+        assert!(input.iter().all(u8::is_ascii_digit));
+    }
+    // Credentials stay opaque: only length, NUL/control bytes and encoding
+    // are enforced, never a shell charset.
+    if ssid_ok(input) {
+        assert!(!input.is_empty() && input.len() <= wlif_policy::MAX_SSID);
+        assert!(!input.iter().copied().any(is_control));
+        assert!(core::str::from_utf8(input).is_ok());
+    }
+    if passphrase_ok(input) {
+        assert!(!input.iter().copied().any(is_control));
+        assert!(
+            input.len() == wlif_policy::PSK_HEX_LEN || input.len() <= wlif_policy::MAX_PASSPHRASE
+        );
+    }
+    let _ = network_id_ok(input.len() as u64);
+
+    // The built control paths are always NUL-terminated, bounded and derived
+    // only from an accepted name.
+    let mut buffer = [0_u8; MAX_CONTROL_PATH];
+    for (accepted, built) in [
+        (
+            interface_name_ok(input),
+            supplicant_control_path(input, &mut buffer),
+        ),
+        (
+            control_prefix_ok(input),
+            supplicant_control_dir(input, &mut buffer),
+        ),
+    ] {
+        match built {
+            Some(length) => {
+                assert!(accepted);
+                assert!(length < MAX_CONTROL_PATH);
+                assert_eq!(buffer[length], 0);
+                assert!(buffer[..length].starts_with(b"/var/run/"));
+                assert!(!buffer[..length].iter().copied().any(is_shell_metacharacter));
+            }
+            None => assert!(!accepted || input.len() + 24 >= MAX_CONTROL_PATH),
+        }
+    }
 }
 
 fn fuzz_infosvr(input: &[u8]) {
@@ -299,6 +380,42 @@ fn regression_edges() {
     assert!(!cache_is_servable(br#"{"maclist":[]}"#));
     assert!(parse_database(&vec![b' '; clientlist::render::MAX_DATABASE + 1]).is_none());
 
+    // Wireless-interface policy boundaries: the exact length limits, the
+    // option-like and path-like names, an unterminated control byte, a
+    // non-UTF-8 SSID and the shortest/longest accepted credentials.
+    for value in [
+        &b"wl0.1"[..],
+        b"eth12345678901",
+        b"eth123456789012",
+        b"-i",
+        b"../../tmp/x",
+        b"wl0;reboot",
+        b"wl0\nreboot",
+        b"wl0\x00",
+        b"",
+        b"caf\xc3\xa9",
+        b"\xff\xfe",
+        &[b'a'; 32],
+        &[b'a'; 33],
+        &[b'a'; 63],
+        &[b'a'; 64],
+        &[b'a'; 65],
+        &[b'a'; 1024],
+        &[b'a'; 1025],
+        b"12345670",
+        b"1234",
+        b"1234567",
+    ] {
+        fuzz_wlif(value);
+    }
+    assert!(interface_name_ok(b"wl0.1"));
+    assert!(!interface_name_ok(b"wl0;reboot"));
+    assert!(ssid_ok("caf\u{e9}".as_bytes()));
+    assert!(!ssid_ok(b"caf\xe9"));
+    assert!(passphrase_ok(&[b'a'; 64]));
+    assert!(!passphrase_ok(&[b'z'; 64]));
+    assert!(!network_id_ok(256));
+
     for opcode in [31_u16, 52, 53, 54, u16::MAX] {
         let mut packet = [0_u8; PDU_LEN];
         packet[0] = 12;
@@ -313,13 +430,14 @@ fn run(iterations: u64, seed: u64) {
     let mut rng = Rng(seed.max(1));
     for index in 0..iterations {
         let input = rng.bytes();
-        match index % 7 {
+        match index % 8 {
             0 => fuzz_http(&input),
             1 => fuzz_policy(&input),
             2 => fuzz_infosvr(&input),
             3 => fuzz_rstats(&input),
             4 => fuzz_clientlist_text(&input),
             5 => fuzz_clientlist_segment(&mut rng, &input),
+            6 => fuzz_wlif(&input),
             _ => fuzz_wanduck(&mut rng),
         }
     }

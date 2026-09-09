@@ -323,12 +323,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   profile generation, PKCS#12 cleanup, WireGuard endpoint updates and WPS
   interface names; the direct ABI fixtures do not exercise surrounding C
   control flow or generated files.
-- [ ] Replace the remaining shell-formatted command execution in
-  `shared/wlif_utils_ax.c`. Several paths interpolate interface, SSID, PSK or
-  DPP-derived values into `system`/`popen`; use bounded validation plus fixed
-  `argv` execution and ensure credentials never enter a shell command line or
-  log. Rust policy can validate inputs, but cannot make an unsafe C shell
-  boundary safe by itself.
+- [x] Replace the remaining shell-formatted command execution in
+  `shared/wlif_utils_ax.c`. `wlif-shell-hardening.patch` rewrites all 25
+  `system`/`popen` sites to a fixed `argv[]` run through the vendor
+  `_eval()` (`shutils.c`, `execvp`, no shell), or through a local
+  pipe-capturing `execvp` helper for the two that read output, and routes
+  every interpolated value through the new `wlif-policy` Rust archive that
+  `shared/Makefile` links into `libshared.so`. No exported symbol name,
+  signature or return value changed, so the seventeen prebuilt vendor blobs
+  that load `libshared.so` by unversioned SONAME are unaffected.
   - Audit SEC-6a (2026-09-07, source scan at `6be5bc84b50`, no build or
     hardware run): `shared/wlif_utils_ax.c` has 25 `system`/`popen` sites with
     non-literal command strings. 17 sit in `wl_wlif_apply_creds_to_supplicant`,
@@ -343,6 +346,67 @@ compile is not sufficient evidence for releasing or flashing a candidate.
     `wl_wlif_select_bhsta_from_bsslist` under `MULTIAP`, and one WiFi 7 MLO site
     that is compiled out. Whether `CONFIG_HOSTAPD` and `MULTIAP` are active
     for this profile was not established, so the item stays open.
+  - Audit SEC-6b (2026-09-10, source scan at `6be5bc84b50`, no build or
+    hardware run) resolves that question. `CONFIG_HOSTAPD` **is** defined:
+    `target.mak` gives `GT-AX11000` `BRCM_HOSTAPD=y`, `src-rt/Makefile:4490`
+    writes `RTCONFIG_BRCM_HOSTAPD=y` into the profile `.config`, and
+    `router/Makefile:588` exports `-DCONFIG_HOSTAPD` for it. `MULTIAP` is
+    **not**: `router/Makefile:675` exports it only under `RTCONFIG_WBD`, and
+    no `WBD=y` reaches this profile (`config_base:508` leaves it unset).
+    `NEW_WPA_CLI` is **not** defined either (`src-rt/Makefile:383` needs
+    `ASUSWRT_BRCM_SDK_VERSION=WIFI7_SDK_20250506`, which requires
+    `HND_ROUTER_BE_4916`), so the `-p /var/run/<nvifname>_wpa_supplicant`
+    branch is the one that compiles. `RTCONFIG_WIFI6E`,
+    `RTCONFIG_HND_ROUTER_AX_6756`, `RTCONFIG_BCM_502L07P2`, `RTCONFIG_WIFI7`
+    and `RTCONFIG_MLO` are all unset. Four of the 25 sites are therefore
+    live on this device: `wl_wlif_parse_hapd_config` (`popen`),
+    `wl_wlif_wps_pbc_hdlr`, `wl_wlif_wps_stop_session` and
+    `wl_wlif_wpa_supplicant_update_ap_scan`.
+  - The 21 compiled-out sites were converted too, because the change is
+    mechanical: the three `MULTIAP` sites, the WiFi 7 MLO `get_wpacli_status`
+    (whose `| grep wpa_state | cut -d= -f2` pipeline is now an in-process
+    scan of the `wpa_state=` line) and the seventeen
+    `wl_wlif_apply_creds_to_supplicant` sites. That last function no longer
+    prints the complete `wpa_cli set_network` line - and therefore the SSID,
+    PSK, SAE password and DPP connector - through `dprintf`; it logs the
+    field name only. `wl_wlif_fill_bh_creds_from_nvram` no longer prints the
+    backhaul PSK to the console. None of this is compiled for the GT-AX11000
+    and none of it was executed: it is proved only by syntax checking.
+  - Verified: `wlif-policy` unit tests (14), the `router-fuzz` cases, the
+    `tests/c-abi/wlif-policy.c` C11 fixture in `tests/c-abi-smoke.sh`, and
+    `tests/security-overlay-check.sh` assertions on the argv/Rust call sites
+    and on the removed `system(cmd)`/`popen(cmd, "r")`/pipeline strings. The
+    six rewritten translation units were extracted into a stub harness and
+    compiled clean under host `gcc -fsyntax-only -std=gnu99 -Wall -Wextra`
+    and under the Broadcom `arm-buildroot-linux-gnueabi-gcc` 5.5, in both
+    the `NEW_WPA_CLI` and the `-p <ctrl-path>` configurations; the four
+    remaining warnings are the vendor's own unused `RTCONFIG_WIFI7`
+    variables in `get_wpacli_status`, which the unmodified file also emits.
+- [ ] Run the rewritten `shared/wlif_utils_ax.c` boundary on hardware. No
+  firmware build and no device run happened, so the following are unproven:
+  WPS PBC start and cancel on an AP-mode and on a STA-mode radio, the
+  `hostapd_cli get_config` credential read-back after a completed session,
+  the `ap_scan` transitions around a supplicant join scan, and the MultiAP
+  backhaul credential push. The failure mode of the new fail-closed
+  rejections is a refused WPS operation, not a crash, but only a device can
+  show which real NVRAM values the validators accept.
+- [ ] Remaining credential exposure in the same file: `hostapd_cli
+  wps_mapbh_config <ssid> <auth> <encr> <psk>` (MultiAP, compiled out here)
+  and `wpa_cli set_network <id> psk "<psk>"` (WiFi 7/8 SDKs, compiled out
+  here) still hand the pre-shared key to the CLI helper as an argument, so
+  it is readable in `/proc/<pid>/cmdline` for the lifetime of that short
+  child process. The wire protocol to `hostapd`/`wpa_supplicant` was
+  deliberately left unchanged; removing the exposure needs a control-socket
+  client in the firmware rather than the vendor CLI binaries, or an upstream
+  helper that reads the credential from a file descriptor.
+- [ ] `wlif-policy` narrows two vendor inputs on purpose and this is
+  untested against real configurations: an SSID must be valid UTF-8 (the
+  profile builds `UTF8_SSID=y`) and a passphrase must be 8..63 printable
+  ASCII or exactly 64 hex digits. A legacy non-UTF-8 SSID or an out-of-spec
+  passphrase now fails the operation closed instead of reaching a shell.
+- [ ] The `rust-fast` build mode relinks only `httpd`, `rc` and
+  `networkmap`. A change to `wlif-policy` therefore needs a full build to
+  reach `libshared.so`; `rust-repack.mk` has no `shared` relink target.
 - [ ] Re-audit every remaining `system`, `popen`, shell-script generation, and
   NVRAM-to-command path. Prefer fixed argv execution and typed Rust parsers.
   - Audit SEC-6a inventory (2026-09-07, `rc`, `shared`, `httpd`, `libdisk`,

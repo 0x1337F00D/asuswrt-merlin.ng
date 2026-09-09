@@ -1,0 +1,925 @@
+diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+--- a/release/src/router/shared/Makefile
++++ b/release/src/router/shared/Makefile
+@@ -607,15 +607,46 @@
+ LDFLAGS += -L$(TOP)/libhostapi -lhostapi
+ endif
+ 
++# wlif_utils_ax.c no longer builds shell command strings; every value it
++# passes to hostapd_cli/wpa_cli is validated by this archive first.  The
++# crate references nothing from the Rust standard library except strlen, so
++# libshared.so - which about sixty packages and the prebuilt vendor blobs
++# load - grows by a few kilobytes and gains no new shared-library
++# dependency.  libshared.a keeps the plain object list: nothing in the tree
++# links it.
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_WLIF_MANIFEST := $(RUST_COMPONENTS_DIR)/wlif-policy/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifneq ($(wildcard $(RUST_WLIF_MANIFEST)),)
++RUST_WLIF_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libwlif_policy.a
++
++.DEFAULT_GOAL := all
++
++.PHONY: rust-wlif-policy
++
++rust-wlif-policy:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_WLIF_MANIFEST)" \
++			-p wlif-policy --release --target "$(RUST_TARGET)" --locked --offline
++
++$(RUST_WLIF_LIB): rust-wlif-policy
++endif
++
+ all: libshared.so libshared.a
+ 
+ 
+-libshared.so: $(OBJS)
++libshared.so: $(OBJS) $(RUST_WLIF_LIB)
+ 	@echo " [shared] LD $@"
+ ifeq ($(HND_ROUTER),y)
+-	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^
++	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $(OBJS) $(RUST_WLIF_LIB)
+ else
+-	@$(LD) $(LDFLAGS) -shared -o $@ $^
++	@$(LD) $(LDFLAGS) -shared -o $@ $(OBJS) $(RUST_WLIF_LIB)
+ endif
+ 
+ 	$(SIZECHECK)
+diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shared/wlif_utils_ax.c
+--- a/release/src/router/shared/wlif_utils_ax.c
++++ b/release/src/router/shared/wlif_utils_ax.c
+@@ -51,11 +51,114 @@
+ #include <board.h>
+ #endif	/* BCA_HNDROUTER */
+ #include <wpsdefs.h>
++#include <sys/types.h>
++#include <sys/wait.h>
++#include <fcntl.h>
+ 
+ #ifndef MAX_NVPARSE
+ #define MAX_NVPARSE 16
+ #endif
+ 
++/* Shell-free execution boundary.
++ *
++ * Every helper below builds a fixed argv[] and runs it through the vendor
++ * _eval() (shutils.c, execvp with no shell) or through the local
++ * wl_wlif_popen_argv() pipe.  No command string is ever handed to /bin/sh,
++ * so an interface name, SSID, passphrase, WPS PIN or DPP blob can no longer
++ * terminate a command and start another one.
++ *
++ * Every value that reaches an argv element is first checked by the Rust
++ * policy in rust-components/wlif-policy, which is linked into libshared.so.
++ * The predicates return 1 when the value is accepted and 0 otherwise, and
++ * the callers fail closed with the error value they already used.
++ */
++extern int rust_wlif_ifname_ok(const char *value);
++extern int rust_wlif_ctrl_prefix_ok(const char *value);
++extern int rust_wlif_cli_token_ok(const char *value);
++extern int rust_wlif_cli_word_list_ok(const char *value);
++extern int rust_wlif_ssid_ok(const char *value);
++extern int rust_wlif_passphrase_ok(const char *value);
++extern int rust_wlif_wps_pin_ok(const char *value);
++extern int rust_wlif_dpp_value_ok(const char *value);
++extern int rust_wlif_network_id_ok(unsigned long value);
++extern int rust_wlif_supplicant_ctrl_path(char *out, size_t out_len, const char *nvifname);
++extern int rust_wlif_supplicant_ctrl_dir(char *out, size_t out_len, const char *prefix);
++
++#if defined(CONFIG_HOSTAPD) || \
++	(defined(RTCONFIG_WIFI7) && defined(RTCONFIG_MLO) && defined(RTCONFIG_BRCM_HOSTAPD))
++#define WLIF_ARGV_EXEC
++
++/* Runs argv[] with stdout connected to a pipe and no shell in between.
++ * Returns the read end of the pipe and stores the child pid, or -1.
++ * This is the fixed-argv replacement for the vendor's shell-parsed stdout
++ * capture: shutils.c safe_popen() still takes a command string and re-splits
++ * it, which is exactly the boundary being removed here.
++ */
++static int
++wl_wlif_popen_argv(char *const argv[], pid_t *child_pid)
++{
++	int pipefd[2];
++	pid_t pid;
++
++	if (!argv || !argv[0] || !child_pid) {
++		return -1;
++	}
++
++	if (pipe(pipefd) < 0) {
++		return -1;
++	}
++
++	pid = fork();
++	if (pid < 0) {
++		close(pipefd[0]);
++		close(pipefd[1]);
++		return -1;
++	}
++
++	if (pid == 0) {
++		int null_fd;
++
++		close(pipefd[0]);
++		if (pipefd[1] != STDOUT_FILENO) {
++			dup2(pipefd[1], STDOUT_FILENO);
++			close(pipefd[1]);
++		}
++		null_fd = open("/dev/null", O_RDWR);
++		if (null_fd >= 0) {
++			dup2(null_fd, STDIN_FILENO);
++			dup2(null_fd, STDERR_FILENO);
++			if (null_fd > STDERR_FILENO) {
++				close(null_fd);
++			}
++		}
++		execvp(argv[0], argv);
++		_exit(127);
++	}
++
++	close(pipefd[1]);
++	*child_pid = pid;
++
++	return pipefd[0];
++}
++
++/* Closes the read end (when fd is not -1) and reaps the child. */
++static void
++wl_wlif_pclose_argv(int fd, pid_t child_pid)
++{
++	int status;
++
++	if (fd >= 0) {
++		close(fd);
++	}
++
++	while (child_pid > 0 && waitpid(child_pid, &status, 0) < 0) {
++		if (errno != EINTR) {
++			break;
++		}
++	}
++}
++#endif	/* WLIF_ARGV_EXEC */
++
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ #define WPA_CLI_APP "wpa_cli-2.7"
+ #else
+@@ -1014,6 +1117,8 @@
+ #endif	/* MULTIAP */
+ 
+ static void wl_wlif_wpa_supplicant_update_ap_scan(char *ifname, char *nvifname, int val);
++static int wl_wlif_wpa_cli_run(const char *app, char *ifname, char *nvifname,
++	const char *command, const char *arg);
+ 
+ // WPS Status id and code value pairs
+ typedef struct wlif_wps_status {
+@@ -1840,19 +1945,41 @@
+ wl_wlif_parse_hapd_config(char *ifname, wlif_wps_nw_creds_t *creds)
+ {
+ 	FILE *fp;
+-	int sz = 0;
+-	char cmd[WLIF_MIN_BUF], *ptr = NULL, *val = NULL;
++	int sz = 0, fd;
++	pid_t child = -1;
++	char *ptr = NULL, *val = NULL;
++	char *argv[7];
+ 
+ 	if (!ifname || !creds) {
+ 		cprintf("Err: shared %s prefix and credentials can not be null \n", __func__);
+ 		return -1;
+ 	}
+ 
+-	snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s get_config", WLIF_HAPD_DIR, ifname);
++	if (!rust_wlif_ifname_ok(ifname)) {
++		cprintf("Err: shared %s rejected interface name\n", __func__);
++		return -1;
++	}
+ 
+-	fp = popen(cmd, "r");
++	argv[0] = "hostapd_cli";
++	argv[1] = "-p";
++	argv[2] = WLIF_HAPD_DIR;
++	argv[3] = "-i";
++	argv[4] = ifname;
++	argv[5] = "get_config";
++	argv[6] = NULL;
++
++	fd = wl_wlif_popen_argv(argv, &child);
++	if (fd < 0) {
++		dprintf("Err: shared %s failed to run hostapd_cli get_config for %s \n",
++			__func__, ifname);
++		return -1;
++	}
++
++	fp = fdopen(fd, "r");
+ 	if (fp == NULL) {
+-		dprintf("Err: shared %s failed to open cmd = [%s] \n", __func__, cmd);
++		dprintf("Err: shared %s failed to open hostapd_cli output for %s \n",
++			__func__, ifname);
++		wl_wlif_pclose_argv(fd, child);
+ 		return -1;
+ 	}
+ 
+@@ -1871,7 +1998,8 @@
+ 		}
+ 	}
+ 
+-	pclose(fp);
++	fclose(fp);
++	wl_wlif_pclose_argv(-1, child);
+ 
+ 	return 0;
+ }
+@@ -1951,10 +2079,11 @@
+ int
+ wl_wlif_wps_pbc_hdlr(char *wps_ifname, char *bh_ifname)
+ {
+-	char cmd[WLIF_MAX_BUF];
+ 	char mode[WLIF_MIN_BUF] = {0};
+ 	char nvifname[IFNAMSIZ] = {0};
+-	wlif_wps_ui_status_code_id_t status_code;
++	char *argv[8];
++	int argc = 0;
++	wlif_wps_ui_status_code_id_t status_code = WLIF_WPS_UI_FIND_PBC_AP;
+ 	int ret = -1;
+ 
+ 	if (!wps_ifname) {
+@@ -1962,6 +2091,11 @@
+ 		goto end;
+ 	}
+ 
++	if (!rust_wlif_ifname_ok(wps_ifname) || (bh_ifname && !rust_wlif_ifname_ok(bh_ifname))) {
++		cprintf("Err: shared %s rejected interface name for wps pbc\n", __func__);
++		goto end;
++	}
++
+ 	if (bh_ifname) {
+ 		cprintf("Info: shared inside %s wps ifname %s backhaul ifname %s\n",
+ 			__func__, wps_ifname, bh_ifname);
+@@ -1982,25 +2116,27 @@
+ 	}
+ 	snprintf(mode, sizeof(mode), "%s_mode", nvifname);
+ 	if (nvram_match(mode, "ap")) {
+-		snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s wps_pbc",
+-			WLIF_HAPD_DIR, wps_ifname);
++		argv[argc++] = "hostapd_cli";
++		argv[argc++] = "-p";
++		argv[argc++] = WLIF_HAPD_DIR;
++		argv[argc++] = "-i";
++		argv[argc++] = wps_ifname;
++		argv[argc++] = "wps_pbc";
++		argv[argc] = NULL;
+ 		status_code = WLIF_WPS_UI_FINDING_PBC_STA;
++
++		ret = _eval(argv, NULL, 0, NULL);
+ 	} else {
+ 		/* Before starting WPS set ap_scan parameter to 1 in supplicant */
+ 		wl_wlif_wpa_supplicant_update_ap_scan(wps_ifname, nvifname, 1);
+ 
+-#if defined(NEW_WPA_CLI)
+-		snprintf(cmd, sizeof(cmd), "%s -i %s wps_pbc", WPA_CLI_APP,  wps_ifname);
+-#else
+-		snprintf(cmd, sizeof(cmd), "%s -p /var/run/"
+-			"%s_wpa_supplicant -i %s wps_pbc", WPA_CLI_APP, nvifname, wps_ifname);
+-#endif
+ 		status_code = WLIF_WPS_UI_FIND_PBC_AP;
++		ret = wl_wlif_wpa_cli_run(WPA_CLI_APP, wps_ifname, nvifname, "wps_pbc", NULL);
+ 	}
+ 
+-	if ((ret = system(cmd)) != 0) {
+-		cprintf("Err: shared %s cli cmd %s failed for interface %s in %s mode\n", __func__,
+-			cmd, wps_ifname, nvram_safe_get(mode));
++	if (ret != 0) {
++		cprintf("Err: shared %s cli cmd failed for interface %s in %s mode\n", __func__,
++			wps_ifname, nvram_safe_get(mode));
+ 	}
+ 
+ 	wl_wlif_update_wps_ui(status_code);
+@@ -2016,9 +2152,10 @@
+ wl_wlif_wps_stop_session(char *wps_ifname)
+ #endif
+ {
+-	char cmd[WLIF_MAX_BUF] = {0};
+ 	char mode[WLIF_MIN_BUF] = {0};
+ 	char nvifname[IFNAMSIZ] = {0};
++	char *argv[8];
++	int argc = 0;
+ 	int ret = -1;
+ 
+ 	if (!wps_ifname) {
+@@ -2026,6 +2163,11 @@
+ 		goto end;
+ 	}
+ 
++	if (!rust_wlif_ifname_ok(wps_ifname)) {
++		cprintf("Err: shared %s rejected interface name for wps stop\n", __func__);
++		goto end;
++	}
++
+ 	_dprintf("%s:: stop wps_if:%s\n", __func__, wps_ifname);
+ 
+ #if defined(RPBE58)
+@@ -2042,20 +2184,22 @@
+ 
+ 	snprintf(mode, sizeof(mode), "%s_mode", nvifname);
+ 	if (nvram_match(mode, "ap")) {
+-		snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s wps_cancel",
+-			WLIF_HAPD_DIR, wps_ifname);
++		argv[argc++] = "hostapd_cli";
++		argv[argc++] = "-p";
++		argv[argc++] = WLIF_HAPD_DIR;
++		argv[argc++] = "-i";
++		argv[argc++] = wps_ifname;
++		argv[argc++] = "wps_cancel";
++		argv[argc] = NULL;
++
++		ret = _eval(argv, NULL, 0, NULL);
+ 	} else {
+-#if defined(NEW_WPA_CLI)
+-		snprintf(cmd, sizeof(cmd), "%s -i %s wps_cancel", WPA_CLI_APP, wps_ifname);
+-#else
+-		snprintf(cmd, sizeof(cmd), "%s -p /var/run/"
+-			"%s_wpa_supplicant -i %s wps_cancel", WPA_CLI_APP, nvifname, wps_ifname);
+-#endif
++		ret = wl_wlif_wpa_cli_run(WPA_CLI_APP, wps_ifname, nvifname, "wps_cancel", NULL);
+ 	}
+ 
+-	if ((ret = system(cmd)) != 0) {
+-		dprintf("Info: shared %s cli cmd %s failed for interface %s ret = %d\n", __func__,
+-			cmd, wps_ifname, ret);
++	if (ret != 0) {
++		dprintf("Info: shared %s cli cmd failed for interface %s ret = %d\n", __func__,
++			wps_ifname, ret);
+ 	}
+ #if defined(RTCONFIG_WIFI6E) || defined(RTCONFIG_HND_ROUTER_AX_6756) || defined(RTCONFIG_HND_ROUTER_BE_4916) || defined(RTCONFIG_BCM_502L07P2)
+ 	if (bUpdateUI)
+@@ -2067,11 +2211,58 @@
+ 	return ret;
+ }
+ 
++/* Runs one wpa_supplicant control command as a fixed argv, with no shell.
++ *
++ * app is the vendor program name (resolved through the same PATH _eval()
++ * exports, exactly as the previous system() line resolved it).  Every
++ * interpolated value is checked by the Rust policy first; on rejection the
++ * command is not run and -1 is returned, which is the failure value the
++ * callers already treat as "cli cmd failed".
++ */
++static int
++wl_wlif_wpa_cli_run(const char *app, char *ifname, char *nvifname,
++	const char *command, const char *arg)
++{
++	char ctrl_path[WLIF_MIN_BUF] = {0};
++	char *argv[9];
++	int argc = 0;
++
++	if (!app || !ifname || !command || !rust_wlif_cli_token_ok(app) ||
++		!rust_wlif_ifname_ok(ifname) || !rust_wlif_cli_token_ok(command) ||
++		(arg && !rust_wlif_cli_token_ok(arg))) {
++		cprintf("Err: shared %s rejected wpa_cli request\n", __func__);
++		return -1;
++	}
++
++	argv[argc++] = (char *)app;
++#if defined(NEW_WPA_CLI)
++	(void)nvifname;
++	(void)ctrl_path;
++#else
++	if (!nvifname ||
++		!rust_wlif_supplicant_ctrl_path(ctrl_path, sizeof(ctrl_path), nvifname)) {
++		cprintf("Err: shared %s rejected supplicant control path\n", __func__);
++		return -1;
++	}
++	argv[argc++] = "-p";
++	argv[argc++] = ctrl_path;
++#endif
++	argv[argc++] = "-i";
++	argv[argc++] = ifname;
++	argv[argc++] = (char *)command;
++	if (arg) {
++		argv[argc++] = (char *)arg;
++	}
++	argv[argc] = NULL;
++
++	return _eval(argv, NULL, 0, NULL);
++}
++
+ // Update the ap_scan parameter for wpa-supplicant
+ static void
+ wl_wlif_wpa_supplicant_update_ap_scan(char *ifname, char *nvifname, int val)
+ {
+-	char cmd[WLIF_MIN_BUF] = {0};
++	char val_str[12] = {0};
+ 
+ 	if (val < 0 || val > 2) {
+ 		cprintf("Err: %s invalid value %d is provided for ap scan parameter\n",
+@@ -2079,14 +2270,8 @@
+ 		return;
+ 	}
+ 
+-#if defined(NEW_WPA_CLI)
+-	snprintf(cmd, sizeof(cmd), "%s -i %s ap_scan %d",
+-		WPA_CLI_APP, ifname, val);
+-#else
+-	snprintf(cmd, sizeof(cmd), "%s -p /var/run/%s_wpa_supplicant -i %s ap_scan %d",
+-		WPA_CLI_APP, nvifname, ifname, val);
+-#endif
+-	system(cmd);
++	snprintf(val_str, sizeof(val_str), "%d", val);
++	wl_wlif_wpa_cli_run(WPA_CLI_APP, ifname, nvifname, "ap_scan", val_str);
+ }
+ 
+ #if defined(RTCONFIG_HND_ROUTER_BE_4916)
+@@ -2126,14 +2311,90 @@
+ #endif	/* RTCONFIG_HND_ROUTER_BE_4916 */
+ 
+ #if defined(WIFI7_SDK_20250506) || defined(WIFI8_SDK_20251126)
++/* Runs "wpa_cli -i <ifname> <command> [arg]" as a fixed argv, with no shell.
++ * Returns the _eval() status, or -1 when the Rust policy rejects a value.
++ */
++static int
++wl_wlif_supplicant_cmd(char *ifname, const char *command, const char *arg)
++{
++	char *argv[6];
++	int argc = 0;
++
++	if (!ifname || !command || !rust_wlif_ifname_ok(ifname) ||
++		!rust_wlif_cli_token_ok(command) || (arg && !rust_wlif_cli_token_ok(arg))) {
++		cprintf("Err: %s rejected wpa_cli request\n", __func__);
++		return -1;
++	}
++
++	argv[argc++] = "wpa_cli";
++	argv[argc++] = "-i";
++	argv[argc++] = ifname;
++	argv[argc++] = (char *)command;
++	if (arg) {
++		argv[argc++] = (char *)arg;
++	}
++	argv[argc] = NULL;
++
++	dprintf("Info: shared %d: wpa_cli %s\n", __LINE__, command);
++
++	return _eval(argv, NULL, 0, NULL);
++}
++
++/* Runs "wpa_cli -i <ifname> set_network <id> <key> <value>" as a fixed argv.
++ * value travels as exactly one argument, which is what the previous shell
++ * form produced after quote removal, and is never logged: an SSID, PSK,
++ * SAE password or DPP blob must reach neither /bin/sh nor the console.
++ * The caller has already checked it with the matching Rust predicate.
++ */
++static int
++wl_wlif_supplicant_set_network(char *ifname, const char *network_id,
++	const char *key, const char *value)
++{
++	char *argv[8];
++
++	if (!ifname || !network_id || !key || !value || !rust_wlif_ifname_ok(ifname) ||
++		!rust_wlif_cli_token_ok(network_id) || !rust_wlif_cli_token_ok(key)) {
++		cprintf("Err: %s rejected set_network request\n", __func__);
++		return -1;
++	}
++
++	argv[0] = "wpa_cli";
++	argv[1] = "-i";
++	argv[2] = ifname;
++	argv[3] = "set_network";
++	argv[4] = (char *)network_id;
++	argv[5] = (char *)key;
++	argv[6] = (char *)value;
++	argv[7] = NULL;
++
++	dprintf("Info: shared %d: set_network %s\n", __LINE__, key);
++
++	return _eval(argv, NULL, 0, NULL);
++}
++
++/* Applies one NVRAM DPP blob, which the supplicant takes unquoted. */
++static int
++wl_wlif_supplicant_set_dpp(char *ifname, const char *network_id, const char *key,
++	const char *value)
++{
++	if (!rust_wlif_dpp_value_ok(value)) {
++		cprintf("Err: %s rejected dpp value for %s\n", __func__, key);
++		return -1;
++	}
++
++	return wl_wlif_supplicant_set_network(ifname, network_id, key, value);
++}
++
+ /* Apply the credentials on the supplicant */
+ void
+ wl_wlif_apply_creds_to_supplicant(char *ifname, unsigned long int network_id,
+ 	wpa_connection_type_t connection_type)
+ {
+ 	char nv_name[WLIF_MIN_BUF], *nv_val;
+-	char cmd[2*WLIF_BUF_512] = {0}, out_buf[WLIF_MIN_BUF] = {0};
++	char out_buf[WLIF_MIN_BUF] = {0};
++	char quoted[2*WLIF_BUF_512] = {0};
+ 	char nvifname[IFNAMSIZ] = {0};
++	char nid[24] = {0};
+ 	bool is_sae = FALSE;
+ 	int link_id = WLIFU_MLO_INVALID;
+ 
+@@ -2143,114 +2404,119 @@
+ 		return;
+ 	}
+ 
++	if (!rust_wlif_ifname_ok(ifname) || !rust_wlif_network_id_ok(network_id)) {
++		cprintf("Err: %s rejected interface name or network id for %s\n",
++			__func__, ifname);
++		return;
++	}
++	snprintf(nid, sizeof(nid), "%lu", network_id);
++
+ 	if (connection_type == WPA_CONNECTION_TYPE_WPS) {
+-		snprintf(cmd, sizeof(cmd), "wpa_cli -i %s dpp_stop_chirp", ifname);
+-		dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-		system(cmd);
++		wl_wlif_supplicant_cmd(ifname, "dpp_stop_chirp", NULL);
+ 	}
+ 
++	/* The supplicant wants a quoted string value; the quotes are part of
++	 * the argument, not shell syntax.
++	 */
+ 	snprintf(nv_name, sizeof(nv_name), "%s_ssid", nvifname);
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s set_network %lu ssid \'\"%s\"\'",
+-			ifname, network_id, nvram_safe_get(nv_name));
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	nv_val = nvram_safe_get(nv_name);
++	if (!rust_wlif_ssid_ok(nv_val) ||
++		(size_t)snprintf(quoted, sizeof(quoted), "\"%s\"", nv_val) >= sizeof(quoted)) {
++		cprintf("Err: %s rejected ssid for %s\n", __func__, ifname);
++		return;
++	}
++	wl_wlif_supplicant_set_network(ifname, nid, "ssid", quoted);
+ 
+ 	wpa_supp_key_mgmt_conv_fn(nvifname, "akm", NULL, out_buf, sizeof(out_buf));
+ 	if (find_in_list(out_buf, HAPD_KEY_MGMT_SAE)) {
+ 		is_sae = TRUE;
+ 	}
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s set_network %lu key_mgmt %s",
+-		ifname, network_id, out_buf);
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	if (!rust_wlif_cli_word_list_ok(out_buf)) {
++		cprintf("Err: %s rejected key_mgmt for %s\n", __func__, ifname);
++		return;
++	}
++	wl_wlif_supplicant_set_network(ifname, nid, "key_mgmt", out_buf);
+ 
+ 	snprintf(nv_name, sizeof(nv_name), "%s_wpa_psk", nvifname);
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s set_network %lu psk \'\"%s\"\'",
+-		ifname, network_id, nvram_safe_get(nv_name));
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	nv_val = nvram_safe_get(nv_name);
++	if (!rust_wlif_passphrase_ok(nv_val) ||
++		(size_t)snprintf(quoted, sizeof(quoted), "\"%s\"", nv_val) >= sizeof(quoted)) {
++		memset(quoted, 0, sizeof(quoted));
++		cprintf("Err: %s rejected psk for %s\n", __func__, ifname);
++		return;
++	}
++	wl_wlif_supplicant_set_network(ifname, nid, "psk", quoted);
+ 
+ 	/* If the AKM has SAE, update the sae_password field also */
+ 	if (is_sae) {
+-		snprintf(nv_name, sizeof(nv_name), "%s_wpa_psk", nvifname);
+-		snprintf(cmd, sizeof(cmd),
+-			"wpa_cli -i %s set_network %lu sae_password \'\"%s\"\'",
+-			ifname, network_id, nvram_safe_get(nv_name));
+-		dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-		system(cmd);
++		wl_wlif_supplicant_set_network(ifname, nid, "sae_password", quoted);
+ 	}
++	memset(quoted, 0, sizeof(quoted));
+ 
+ 	wpa_supp_key_mgmt_conv_fn(nvifname, "crypto", NULL, out_buf, sizeof(out_buf));
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s set_network %lu pairwise %s",
+-		ifname, network_id, out_buf);
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	if (!rust_wlif_cli_word_list_ok(out_buf)) {
++		cprintf("Err: %s rejected pairwise cipher for %s\n", __func__, ifname);
++		return;
++	}
++	wl_wlif_supplicant_set_network(ifname, nid, "pairwise", out_buf);
+ 
+ 	wpa_supp_key_mgmt_conv_fn(nvifname, "proto", NULL, out_buf, sizeof(out_buf));
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s set_network %lu proto %s",
+-		ifname, network_id, out_buf);
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	if (!rust_wlif_cli_word_list_ok(out_buf)) {
++		cprintf("Err: %s rejected proto for %s\n", __func__, ifname);
++		return;
++	}
++	wl_wlif_supplicant_set_network(ifname, nid, "proto", out_buf);
+ 
+ 	hapd_mfp_conv_fn(nvifname, "mfp", NULL, out_buf, sizeof(out_buf));
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s set_network %lu ieee80211w %s",
+-		ifname, network_id, out_buf);
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	if (!rust_wlif_cli_word_list_ok(out_buf)) {
++		cprintf("Err: %s rejected ieee80211w for %s\n", __func__, ifname);
++		return;
++	}
++	wl_wlif_supplicant_set_network(ifname, nid, "ieee80211w", out_buf);
+ 
+ 	/* DPP related settings */
+ 	if (connection_type == WPA_CONNECTION_TYPE_DPP) {
+ 		snprintf(nv_name, sizeof(nv_name), "%s_dpp_connector", nvifname);
+ 		nv_val = nvram_safe_get(nv_name);
+ 		if (nv_val[0] != '\0') {
+-			snprintf(cmd, sizeof(cmd),
+-				"wpa_cli -i %s set_network %lu dpp_connector \'\"%s\"\'",
+-				ifname, network_id, nv_val);
+-			dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-			system(cmd);
++			if (!rust_wlif_dpp_value_ok(nv_val) ||
++				(size_t)snprintf(quoted, sizeof(quoted), "\"%s\"", nv_val) >=
++				sizeof(quoted)) {
++				cprintf("Err: %s rejected dpp connector for %s\n",
++					__func__, ifname);
++				return;
++			}
++			wl_wlif_supplicant_set_network(ifname, nid, "dpp_connector", quoted);
++			memset(quoted, 0, sizeof(quoted));
+ 		}
+ 
+ 		snprintf(nv_name, sizeof(nv_name), "%s_dpp_csign", nvifname);
+ 		nv_val = nvram_safe_get(nv_name);
+-		if (nv_val[0] != '\0') {
+-			snprintf(cmd, sizeof(cmd),
+-				"wpa_cli -i %s set_network %lu dpp_csign %s",
+-				ifname, network_id, nv_val);
+-			dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-			system(cmd);
++		if (nv_val[0] != '\0' &&
++			wl_wlif_supplicant_set_dpp(ifname, nid, "dpp_csign", nv_val) < 0) {
++			return;
+ 		}
+ 
+ 		snprintf(nv_name, sizeof(nv_name), "%s_dpp_netaccess_key", nvifname);
+ 		nv_val = nvram_safe_get(nv_name);
+-		if (nv_val[0] != '\0') {
+-			snprintf(cmd, sizeof(cmd),
+-				"wpa_cli -i %s set_network %lu dpp_netaccesskey %s",
+-				ifname, network_id, nv_val);
+-			dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-			system(cmd);
++		if (nv_val[0] != '\0' &&
++			wl_wlif_supplicant_set_dpp(ifname, nid, "dpp_netaccesskey", nv_val) < 0) {
++			return;
+ 		}
+ 
+ 		snprintf(nv_name, sizeof(nv_name), "%s_dpp_pp_key", nvifname);
+ 		nv_val = nvram_safe_get(nv_name);
+-		if (nv_val[0] != '\0') {
+-			snprintf(cmd, sizeof(cmd),
+-				"wpa_cli -i %s set_network %lu dpp_pp_key %s",
+-				ifname, network_id, nv_val);
+-			dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-			system(cmd);
++		if (nv_val[0] != '\0' &&
++			wl_wlif_supplicant_set_dpp(ifname, nid, "dpp_pp_key", nv_val) < 0) {
++			return;
+ 		}
+ 	}
+ 
+ 	/* save the config */
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s save_config", ifname);
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	wl_wlif_supplicant_cmd(ifname, "save_config", NULL);
+ 
+ 	/* enable network */
+-	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s enable_network %lu",
+-		ifname, network_id);
+-	dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-	system(cmd);
++	wl_wlif_supplicant_cmd(ifname, "enable_network", nid);
+ 
+ 	/* For WPS case, we should set ap_scan to 1 and issue reconnect because during scan we
+ 	 * called disconnect. Without calling reconnect it will not try to connect.
+@@ -2261,21 +2527,15 @@
+ 	if (connection_type == WPA_CONNECTION_TYPE_WPS &&
+ 			(link_id == WLIFU_MLO_INVALID || link_id == WLIFU_MLO_MAP_LINKID)) {
+ 		/* set ap_scan to 1 */
+-		snprintf(cmd, sizeof(cmd), "wpa_cli -i %s ap_scan 1", ifname);
+-		dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-		system(cmd);
++		wl_wlif_supplicant_cmd(ifname, "ap_scan", "1");
+ 
+ 		/* reconnect */
+-		snprintf(cmd, sizeof(cmd), "wpa_cli -i %s reconnect", ifname);
+-		dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-		system(cmd);
++		wl_wlif_supplicant_cmd(ifname, "reconnect", NULL);
+ 	}
+ 
+ 	/* Once network block created, trigger scan command for connection */
+ 	if ((link_id == WLIFU_MLO_INVALID) || (link_id == WLIFU_MLO_MAP_LINKID)) {
+-		snprintf(cmd, sizeof(cmd), "wpa_cli -i %s scan", ifname);
+-		dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
+-		system(cmd);
++		wl_wlif_supplicant_cmd(ifname, "scan", NULL);
+ 	}
+ }
+ 
+@@ -3840,7 +4100,8 @@
+ 	}
+ 
+ 	cprintf("Info: shared inside %s bh_ssid[%s] bh_auth[%s] bh_encr[%s] bh_psk[%s]\n",
+-		__func__, cmd->ssid, cmd->auth, cmd->encr, cmd->key);
++		__func__, cmd->ssid, cmd->auth, cmd->encr,
++		cmd->key[0] != '\0' ? "<redacted>" : "");
+ 	return 0;
+ }
+ 
+@@ -3852,10 +4113,16 @@
+ {
+ 	wlif_bh_creds_hapd_clicmd_data_t clidata;
+ 	char nvifname[IFNAMSIZ] = {0};
+-	char cmd[WLIF_MIN_BUF * 2] = {0};
++	char *argv[11];
++	int argc = 0;
+ 
+ 	cprintf("Info: shared inside %s wps_ifname %s bh_ifname %s\n",
+ 		__func__, wps_ifname, bh_ifname);
++	if (!wps_ifname || !rust_wlif_ifname_ok(wps_ifname)) {
++		cprintf("Info: shared %s rejected interface name\n", __func__);
++		return;
++	}
++
+ 	if (osifname_to_nvifname(bh_ifname, nvifname, sizeof(nvifname))) {
+ 		cprintf("Info: shared %s osifname_to_nvifname failed for %s\n",
+ 			__func__, bh_ifname);
+@@ -3864,19 +4131,36 @@
+ 
+ 	memset(&clidata, 0, sizeof(clidata));
+ 	if (wl_wlif_fill_bh_creds_from_nvram(nvifname, &clidata) == 0) {
++		/* The SSID and the PSK stay opaque byte strings: they are checked
++		 * for length, NUL and control characters only, and are handed to
++		 * hostapd_cli as single argv elements.  No shell sees them.
++		 */
++		if (!rust_wlif_ssid_ok(clidata.ssid) ||
++			!rust_wlif_cli_token_ok(clidata.auth) ||
++			!rust_wlif_cli_token_ok(clidata.encr) ||
++			(clidata.key[0] != '\0' && !rust_wlif_passphrase_ok(clidata.key))) {
++			cprintf("Info: shared %s rejected backhaul credentials for %s\n",
++				__func__, wps_ifname);
++			return;
++		}
++
++		argv[argc++] = "hostapd_cli";
++		argv[argc++] = "-p";
++		argv[argc++] = WLIF_HAPD_DIR;
++		argv[argc++] = "-i";
++		argv[argc++] = wps_ifname;
++		argv[argc++] = "wps_mapbh_config";
++		argv[argc++] = clidata.ssid;
++		argv[argc++] = clidata.auth;
++		argv[argc++] = clidata.encr;
+ 		if (clidata.key[0] != '\0') {
+-			snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s wps_mapbh_config "
+-				"%s %s %s %s", WLIF_HAPD_DIR, wps_ifname, clidata.ssid,
+-				clidata.auth, clidata.encr, clidata.key);
+-		} else {
+-			snprintf(cmd, sizeof(cmd), "hostapd_cli -p %s -i %s wps_mapbh_config "
+-				"%s %s %s", WLIF_HAPD_DIR, wps_ifname, clidata.ssid,
+-				clidata.auth, clidata.encr);
++			argv[argc++] = clidata.key;
+ 		}
++		argv[argc] = NULL;
+ 
+-		if (system(cmd)) {
+-			cprintf("Info: shared %s cli cmd %s failed for interface %s\n", __func__,
+-				cmd, wps_ifname);
++		if (_eval(argv, NULL, 0, NULL)) {
++			cprintf("Info: shared %s cli cmd failed for interface %s\n", __func__,
++				wps_ifname);
+ 		}
+ 	}
+ }
+@@ -4044,29 +4328,16 @@
+ 		wl_ioctl(bss->ifname, WLC_GET_BAND, &val, sizeof(val));
+ 
+ 		while (count++ < WLIF_SCAN_TRY_COUNT) {
+-			char cmd[WLIF_MIN_BUF] = {0};
+ 			/*
+ 			 * Before doing wl scan set ap_scan parameter to 0 in supplicant. So that
+ 			 * supplicant avoids performing join-scan.Additionally call abort_scan and
+ 			 * disconnect to cancel any ongoing join-scan.
+ 			 */
+ 			wl_wlif_wpa_supplicant_update_ap_scan(bss->ifname, bss->nvifname, 0);
+-#if defined(NEW_WPA_CLI)
+-			snprintf(cmd, sizeof(cmd), "wpa_cli -i %s "
+-				"abort_scan", bss->ifname);
+-#else
+-			snprintf(cmd, sizeof(cmd), "wpa_cli -p /var/run/%s_wpa_supplicant -i %s "
+-				"abort_scan", bss->nvifname, bss->ifname);
+-#endif
+-			system(cmd);
+-#if defined(NEW_WPA_CLI)
+-			snprintf(cmd, sizeof(cmd), "wpa_cli -i %s "
+-				"disconnect", bss->ifname);
+-#else
+-			snprintf(cmd, sizeof(cmd), "wpa_cli -p /var/run/%s_wpa_supplicant -i %s "
+-				"disconnect", bss->nvifname, bss->ifname);
+-#endif
+-			system(cmd);
++			wl_wlif_wpa_cli_run("wpa_cli", bss->ifname, bss->nvifname,
++				"abort_scan", NULL);
++			wl_wlif_wpa_cli_run("wpa_cli", bss->ifname, bss->nvifname,
++				"disconnect", NULL);
+ 
+ 			if (wl_wlif_scan(bss->ifname, bh_ssid)) {
+ 				sleep(4);
+@@ -5298,7 +5569,11 @@
+ #ifdef RTCONFIG_BRCM_HOSTAPD
+ int get_wpacli_status(int unit)
+ {
+-	char cmd[128], buf[32];
++	char buf[32], line[128];
++	char ctrl_dir[WLIF_MIN_BUF] = {0};
++	char *argv[8];
++	int argc = 0, fd;
++	pid_t child = -1;
+ 	FILE *pfp = NULL;
+ 	char tmp[16], prefix[] = "wlXXXXXXXXXX_";
+ 	char ifname[IFNAMSIZ] = { 0 };
+@@ -5317,25 +5592,53 @@
+ 	if ((wl_ioctl(ifname, WLC_GET_BSSID, &bssid, ETHER_ADDR_LEN) != 0) || !memcmp(&bssid, bssid_null, 6))
+ 		goto exit;
+ 
++	if (!rust_wlif_ifname_ok(ifname))
++		goto exit;
++
++	argv[argc++] = "wpa_cli-2.7";
++	argv[argc++] = "-i";
++	argv[argc++] = ifname;
+ #if defined(NEW_WPA_CLI)
+-	snprintf(cmd, sizeof(cmd), "wpa_cli-2.7 -i %s status | grep wpa_state | cut -d\"=\" -f2", ifname);
++	(void)ctrl_dir;
+ #else
+-	snprintf(cmd, sizeof(cmd), "wpa_cli-2.7 -i %s -p /var/run/%swpa_supplicant/ status | grep wpa_state | cut -d\"=\" -f2", ifname, prefix);
++	if (!rust_wlif_supplicant_ctrl_dir(ctrl_dir, sizeof(ctrl_dir), prefix))
++		goto exit;
++	argv[argc++] = "-p";
++	argv[argc++] = ctrl_dir;
+ #endif
++	argv[argc++] = "status";
++	argv[argc] = NULL;
++
+ 	memset(buf, 0, sizeof(buf));
+ 
+-	pfp = popen(cmd, "r");
+-	if (pfp != NULL) {
+-		if (fgets(buf, sizeof(buf), pfp) != NULL) {
+-			buf[strlen(buf) - 1] = '\0';
+-			if (!strcmp(buf, "COMPLETED"))
+-				ret = 2;
+-			else if (!strcmp(buf, "4WAY_HANDSHAKE"))
+-			ret = 1;
+-		}
++	/* The "| grep wpa_state | cut -d= -f2" pipeline is done in process: the
++	 * shell only existed to slice one field out of a known key=value dump.
++	 */
++	fd = wl_wlif_popen_argv(argv, &child);
++	if (fd < 0)
++		goto exit;
+ 
+-		pclose(pfp);
++	pfp = fdopen(fd, "r");
++	if (pfp == NULL) {
++		wl_wlif_pclose_argv(fd, child);
++		goto exit;
+ 	}
++
++	while (fgets(line, sizeof(line), pfp) != NULL) {
++		line[strcspn(line, "\r\n")] = '\0';
++		if (strncmp(line, "wpa_state=", strlen("wpa_state=")))
++			continue;
++
++		strlcpy(buf, line + strlen("wpa_state="), sizeof(buf));
++		if (!strcmp(buf, "COMPLETED"))
++			ret = 2;
++		else if (!strcmp(buf, "4WAY_HANDSHAKE"))
++			ret = 1;
++		break;
++	}
++
++	fclose(pfp);
++	wl_wlif_pclose_argv(-1, child);
+ exit:
+ 	return ret;
+ }

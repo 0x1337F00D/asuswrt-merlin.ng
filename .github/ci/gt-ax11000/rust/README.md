@@ -91,6 +91,37 @@ re-exported by `httpd-parsers`, so `httpd` still links one Rust archive.
 `serde_derive`/`syn` tree is a `cfg(any())` placeholder of `serde_core` that
 is never compiled).
 
+The tenth component is `wlif-policy`, the only Rust archive linked into
+`libshared.so`. The vendor `shared/wlif_utils_ax.c` is compiled into that
+library for this profile (`shared/Makefile` adds `wlif_utils_ax.o` when
+`RTCONFIG_HND_ROUTER_AX=y`, and the HND-94908 GT-AX11000 sets it) and used to
+build 25 `system()`/`popen()` command strings from interface names, SSIDs,
+PSKs, WPS PINs and DPP blobs. The overlay rewrites every one of them to a
+fixed `argv[]` run through the vendor `_eval()`, or through a local
+pipe-capturing `execvp` for the two that read output, and routes each
+interpolated value through this crate first. Identifiers (interface names,
+control-interface prefixes, CLI verbs, DPP blobs, PINs) get a strict ASCII
+charset, may not start with `-` and may not contain `/` or a shell
+metacharacter; SSIDs and passphrases stay opaque byte strings that are only
+bounded and checked for NUL, control characters and encoding, and are never
+placed on a command line at all. Control-socket paths are built by the crate,
+not by the caller. Everything fails closed with the error value the vendor
+function already returned.
+
+`wlif-policy` deliberately does not reuse `router-policy`/`router-security`:
+`librouter_security.a` is already linked into `rc`, its code is one LTO
+object, and pulling it into `libshared.so` would duplicate every `rust_*`
+symbol and add unrelated filesystem code to a library that roughly sixty
+packages and seventeen prebuilt vendor blobs load. The crate also references
+nothing from the Rust standard library except `strlen` - the UTF-8 validator
+is written out rather than calling `core::str::from_utf8`, because `core`
+ships as a single object and one call pulls the whole panic/backtrace runtime
+in. Measured with the Broadcom `arm-buildroot-linux-gnueabi` linker, a shared
+object built from the archive is 9,664 bytes stripped (6,129 bytes of text)
+against 1,130,592 bytes for the same code calling `core::str::from_utf8`, and
+it needs no shared library beyond `libc` and `libgcc_s`. `libshared.a` keeps
+the plain object list: nothing in the tree links it.
+
 `infosvr` security boundary:
 
 - the packet parser requires an exact 512-byte PDU and accepts only the four
@@ -129,6 +160,14 @@ also reject symlinks, non-ASCII or oversized input and require INPUT/FORWARD to
 end in unconditional DROP rules before forwarding is enabled. It never invokes
 a shell.
 
+`wlif-policy` forbids allocation and I/O, keeps no caller pointer and returns
+`1`/`0` across its C ABI. Its unit tests cover every accepted vendor shape,
+the exact length limits, option-like and path-like names, NUL, newline and
+every other control byte, shell metacharacters, non-UTF-8 SSIDs, non-hex
+64-character PSKs, short output buffers and null pointers; the UTF-8
+validator is checked against `core::str::from_utf8` over every one- and
+two-byte sequence and a boundary set of three- and four-byte ones.
+
 `nt-event` rejects empty, signed, overflowing and partially parsed event IDs.
 The ARM-only FFI is limited to the documented `initial_nt_event`,
 `send_trigger_event` and `nt_event_free` functions, with a null check before
@@ -144,9 +183,10 @@ bash ../tests/security-overlay-check.sh /path/to/patched/source
 
 The structured fuzz runner covers the HTTP query/URL and multipart
 boundaries, NVRAM-facing WLAN/test-lab policy, OpenVPN/IPsec/WireGuard
-parsers, infosvr PDUs, rstats codecs, the wanduck transition machine and the
-client-list parsers (synthetic legacy/public shared-memory segments with
-random counts and unterminated fields, the NVRAM list/schedule parsers, the
+parsers, the wireless-interface identifier/credential policy, infosvr PDUs,
+rstats codecs, the wanduck transition machine and the client-list parsers
+(synthetic legacy/public shared-memory segments with random counts and
+unterminated fields, the NVRAM list/schedule parsers, the
 AiMesh details file, the cache check and the persistent-database transform).
 It is deterministic and keeps Cargo state and artifacts in tmpfs:
 
@@ -161,9 +201,9 @@ pair-count, encoded-NUL, codec-record, protocol-opcode and client-count/
 segment-size boundary cases.
 
 The C ABI smoke suite compiles strict C11 fixtures against the release Rust
-archives and executes the same entry points used by `httpd`, `rc` and
-`wanduck`; `tests/c-abi/clientlist.c` creates a real SysV segment with a
-private key, fills the legacy GT-AX11000 layout and checks the rendered
+archives and executes the same entry points used by `httpd`, `rc`, `wanduck`
+and `libshared`; `tests/c-abi/clientlist.c` creates a real SysV segment with
+a private key, fills the legacy GT-AX11000 layout and checks the rendered
 document, the cache and database views and the NULL/small-buffer/wrong-size/
 missing-segment failure codes. This catches layout, symbol, ownership and
 non-mutation regressions without claiming to replace full firmware-consumer
