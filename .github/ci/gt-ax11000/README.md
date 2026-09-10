@@ -113,9 +113,9 @@ Rust source. A hit selects `rust-fast`: the current Rust tree is synchronized,
 the six Rust-built binaries are relinked (`/usr/sbin/ntp` comes out of
 `rc-install` alongside `sbin/rc`), the closed `networkmap`, its Rust
 `libbwdpi.so` provider and the `wget` that links the static zlib-rs archive
-are carried from the cached tree unchanged, the zlib-rs `libz.so.1` is
-reinstalled, all ten manifested consumers are checksum-bound into the rootfs,
-and the image is repacked and verified.
+are reinstalled from their package targets, the zlib-rs `libz.so.1` is
+relinked, all ten manifested consumers are checksum-bound into the rootfs, and
+the image is repacked and verified.
 Patch, profile, toolchain, runner-image or upstream changes miss the cache and
 take the normal clean path. The weekly scheduled build and a manual
 `force_clean` dispatch never restore generated vendor state. A lookup-only
@@ -127,7 +127,7 @@ The cached `httpd` path is intentionally a relink, not a recursive package
 install. It requires every C object from the completed clean build, records
 their hashes, links only those objects against the current Rust archive and
 fails if any object changes. When the Rust state itself is unchanged, CI also
-requires all nine stripped firmware consumers to remain byte-identical across
+requires all ten stripped firmware consumers to remain byte-identical across
 the fast cycle. This gate caught an earlier generic `httpd-install` shortcut
 that silently rebuilt C objects outside the full router target context; that
 result is excluded from performance claims.
@@ -145,10 +145,10 @@ Before and after every fast build, normalized, diffable manifests cover the
 entire final rootfs—contents, paths, types, modes, symlinks and hardlink
 groups—with only the validated generated `rom/etc/image_version` excluded.
 Rust changes may
-additionally exclude exactly the six relinked consumers and the reinstalled
-`usr/lib/libz.so.1`, all already covered by freshness, manifest, ISA and QEMU
-gates; `networkmap`, `libbwdpi.so` and `wget` are not rebuilt on the cached
-path and stay inside the gate.
+additionally exclude all ten manifested consumers, which are already covered
+by the freshness, manifest, ISA and QEMU gates. `rust-components-relink`
+reinstalls every one of them, including `networkmap`, its `libbwdpi.so`
+provider and `wget`, so none of them can be a stale copy carried forward.
 
 The cache contains the expensive compiled vendor prerequisite tree. The common
 `rust-repack.mk` finalizer is deliberately consumed live rather than treated as
@@ -179,20 +179,18 @@ consumers, reruns rootfs assembly and repacks the existing kernel. It refuses
 an upstream, patch, profile or preparation-state mismatch. Cargo is still
 invoked for every firmware consumer; its fingerprints decide what is reused.
 The build then requires fresh installs of `infosvr`, `rstats`,
-`Notify_Event2NC`, `httpd`, `rc` and `ntp` (a clean or fast build also of the
-closed `networkmap`, its Rust `libbwdpi.so` provider and the `wget` linked
-against the static zlib-rs archive; `rust-fast` carries those three from the
-cached tree and only hash-verifies them) plus a reinstalled zlib-rs
-`usr/lib/libz.so.1`, creates checksums for all ten, produces exactly one fresh
-firmware image and runs the ARM ISA/QEMU verifier. A change confined to the
-`bwdpi-compat` or `zlib-static` crate therefore needs
-`networkmap-rust-compat-rebuild`, a `wget` package rebuild or a full build, not
-`rust-fast`. A change confined to `zlib-shared` does not: nothing is relinked
-against the shared library, so `rust-fast` re-runs `zlib-install` and the new
-object is what every consumer loads.
+`Notify_Event2NC`, `httpd`, `rc`, `ntp`, the closed `networkmap` with its Rust
+`libbwdpi.so` provider, the `wget` linked against the static zlib-rs archive
+and the zlib-rs `usr/lib/libz.so.1`, creates checksums for all ten, produces
+exactly one fresh firmware image and runs the ARM ISA/QEMU verifier. Every
+manifested consumer is reinstalled on the `rust-fast` path, so none of them can
+be a stale copy: `rust-components-relink` runs `networkmap-install`, the `wget`
+package target and `zlib-install` alongside the five Rust binaries, and
+`build.sh` fails the build if any of the ten is older than the build-start
+marker.
 The prerequisite full-build contract also binds the generated SDK/router/kernel
 configuration, toolchain identity, pinned Rust compiler, ARM target and CPU
-flags. The repack compares the exact SHA-256 values of all nine post-strip
+flags. The repack compares the exact SHA-256 values of all ten post-strip
 package artifacts with the completed rootfs, so a copied stale binary fails the
 cycle even if its timestamp is new.
 
@@ -213,7 +211,7 @@ platform exports, rebuilds only `httpd` and the complete AUTODICT Web payload,
 and then uses the same idempotent firmware repack. Compressed ASP pages and all
 language dictionaries are one inseparable generated set: the repack refuses a
 missing nested staging tree and atomically replaces the old flat `/www` tree
-with the complete new set. It also promotes only the nine known consumer
+with the complete new set. It also promotes only the ten known consumer
 artifacts and removes their package staging roots, preventing `/httpd`, `/rc`,
 `/zlib` or `/www/www` duplicates.
 

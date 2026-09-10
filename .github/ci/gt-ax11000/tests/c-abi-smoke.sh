@@ -78,6 +78,10 @@ for node in ZLIB_1.2.0 ZLIB_1.2.0.2 ZLIB_1.2.0.8 ZLIB_1.2.2 ZLIB_1.2.2.3 \
 		exit 1
 	}
 done
+# -lz resolves the development name, which the rootfs gets from the vendor
+# zlib package.  Without it the link silently falls through to the host zlib
+# and this fixture would assert nothing at link time.
+ln -sf libz.so.1 "$FIXTURE_DIR/libz.so"
 cc "${common[@]}" -I"$SCRIPT_ROOT/c-abi/include" \
 	"$SCRIPT_ROOT/c-abi/zlib-shared.c" -L"$FIXTURE_DIR" -lz \
 	-o "$FIXTURE_DIR/zlib-shared"

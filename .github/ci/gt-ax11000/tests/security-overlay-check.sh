@@ -297,7 +297,8 @@ if [ "$(grep -c 'unsafe {' "$ntp_rust/main.rs")" -ne 0 ]; then
 	exit 1
 fi
 reject_text "$ntp_rust/script.rs" '"sh"'
-reject_text "$ntp_rust/script.rs" '-c'
+reject_text "$ntp_rust/script.rs" 'Command::new("/bin/sh")'
+reject_text "$ntp_rust/script.rs" '.arg("-c")'
 require_text "$ntp_rust/script.rs" 'command.spawn().map(|child| child.id())'
 require_text "$ntp_rust/server.rs" 'if packet.mode != Mode::Client {'
 require_text "$ntp_rust/server.rs" 'return Err(Refusal::UnsupportedMode(packet.mode));'

@@ -30,12 +30,18 @@ artifacts=(
 	"usr/sbin/wget"
 )
 
+# Installed 0755 by networkmap-install, so it reaches the same ISA checks, but
+# it is a library: no interpreter, and it is loaded by the closed networkmap.
+shared_objects=(
+	"usr/lib/libbwdpi.so"
+)
+
 elf_magic=$(printf '\177ELF')
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/gtax-rust-verify.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 
-for relative in "${artifacts[@]}"; do
+for relative in "${artifacts[@]}" "${shared_objects[@]}"; do
 	binary="$rootfs/$relative"
 	if [ ! -x "$binary" ]; then
 		echo "missing executable: $relative" >&2
@@ -58,7 +64,14 @@ for relative in "${artifacts[@]}"; do
 		echo "hard-float ABI is forbidden: $relative" >&2
 		exit 1
 	fi
-	grep -q '/lib/ld-linux.so.3' "$temporary/program-headers"
+	# Shared objects carry no PT_INTERP.  The ELF type cannot decide this:
+	# binutils 2.28 labels a position-independent executable and a shared
+	# library identically as DYN, so the interpreter is required for
+	# everything that is not on the shared-object list.
+	case " ${shared_objects[*]} " in
+	*" $relative "*) ;;
+	*) grep -q '/lib/ld-linux.so.3' "$temporary/program-headers" ;;
+	esac
 
 	while IFS= read -r library; do
 		if ! find "$rootfs/lib" "$rootfs/usr/lib" \( -type f -o -type l \) \
@@ -238,4 +251,4 @@ grep -q 'no -p PEER was given' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
 
-echo "verified ${#artifacts[@]} ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 6 QEMU runtime paths"
+echo "verified $((${#artifacts[@]} + ${#shared_objects[@]})) ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 6 QEMU runtime paths"

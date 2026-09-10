@@ -591,13 +591,12 @@ jobs:
           fi
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
-            # rust-fast reinstalls only the Rust consumers listed here
-            # (rust-repack.mk rust-components-relink); /usr/sbin/ntp comes
-            # from rc-install alongside sbin/rc, and libz.so.1 is reinstalled
-            # although nothing is relinked against it: every consumer binds it
-            # by SONAME at run time. networkmap and libbwdpi.so are carried
-            # from the cached tree, so they stay inside the equivalence gate
-            # and must not change even when the Rust state differs.
+            # rust-components-relink reinstalls every manifested consumer,
+            # so all ten may legitimately differ when the Rust state does:
+            # /usr/sbin/ntp comes from rc-install alongside sbin/rc,
+            # networkmap and its libbwdpi.so provider from networkmap-install,
+            # wget from its package target, and libz.so.1 from zlib-install.
+            # build.sh separately fails the build if any of them is stale.
             rootfs_excludes+=(
               usr/sbin/infosvr
               bin/rstats
@@ -705,8 +704,8 @@ jobs:
           rootfs_excludes=(rom/etc/image_version)
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
             # Keep this list identical to the snapshot step: only the
-            # reinstalled consumers may differ; networkmap and libbwdpi.so are
-            # not rebuilt on the cached path.
+            # reinstalled consumers may differ, and rust-components-relink
+            # reinstalls all ten of them.
             rootfs_excludes+=(
               usr/sbin/infosvr
               bin/rstats

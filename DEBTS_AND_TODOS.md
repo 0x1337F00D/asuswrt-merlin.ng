@@ -333,9 +333,12 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `wl_wlif_wps_stop_session` re-encode the `_eval()` exit code as the wait
   status `system()` used to return, because their only caller is the prebuilt
   `wps_pbcd` object and a caller extracting `WEXITSTATUS()` would otherwise
-  read a failure as a success. No exported symbol name,
-  signature or return value changed, so the seventeen prebuilt vendor blobs
-  that load `libshared.so` by unversioned SONAME are unaffected.
+  read a failure as a success. A child killed by a signal is reported as an
+  ordinary exit of that number rather than as a signal, which `_eval` could
+  not express either; both encodings agree on success and failure. No
+  exported symbol name, signature or return value changed, so the seventeen
+  prebuilt vendor blobs that load `libshared.so` by unversioned SONAME are
+  unaffected.
   - Audit SEC-6a (2026-09-07, source scan at `6be5bc84b50`, no build or
     hardware run): `shared/wlif_utils_ax.c` has 25 `system`/`popen` sites with
     non-literal command strings. 17 sit in `wl_wlif_apply_creds_to_supplicant`,
@@ -408,9 +411,11 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   profile builds `UTF8_SSID=y`) and a passphrase must be 8..63 printable
   ASCII or exactly 64 hex digits. A legacy non-UTF-8 SSID or an out-of-spec
   passphrase now fails the operation closed instead of reaching a shell.
-- [ ] The `rust-fast` build mode relinks only `httpd`, `rc` and
-  `networkmap`. A change to `wlif-policy` therefore needs a full build to
-  reach `libshared.so`; `rust-repack.mk` has no `shared` relink target.
+- [ ] Reach `libshared.so` from `rust-fast`. `rust-components-relink` runs
+  `www-install`, `infosvr-install`, `rstats-install`, `nt_center-install`,
+  `httpd-rust-install`, `rc-install`, `networkmap-install`, the `wget` package
+  target and `zlib-install`, but has no `shared` target, so a change to
+  `wlif-policy` needs a full build.
 - [ ] Re-audit every remaining `system`, `popen`, shell-script generation, and
   NVRAM-to-command path. Prefer fixed argv execution and typed Rust parsers.
   - Audit SEC-6a inventory (2026-09-07, `rc`, `shared`, `httpd`, `libdisk`,
@@ -572,7 +577,7 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `zlib.h`/`zconf.h`, the link-time `libz.so` and `libz.a`; only the object
   in the image changes. Nothing is relinked: consumers bind the library by
   SONAME, so `rust-repack.mk` re-runs `zlib-install` on the rust-fast path
-  and `usr/lib/libz.so.1` is the ninth manifested consumer.
+  and `usr/lib/libz.so.1` is the tenth manifested consumer.
   The earlier entry here was wrong on three counts. `deflate_copyright`,
   `inflate_copyright`, `inflate_fast`, `inflate_table`, `z_errmsg`, `zcalloc`,
   `zcfree`, `gz_error` and `gz_intmax` are in the `local:` section of
@@ -612,7 +617,9 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   `compressBound()` returns a larger, still conservative bound than stock
   zlib (about `9n/8`); no consumer in the tree calls `compressBound`. The
   full patch series replays on `6be5bc84b50` and re-locks to
-  `975c696ce73cecaa32c79b81afa213fc862b85ccf4141d8ba1595d70ec953c24`.
+  `975c696ce73cecaa32c79b81afa213fc862b85ccf4141d8ba1595d70ec953c24` on its
+  own branch; the merged 29-patch series re-locks to
+  `20918ec02342f4780cf220e32218608de8d9e2804114cf03309a7ab0d22fb61d`.
 - [ ] Prove the zlib-rs `libz.so.1` on a hosted build and on hardware. The
   firmware verifier now checks the installed object's SONAME, all fourteen
   `ZLIB_*` nodes, ARMv7 soft-float, the `1.3.0-zlib-rs-` marker, that no
@@ -698,8 +705,10 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   parsers at three fixed seeds, `cargo fmt`, Clippy with warnings denied, the
   armv7 workspace check, an armv7 release binary inspected with the Broadcom
   `readelf`/`objdump` (ARMv7, soft-float, `/lib/ld-linux.so.3`, no `Tag_ABI_
-  VFP_args`, no CP15 barriers), a full 27-patch replay re-locked to
-  `10979875de18d601e05a07767f0681ecdbb1f8f433491c7f9e89152025a3f754` and the
+  VFP_args`, no CP15 barriers), a full replay re-locked on its own branch to
+  `10979875de18d601e05a07767f0681ecdbb1f8f433491c7f9e89152025a3f754` (the
+  merged 29-patch series locks to
+  `20918ec02342f4780cf220e32218608de8d9e2804114cf03309a7ab0d22fb61d`) and the
   three overlay checks. The host binary was also run for real in an
   unprivileged network namespace: against a scripted stratum-2 server on
   loopback it queried, matched the nonce, accepted the reply and reported
