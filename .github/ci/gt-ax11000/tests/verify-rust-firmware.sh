@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ulimit -c 0
 
 if [ "$#" -ne 3 ]; then
 	echo "usage: $0 ROOTFS TOOLCHAIN_BIN QEMU_ARM" >&2
@@ -28,6 +29,8 @@ artifacts=(
 	"sbin/rc"
 	"usr/sbin/ntp"
 	"usr/sbin/wget"
+	"usr/sbin/hostapd"
+	"usr/sbin/wpa_supplicant-2.7"
 )
 
 # Installed 0755 by networkmap-install, so it reaches the same ISA checks, but
@@ -205,6 +208,14 @@ done < <(find "$rootfs/bin" "$rootfs/sbin" "$rootfs/lib" "$rootfs/usr/bin" \
 	"$rootfs/usr/sbin" "$rootfs/usr/lib" -type f 2>/dev/null)
 echo "libz.so.1 satisfies $libz_dependents installed consumers"
 
+# The WLAN daemons must use the locked OpenSSL major, including on a cold
+# vendor-cache miss. A header-only fix must not leave a stale 1.1 consumer.
+for relative in usr/sbin/hostapd usr/sbin/wpa_supplicant-2.7; do
+	"$readelf" -d "$rootfs/$relative" > "$temporary/wifi-dynamic"
+	grep -Fq 'Shared library: [libcrypto.so.3]' "$temporary/wifi-dynamic"
+	grep -Fq 'Shared library: [libssl.so.3]' "$temporary/wifi-dynamic"
+done
+
 # wget is the isolated zlib-rs consumer: it must carry the Rust zlib in its
 # own image and must not load the shared libz.so.1 that every other package
 # resolves at run time.
@@ -250,5 +261,11 @@ run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/ntp"
 grep -q 'no -p PEER was given' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
+# hostapd deliberately exits 1 after printing its version; the baseline and
+# rebuilt consumer were both checked. Neither invocation starts a radio.
+run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/hostapd" -v
+grep -q '^hostapd v2\.9' "$temporary/qemu.stderr"
+run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wpa_supplicant-2.7" -v
+grep -q '^wpa_supplicant v2\.9' "$temporary/qemu.stdout"
 
 echo "verified $((${#artifacts[@]} + ${#shared_objects[@]})) ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 6 QEMU runtime paths"

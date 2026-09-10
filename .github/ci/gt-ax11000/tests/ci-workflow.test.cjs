@@ -59,6 +59,9 @@ test("the Rust gate actually receives and tests the workflow file", () => {
 test("the host gate executes GNU Make bootstrap regressions", () => {
   assert.match(job("rust"), /python3 "\$root\/tests\/test_gnu_make_bootstrap\.py"/);
 });
+test("the host gate executes build-stage failure propagation regressions", () => {
+  assert.match(job("rust"), /python3 "\$root\/tests\/test_build_stage_failures\.py"/);
+});
 
 const sync = fs.readFileSync(path.join(__dirname, "../../../workflows/sync-upstream.yml"), "utf8");
 function scriptSection(start, end) {

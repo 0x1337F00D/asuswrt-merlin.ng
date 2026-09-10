@@ -26,6 +26,7 @@ networkmap-shm-abi.patch
 private-firewall-capture.patch
 zlib-rs-wget.patch
 clientlist-rust.patch
+hostapd-openssl-inputs.patch
 zlib-rs-libz.patch
 wlif-shell-hardening.patch
 ntp-rust.patch

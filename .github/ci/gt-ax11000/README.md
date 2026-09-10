@@ -36,6 +36,9 @@ The PR tests its exact merge-result `GITHUB_SHA`, not merely the source head.
 For a branch without a PR, use a manual dispatch when a firmware is needed.
 Push and PR concurrency groups remain independent so push events cannot cancel
 required PR checks. The checked-in event policy has a Node regression matrix.
+The host gate also executes failure-injection fixtures against the real build
+dispatch: vendor, Rust relink and final repack failures must retain their exit
+status, never be hidden by a successful timing/logging command.
 The deliberately skipped development-push job uses a different check name,
 so its skipped-success cannot satisfy the required `Firmware` check while
 the real PR merge-result build is still pending. See GitHub's

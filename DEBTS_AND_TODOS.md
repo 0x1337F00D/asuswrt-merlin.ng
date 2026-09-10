@@ -5,12 +5,15 @@ compile is not sufficient evidence for releasing or flashing a candidate.
 
 ## Current router state and latest hardware-tested candidate
 
-- As verified on **2026-09-09**, the live, permanently selected image is
-  partition **1**, `BOOT_SET_PART1_IMAGE`, `3.0.0.6/102.9/alpha1`, from commit
-  `dc4452af234` and hosted run `34243633067`. Image SHA-256:
+- As verified on **2026-09-10 at 01:34 CEST**, the live, permanently selected
+  image is partition **2**, `BOOT_SET_PART2_IMAGE`, `3.0.0.6/102.9/alpha1`.
+  It is the combined Rust/client-list/Wi-Fi image built locally from frozen
+  overlay `6cdab2a41cc`, SHA-256
+  `daa0ceb28715cac755772ba3c0495cd714a50f2c6c913537d51fded5860cc2f0`.
+  Partition **1** remains untouched as the tested fallback, from commit
+  `dc4452af234` / hosted run `34243633067`, SHA-256
   `46a16a7c1fa42d5aef1a02b41747556f4fab827eb525eae71af512a14778432f`.
-  The verified `102.8/4` image on partition 2 remains the rollback image.
-  See “Fixed during hardware promotion” below for final guard/boot evidence.
+  See “2026-09-10 combined image and protected hardware trial” below.
 - The 2026-09-09 W9 and latency work does **not** flash another firmware.
   Rust `vpn-policy-audit` and `link-health` are separately tested diagnostics;
   they neither reboot the router nor change NVRAM/radio/firewall settings.
@@ -1425,3 +1428,132 @@ image-boot blocker.
 - Restored Rust workspace format, all-target tests and Clippy with warnings
   as errors passed. Firmware completion, extracted-image checks and the
   hardware trial remain pending; no flash, reboot, promotion or push yet.
+
+### 2026-09-10 pre-image integration checks
+
+- Restored gates: 15 Python tests (including the real patched Netatalk/LPRng
+  dependency fixtures at j2/j4/j8), 35 Node tests, host C-ABI fixtures and
+  ARM GCC 5.5/QEMU C-ABI fixtures pass. Three deterministic fuzz seeds with
+  250,000 iterations each pass; this is not coverage-guided fuzzing.
+- A further 90-second clock probe during the full build passed with zero
+  events (8,915 samples, worst negative differential -0.0926 ms). The build
+  passed its former libusbmuxd failure point without skipping configure.
+- A native probe linked to the in-flight firmware's actual Rust httpd
+  archive (`5f3d9321fc53ffb616c30313a5039b5f3fc232dbe587d91ad547e0af09fabb63`)
+  with the pinned GCC 5.5 passed on the baseline router at 00:04 CEST:
+  10 snapshots, 13 live clients, 105 database clients, maximum 2.558 ms,
+  maximum RSS 3228 KiB. Probe SHA-256:
+  `28ec9ac1df71724101022a55707717d4d122e3cfc449e49f77d9b753c56818ed`.
+  Only the bounded vendor advisory lock is written; no configuration,
+  shared-memory client data, cache or service is modified. This is not an
+  authenticated httpd endpoint or visual-browser test.
+- Baseline LAN comparison from this WSL host: 120/120 ICMP replies, no loss,
+  RTT min/mean/max 2.869/5.631/31.902 ms. Do not interpret this as a mobile
+  WLAN handover or basement-coverage result.
+- Upstream build noise remains a debt, not a clean-log claim: Samba's
+  `librpc/build_idl.sh` requests Python wrappers whose generator emits
+  non-fatal type-origin diagnostics; this board installs only the linked
+  Samba multicall and codepages, not those Python bindings. The baseline
+  ARM `smbd -V` probe reports 3.6.25; repeat against the final image.
+  The HND `asusnatnl` recipe explicitly passes empty `LD`, so unused PJ
+  sample executable links emit ignored errors. Its install recipe ships
+  `libasusnatnl.so`, not the samples. Review skipping unshipped sample and
+  wrapper generation as a separate build-speed/diagnostic-quality change;
+  do not modify the running reference build or weaken fatal-error gates.
+- The frozen `425695cbe4c` clean run subsequently failed at hostapd:
+  `openssl/x509.h` was absent from its include search path. No image was
+  published or flashed. Unlike its sibling supplicant, the vendor hostapd
+  Makefile omitted `-I$(TOP)/openssl/include`, although it already linked
+  from `$(TOP)/openssl`. The new CI-only patch adds that path and an explicit
+  OpenSSL prerequisite for the supplicant. It does not change RF settings.
+- Focused GCC 5.5 hostapd compilation and link pass after the fix. Its ELF
+  requires libssl.so.3/libcrypto.so.3, and its ARM/QEMU version-only command
+  agrees with baseline (hostapd v2.9, expected exit 1). No daemon was started.
+  A real Make/compiler regression test proves both WLAN header paths and
+  rejects the missing-path negative controls. The final-image gate now also
+  checks both WLAN ELFs, OpenSSL-major linkage and version-only execution.
+- All 27 patches replay on unchanged upstream `6be5bc84b50`; the new canonical
+  diff is `e41c488fc66432ffa2db0bb8b843837c515900ed140392e787d92aa97efc01cd`.
+  Security/network overlay checks pass. A fresh locked full build is still
+  required; neither the partial build nor the focused hostapd link is a
+  deployable firmware image.
+- Validation-only correction after freezing build overlay `6cdab2a41cc`:
+  hostapd's version banner is on stderr (exit 1), while the supplicant uses
+  stdout (exit 0). The checked-in verifier is corrected; the running build
+  overlay remains untouched. Core dumps are disabled in the verifier.
+- Additional baseline OpenVPN version probe: the actual router and QEMU's
+  `max` CPU both return 0 (OpenVPN 2.7.7, OpenSSL 3.5.8). QEMU cortex-a7 exits
+  with SIGILL for this C consumer. This is not a reproduced router crash;
+  do not weaken the existing ARMv7 Rust checks or claim this narrow emulator
+  model represents every OpenSSL acceleration path on the BCM4908.
+
+### 2026-09-10 combined image and protected hardware trial
+
+- The fresh clean build from frozen overlay `6cdab2a41cc` passed in 2104 s
+  (35m04s), including 2006 s vendor build and 124 s final repack. No vendor
+  kernel cache was used; exact-compiler ccache was warm. Both source and all
+  build/cache/temp outputs were in tmpfs with swap disabled. This is not a
+  cold-cache CI timing claim or a released parallel-package benchmark.
+- Image: `GT-AX11000_3006_102.9_alpha1_ubi.w`, 76,677,140 bytes, SHA-256
+  `daa0ceb28715cac755772ba3c0495cd714a50f2c6c913537d51fded5860cc2f0`.
+  All 27 source patches and their input lock were verified. Later commits
+  change validation, the host driver/CI failure propagation, documentation
+  and the separately installed JFFS guard, not this image's runtime payload.
+- Offline final-image verification passed all 2715 regular-file hashes,
+  entries/modes/symlinks and hardlink groups against staging. The only exact
+  packaging transformation is an empty mode-0755 `/bootfs`: unchanged
+  upstream `targets/buildFS2` creates it before mkfs.ubifs at line 154 and
+  removes it from staging at line 242. No file/path is blindly excluded.
+  All eight Rust consumer hashes, all Web file hashes, 31 Web symlinks,
+  25 dictionaries/5078 entries, nine ARMv7 ELF checks, six QEMU runtime paths,
+  actual Samba version and wget gzip/WARC consumers passed. The 15-case
+  baseline/candidate wget differential and the actual bsd ABI fixture
+  (candidate without adapter; broken-baseline negative control) passed.
+- Fresh encrypted preflash backup passed off-router CMS decryption, both
+  independently checked hashes, 4554 saved NVRAM entries, 18 essential
+  same-time comparisons, 329 JFFS and 26 data archive members. Factory-reset
+  restore is still NOT TESTED. The previous baseline image/backup are kept.
+- SSH transfer and vendor firmware_check passed; hnd-write returned 99 with
+  hndwr=99. Only inactive partition 2 was written (sequence 35); baseline
+  partition 1 stayed at sequence 34. Reboot at 01:14:48 CEST consumed the
+  PART2_IMAGE_ONCE state to BOOT_SET_PART1_IMAGE. No Merlin commit marker was
+  created. A host-driven promotion hold covered the complete initial soak.
+- Native final-archive client-list probe passed 10 snapshots: 12 live clients,
+  105 database records, maximum 2.098 ms rendering, maximum RSS 2892 KiB.
+  Probe SHA-256 `17ac65f5fd72bd1c0469139b63308b8a01cc3d6436bdaef97dcc789502658842`.
+  Config fingerprints for selected Wi-Fi/board calibration, LAN/DHCP/client
+  mappings and VPN settings are identical before/after boot. Country ALL is
+  unchanged. These are aggregate private-setting checks, not published keys.
+- Hardware found a missing closing `]` in the guard's final wget hash test.
+  `sh -n` and prior dispatch mocks could not catch this runtime error. It
+  failed closed (no promotion, already-consumed fallback remained part 1).
+  Commit `fa4c65fa01d` corrects it and executes the real identity predicate
+  with synthetic files/OpenSSL for both slots and four corrupt binaries;
+  the original missing-bracket negative control fails. All 34 trial tests
+  pass. The corrected rendered JFFS guard also passes its complete hardware
+  check and records PROMOTION_HELD_FALLBACK_PART1. Its SHA-256 is
+  `974910b2bb2cf7e46739f447dc5499318c8464671e7d41e0bd4823637fd0dc3a`.
+- Host-driver review found the clean repack's final timing echo could mask
+  a failed make while errexit was disabled. Explicit failure exits now
+  preserve relink/repack status in both modes. Five executable dispatch
+  fixtures cover success, vendor failure, relink failure, repack failure and
+  the original masked-failure negative control; CI runs these cheaply.
+- Runtime probes and offline Web checks do not substitute for authenticated
+  browser rendering (NOT RUN, per user) or moving the MacBook/phone between
+  rooms. Mobile roaming/coverage improvement still needs that field test.
+- Final hardware outcome: both complete router-health gates and repeated
+  manifest-bound guard checks passed. The 600-second steady-state LAN probe
+  received 600/600 replies, no loss, RTT min/mean/max 2.092/4.244/33.184 ms.
+  After more than 17 minutes, all observed service PID sets were unchanged
+  (`httpd`, `dnsmasq`, `wanduck`, `infosvr`, `rstats`, `nt_monitor`,
+  `networkmap`, `bsd`, three `hostapd`, two `openvpn`). Kernel log remained
+  fault-free. The final client-list repetition again returned 12 live/105
+  stored clients (max 1.959 ms, RSS 2976 KiB). The acknowledgement is still
+  persisted as 1; the separate roamast quarantine is intentionally still 1.
+- At **01:34:03 CEST**, after another health check, the hold was moved to an
+  audit marker and the corrected guard promoted partition 2 persistently:
+  `PROMOTED_UI_NVRAM_PART2`, `BOOT_SET_PART2_IMAGE`, booted Second, sequence
+  35; fallback First sequence 34 was unchanged. No extra reboot/reset/NVRAM
+  commit was issued. A read-only half-hourly follow-up is scheduled until
+  2026-09-11 02:00 CEST, with alerts only on actionable changes. This initial
+  soak is not a guarantee of future crash freedom or automatic power recovery.

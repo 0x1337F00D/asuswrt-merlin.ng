@@ -1177,11 +1177,11 @@ if [ "$BUILD_MODE" = "rust-fast" ]; then
 		echo "Rust-only relink and firmware repack"
 		stage_started=$SECONDS
 		make -j1 -f Makefile -f "$RUST_REPACK_MAKEFILE" \
-			SHELL=/bin/bash "HOSTCFLAGS+=-fcommon" rust-components-relink
+			SHELL=/bin/bash "HOSTCFLAGS+=-fcommon" rust-components-relink || exit $?
 		echo "RUST_RELINK_SECONDS=$((SECONDS - stage_started))"
 		stage_started=$SECONDS
 		make -j1 -f Makefile -f "$RUST_REPACK_MAKEFILE" \
-			SHELL=/bin/bash rust-firmware-repack
+			SHELL=/bin/bash rust-firmware-repack || exit $?
 		echo "FIRMWARE_REPACK_SECONDS=$((SECONDS - stage_started))"
 	} 2>&1 | tee "$LOG_FILE"
 	make_rc=${PIPESTATUS[0]}
@@ -1210,7 +1210,7 @@ if [ "$make_rc" -eq 0 ]; then
 		echo "Finalizing firmware through the common manifest-bound repack"
 		stage_started=$SECONDS
 		make -j1 -f Makefile -f "$RUST_REPACK_MAKEFILE" \
-			SHELL=/bin/bash rust-firmware-repack
+			SHELL=/bin/bash rust-firmware-repack || exit $?
 		echo "FIRMWARE_REPACK_SECONDS=$((SECONDS - stage_started))"
 	} 2>&1 | tee -a "$LOG_FILE"
 	make_rc=${PIPESTATUS[0]}

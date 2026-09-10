@@ -64,13 +64,17 @@ diff --git a/release/src-rt/Makefile b/release/src-rt/Makefile
  	if [ "$(NTPD)" = "y" ]; then \
  		sed -i "/CONFIG_FEATURE_NTPD_NTP_ALIAS/d" $(1); \
 -		echo "CONFIG_FEATURE_NTPD_NTP_ALIAS=y" >>$(1); \
-+		echo "# CONFIG_FEATURE_NTPD_NTP_ALIAS is not set" >>$(1); \
-+		sed -i "/CONFIG_NTPD\>/d" $(1); \
-+		echo "# CONFIG_NTPD is not set" >>$(1); \
-+		sed -i "/CONFIG_FEATURE_NTPD_SERVER/d" $(1); \
-+		echo "# CONFIG_FEATURE_NTPD_SERVER is not set" >>$(1); \
-+		sed -i "/CONFIG_FEATURE_NTPD_CONF/d" $(1); \
-+		echo "# CONFIG_FEATURE_NTPD_CONF is not set" >>$(1); \
++		if [ -f "$$(dirname $(1))/../rust-components/ntp/Cargo.toml" ]; then \
++			echo "# CONFIG_FEATURE_NTPD_NTP_ALIAS is not set" >>$(1); \
++			sed -i "/CONFIG_NTPD\>/d" $(1); \
++			echo "# CONFIG_NTPD is not set" >>$(1); \
++			sed -i "/CONFIG_FEATURE_NTPD_SERVER/d" $(1); \
++			echo "# CONFIG_FEATURE_NTPD_SERVER is not set" >>$(1); \
++			sed -i "/CONFIG_FEATURE_NTPD_CONF/d" $(1); \
++			echo "# CONFIG_FEATURE_NTPD_CONF is not set" >>$(1); \
++		else \
++			echo "CONFIG_FEATURE_NTPD_NTP_ALIAS=y" >>$(1); \
++		fi; \
  	fi;
  	if [ "$(RSYSLOGD)" = "y" ]; then \
  		sed -i "/CONFIG_FEATURE_SYSLOG/d" $(1); \
