@@ -98,7 +98,7 @@ index 00000000000..034cbc4987b
 +#include <unistd.h>
 +
 +#ifndef WLIF_CLI_DIRS
-+#define WLIF_CLI_DIRS "/sbin", "/bin", "/usr/sbin", "/usr/bin", "/opt/sbin", "/opt/bin"
++#define WLIF_CLI_DIRS "/usr/sbin"
 +#endif
 +
 +/* This process is the sole waiter for its CLI child. Exited children are

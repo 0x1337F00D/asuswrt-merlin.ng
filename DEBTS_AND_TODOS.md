@@ -483,7 +483,8 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   helper that reads the credential from a file descriptor.
 - [ ] `wlif-policy` narrows two vendor inputs on purpose and this is
   untested against real configurations: an SSID must be valid UTF-8 (the
-  profile builds `UTF8_SSID=y`) and a passphrase must be 8..63 printable
+  profile leaves `RTCONFIG_UTF8_SSID` unset; this is a policy restriction,
+  not a profile requirement) and a passphrase must be 8..63 printable
   ASCII or exactly 64 hex digits. A legacy non-UTF-8 SSID or an out-of-spec
   passphrase now fails the operation closed instead of reaching a shell.
 - [x] Reach `libshared.so` from `rust-fast`. The review follow-up explicitly
