@@ -39,8 +39,12 @@ these are baseline findings, not evidence of a new candidate regression.
 - HTTP's vendor authentication/referer hooks are prebuilt. Their compatibility
   with parsed strings must be checked on the actual firmware, especially login,
   settings apply and client lists. An overlay-less vendor build is not promised.
-- infosvr inherits the LAN/WAN firewall boundary on its listener; the default
-  INPUT DROP is critical. Factory-debug behavior is a separately documented
+- infosvr inherits the LAN/WAN firewall boundary on its listener. Actual live
+  INPUT policy is ACCEPT with a terminal DROP, but an earlier interface-unbound
+  UDP multicast accept (except port1900) includes port9999. Standard WAN NEW
+  unicast reaches DROP; full WAN multicast isolation has not been proved.
+  This is a pre-existing vendor finding, not a newly fixed boundary.
+  Factory-debug behavior is a separately documented
   vendor dependency, not a normal UI toggle or permission to weaken the firewall.
   Its source-subnet filter does not prove the incoming interface. WSDD's vendor
   startup supplies the LAN interface; manual startup without -i is unpinned.
@@ -62,8 +66,8 @@ original-vendor export comparison; the old bloated link was correctly rejected.
 New canonical patch hash:
 `0e16c07f82c3524d4ed55ece67d5ae2f1b835f051844e6f1aa443ae7578c52e2`.
 
-No combined image has been built or installed yet. Full image extraction and
-hardware checks remain mandatory; these results are not release approval.
+The initial combined build failed as described below. The corrected clean
+123e6fb4621 build subsequently completed; see the verified candidate evidence.
 
 ## Full-build follow-up: PNG configuration dependency
 
@@ -78,3 +82,28 @@ all four fail on the old graph. An already poisoned CMake cache must not be
 reused. The next clean installation candidate uses package jobs1, matching
 the existing CI/default release contract. Aggressive package parallelism is
 not approved by these incomplete clean builds.
+
+## Verified candidate evidence — 2026-09-10
+
+Clean RAM-only build 123e6fb4621 passed with top/package jobs1, swap disabled.
+Canonical patch hash: 7834411d0354ed2efee6263b489e909cdde4cfa5f64b0c8a055752b24c65f74c.
+Filesystem-only firmware: 77463572 bytes, SHA256
+fb0936818724e40be51f67109375ac4d9176fcdec964f1b7df74435fff2f1856.
+Actual UBI extraction, staging equivalence, consumer hashes,25 dictionaries,
+31 Web symlinks, vendor exports,15 ARM consumers,8 QEMU runtime paths,
+QR PNG generation and wget/WLAN reference gates passed. WLAN reference uses
+a synthetic driver, not a physical roaming/steering proof.
+On the one-shot First/PART2-persistent boot, native health and rendered guard
+checks passed; WiFi/LAN/VPN aggregate configuration digests were unchanged.
+Client-list native probe:10 samples,9 live clients,max1.508ms,105 database
+entries,2328KiB RSS. Browser login/UI rendering remains untested this turn.
+Initial soak passed31/31 samples over919.99seconds, with stable service PIDs,
+WAN/DNS/radios and no detected crash markers. Host ping910/910,0loss,
+min/avg/max1.956/4.527/68.914ms. This is not a mobile-room-transition test.
+Explicit fallback reboot proved Second/PART2, four original binary hashes,
+healthy services and unchanged configuration digests. A second candidate boot
+passed health, exact image guard and config checks. Guard-mediated permanent
+promotion completed2026-09-10T13:41:49Z: First/BOOT_SET_PART1_IMAGE,
+PROMOTED_UI_NVRAM_PART1; post-promotion health passed. Slot2 remains intact.
+Read-only24h observation is the next phase. The verified encrypted backup does
+not prove a factory-reset restore, and physical UI/roaming coverage is limited.
