@@ -64,3 +64,17 @@ New canonical patch hash:
 
 No combined image has been built or installed yet. Full image extraction and
 hardware checks remain mandatory; these results are not release approval.
+
+## Full-build follow-up: PNG configuration dependency
+
+The 0b671 candidate failed before publication at qrencode: CMake generated
+`qrencode: PNG::PNG-NOTFOUND` because its supplied libpng path did not yet
+exist. FindPNG only assigns an imported location after EXISTS succeeds.
+Independent out-of-tree cross configuration/build with the same arguments and
+completed PNG staging passed on GCC5.5/CMake3.28.3, with PNG enabled.
+Explicit zlib -> libpng -> qrencode package and configure-Makefile ordering
+now has clean/cached -j2/-j8 regression coverage; all four scenarios pass and
+all four fail on the old graph. An already poisoned CMake cache must not be
+reused. The next clean installation candidate uses package jobs1, matching
+the existing CI/default release contract. Aggressive package parallelism is
+not approved by these incomplete clean builds.

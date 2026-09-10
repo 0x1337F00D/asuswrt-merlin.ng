@@ -880,5 +880,6 @@ reject_text "$lltd_rust/main.rs" 'nvram_get'
 python3 "$(dirname "$0")/test_wifi_openssl_inputs.py" "$root"
 python3 "$(dirname "$0")/test_netatalk_parallel.py" "$router_makefile"
 python3 "$(dirname "$0")/test_usbmuxd_parallel.py" "$router_makefile"
+python3 "$(dirname "$0")/test_qrencode_parallel.py" "$router_makefile"
 python3 "$(dirname "$0")/test_lprng_parallel.py" "$(dirname "$router_makefile")/LPRng"
 echo "security overlay invariants verified"

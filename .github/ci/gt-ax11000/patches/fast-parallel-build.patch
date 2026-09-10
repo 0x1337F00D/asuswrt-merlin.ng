@@ -1,7 +1,7 @@
 diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 --- a/release/src/router/Makefile
 +++ b/release/src/router/Makefile
-@@ -2101,7 +2101,50 @@
+@@ -2101,7 +2101,56 @@
  ifeq ($(HND_ROUTER),y)
 -all: clean-build kernel_header version fsbuild $(obj-y)
 +ROUTER_PACKAGE_JOBS ?= 1
@@ -36,6 +36,12 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
 +usbmuxd-1.1.1: libimobiledevice-1.3.0 libusb10
 +usbmuxd-1.1.1/Makefile: | libimobiledevice-1.3.0 libusb10
 +libdisk: shared nvram$(BCMEX)$(EX7)
++# FindPNG creates PNG::PNG without a location if its supplied path does not
++# exist yet. Configuration must wait for staging, not just the later link.
++libpng: zlib
++libpng/build/Makefile: | zlib
++qrencode: libpng
++qrencode/build/Makefile: | libpng
 +
 +ROUTER_FOUNDATION_TARGETS := openssl shared nvram$(BCMEX)$(EX7) \
 +	libdisk libnfnetlink-$(NETLINK_LIB_VER) libmnl-1.0.4 \
@@ -53,7 +59,7 @@ diff --git a/release/src/router/Makefile b/release/src/router/Makefile
  else
  all: clean-build kernel_header libc version obj_prelibs kernel $(obj-y)
  endif
-@@ -9946,7 +9989,7 @@ appx:
+@@ -9946,7 +9995,7 @@ appx:
  .PHONY : appx
  
  asusnatnl: openssl
