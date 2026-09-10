@@ -853,7 +853,18 @@ require_text "$lltd_rust/responder.rs" 'pub const MAX_AMPLIFICATION: usize = 4;'
 # frame that claims to come from this station.
 require_text "$lltd_rust/wire.rs" 'pub const ETHERTYPE_LLTD: u16 = 0x88D9;'
 require_text "$lltd_rust/wire.rs" 'return Err(Malformed::WrongVersion);'
-require_text "$lltd_rust/wire.rs" 'return Err(Malformed::UnsupportedService);'
+# Topology discovery and Quick Discovery are answered; the QoS service and
+# everything above it are refused.  Pinned as the whole match, because the two
+# accepted values are a deliberate reading of the blob's dispatch.
+require_text "$lltd_rust/wire.rs" 'Some(TOS_TOPOLOGY_DISCOVERY | TOS_QUICK_DISCOVERY) => {}'
+require_text "$lltd_rust/wire.rs" '_ => return Err(Malformed::UnsupportedService),'
+# A broadcast real destination is legal only for the three opcodes the blob
+# accepts that way; without this a Query need not be addressed to us at all.
+require_text "$lltd_rust/wire.rs" 'if real_destination == BROADCAST && !opcode.may_be_broadcast() {'
+require_text "$lltd_rust/wire.rs" 'matches!(self, Self::Discover | Self::Hello | Self::Reset)'
+# Recording a generation happens only once a reply is actually going out.
+require_text "$lltd_rust/responder.rs" 'self.generations.remember(mapper, generation, now_millis);'
+require_text "$lltd_rust/limit.rs" 'pub fn is_duplicate(&self, mapper: [u8; 6], generation: u16, now_millis: u64) -> bool {'
 require_text "$lltd_rust/wire.rs" 'return Err(Malformed::SelfAddressed);'
 require_text "$lltd_rust/wire.rs" 'return Err(Malformed::Oversized);'
 # The blob wrote the NVRAM variable friendly_name from inside its packet

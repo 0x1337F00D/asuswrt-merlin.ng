@@ -156,8 +156,13 @@ impl Responder {
     /// Returns the first rule that stopped a reply being produced.
     pub fn handle(&mut self, bytes: &[u8], now_millis: u64) -> Result<Vec<u8>, Dropped> {
         let frame = Frame::parse(bytes, &self.device.station)?;
+        let mut answered = None;
         let reply = match frame.opcode {
-            Opcode::Discover => self.build_hello(&frame, now_millis)?,
+            Opcode::Discover => {
+                let (reply, generation) = self.build_hello(&frame, now_millis)?;
+                answered = Some((frame.real_source, generation));
+                reply
+            }
             Opcode::Query => self.build_query_response(&frame)?,
             Opcode::Reset => return Err(Dropped::Accepted(Opcode::Reset)),
             other => return Err(Dropped::Unanswered(other)),
@@ -167,15 +172,26 @@ impl Responder {
         if !self.limiter.try_charge(now_millis) {
             return Err(Dropped::RateLimited);
         }
+        // Only now is the generation recorded. Marking it before this point
+        // meant a Discover that lost the budget race still counted as answered,
+        // and since a mapper retransmits the same generation, that silenced it
+        // for good.
+        if let Some((mapper, generation)) = answered {
+            self.generations.remember(mapper, generation, now_millis);
+        }
         Ok(reply)
     }
 
     /// Validates a Discover and renders the Hello it earns.
-    fn build_hello(&mut self, frame: &Frame<'_>, now_millis: u64) -> Result<Vec<u8>, Dropped> {
+    fn build_hello(
+        &mut self,
+        frame: &Frame<'_>,
+        now_millis: u64,
+    ) -> Result<(Vec<u8>, u16), Dropped> {
         let generation = discover_generation(frame.payload)?;
-        if !self
+        if self
             .generations
-            .accept(frame.real_source, generation, now_millis)
+            .is_duplicate(frame.real_source, generation, now_millis)
         {
             return Err(Dropped::DuplicateGeneration);
         }
@@ -197,7 +213,7 @@ impl Responder {
         if reply.len() > budget || reply.len() > MAX_RESPONSE_LEN {
             return Err(Dropped::WouldAmplify);
         }
-        Ok(reply)
+        Ok((reply, generation))
     }
 
     /// Renders the empty QueryResp.

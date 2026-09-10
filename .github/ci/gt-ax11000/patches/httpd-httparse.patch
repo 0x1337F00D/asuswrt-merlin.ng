@@ -433,6 +433,14 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  		send_error( 501, "Not Implemented", (char*) 0, "That method is not implemented." );
  		return;
  	}
+@@ -1460,7 +1452,7 @@
+ 	file = &(path[1]);
+ 	len = strlen( file );
+-	if ( file[0] == '/' || strcmp( file, ".." ) == 0 || strncmp( file, "../", 3 ) == 0 || strstr( file, "/../" ) != (char*) 0 || strcmp( &(file[len-3]), "/.." ) == 0 ) {
++	if ( file[0] == '/' || strcmp( file, ".." ) == 0 || strncmp( file, "../", 3 ) == 0 || strstr( file, "/../" ) != (char*) 0 || ( len >= 3 && strcmp( &(file[len-3]), "/.." ) == 0 ) ) {
+ 		send_error( 400, "Bad Request", (char*) 0, "Illegal filename." );
+ 		return;
+ 	}
 @@ -1471,7 +1463,7 @@
  	}
  

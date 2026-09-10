@@ -226,8 +226,14 @@ pub fn parse_request(block: &[u8]) -> Result<ParsedRequest<'_>, RequestError> {
         _ => Method::Other,
     };
     let minor_version = request.version.ok_or(RequestError::RequestLine)?;
-    // `httparse` hands the target back as `&str` without validating UTF-8, so
-    // it is only ever looked at as bytes here.
+    // `httparse` returns the target as `&str`: it runs `str::from_utf8` and
+    // reports `Error::Token` when that fails, so a raw non-UTF-8 byte in the
+    // request line is refused before this point. That is stricter than the
+    // vendor, which served such a target, and stricter than the accepted byte
+    // set otherwise is (0x21..=0x7e plus well-formed UTF-8). RFC 3986 requires
+    // percent-encoding for those bytes anyway, so a conforming client is
+    // unaffected; `DEBTS_AND_TODOS.md` records the divergence. The value is
+    // still only ever looked at as bytes from here on.
     let target = request.path.ok_or(RequestError::RequestLine)?.as_bytes();
     if target.is_empty() || target.len() >= TARGET_CAPACITY {
         return Err(RequestError::Target);
@@ -352,6 +358,59 @@ pub struct RustHttpdRequest {
     pub boundary: [c_char; BOUNDARY_CAPACITY],
     pub accept_language: [c_char; ACCEPT_LANGUAGE_CAPACITY],
 }
+
+/// The field layout the C side declares, pinned at compile time.
+///
+/// `rust_httpd_request_struct_size()` cannot detect a layout break on its own:
+/// dropping `#[repr(C)]` leaves `size_of` unchanged here while moving `target`
+/// from offset 40 to 8192, so the size check the C header cites as its guard
+/// would still pass. These assertions, and the matching `_Static_assert` on
+/// `offsetof` in `tests/c-abi/httpd-request.c`, are what actually pin it. The
+/// two targets differ because `long` and `size_t` are 32-bit on ARM, so both
+/// sets of offsets are spelled out.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(RustHttpdRequest, method) == 0);
+    assert!(offset_of!(RustHttpdRequest, minor_version) == 4);
+    assert!(offset_of!(RustHttpdRequest, present) == 8);
+    assert!(offset_of!(RustHttpdRequest, content_length) == 16);
+    assert!(offset_of!(RustHttpdRequest, target_len) == 24);
+    assert!(offset_of!(RustHttpdRequest, query_offset) == 32);
+    assert!(offset_of!(RustHttpdRequest, target) == 40);
+    assert!(offset_of!(RustHttpdRequest, host) == 4136);
+    assert!(offset_of!(RustHttpdRequest, user_agent) == 4648);
+    assert!(offset_of!(RustHttpdRequest, cookie) == 6696);
+    assert!(offset_of!(RustHttpdRequest, referer) == 14888);
+    assert!(offset_of!(RustHttpdRequest, range) == 15912);
+    assert!(offset_of!(RustHttpdRequest, if_none_match) == 16168);
+    assert!(offset_of!(RustHttpdRequest, boundary) == 16680);
+    assert!(offset_of!(RustHttpdRequest, accept_language) == 17192);
+    assert!(core::mem::size_of::<RustHttpdRequest>() == 17704);
+    assert!(core::mem::align_of::<RustHttpdRequest>() == 8);
+};
+
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    use core::mem::offset_of;
+    assert!(offset_of!(RustHttpdRequest, method) == 0);
+    assert!(offset_of!(RustHttpdRequest, minor_version) == 4);
+    assert!(offset_of!(RustHttpdRequest, present) == 8);
+    assert!(offset_of!(RustHttpdRequest, content_length) == 12);
+    assert!(offset_of!(RustHttpdRequest, target_len) == 16);
+    assert!(offset_of!(RustHttpdRequest, query_offset) == 20);
+    assert!(offset_of!(RustHttpdRequest, target) == 24);
+    assert!(offset_of!(RustHttpdRequest, host) == 4120);
+    assert!(offset_of!(RustHttpdRequest, user_agent) == 4632);
+    assert!(offset_of!(RustHttpdRequest, cookie) == 6680);
+    assert!(offset_of!(RustHttpdRequest, referer) == 14872);
+    assert!(offset_of!(RustHttpdRequest, range) == 15896);
+    assert!(offset_of!(RustHttpdRequest, if_none_match) == 16152);
+    assert!(offset_of!(RustHttpdRequest, boundary) == 16664);
+    assert!(offset_of!(RustHttpdRequest, accept_language) == 17176);
+    assert!(core::mem::size_of::<RustHttpdRequest>() == 17688);
+    assert!(core::mem::align_of::<RustHttpdRequest>() == 4);
+};
 
 /// Copy one validated value into a fixed C field.  `parse_request()` has
 /// already refused anything that does not fit, so this cannot truncate.
@@ -893,9 +952,50 @@ mod tests {
     }
 
     #[test]
-    fn a_high_byte_target_is_kept_like_the_vendor() {
+    fn a_high_byte_target_is_kept_when_it_is_valid_utf8() {
         let request = parse(b"GET /\xc3\xa9 HTTP/1.1\r\n\r\n").expect("high bytes");
         assert_eq!(request.target, b"/\xc3\xa9");
+    }
+
+    #[test]
+    fn an_invalid_utf8_target_is_refused_unlike_the_vendor() {
+        // Lone continuation byte, a bare 0xE9 and a truncated sequence: the
+        // vendor served all three, httparse refuses them. Pinned because the
+        // rule is a deliberate divergence, not an accident, and because the
+        // test above reads as though any high byte were accepted.
+        for target in [&b"/\x80"[..], &b"/\xe9"[..], &b"/\xc3"[..]] {
+            let mut block = b"GET ".to_vec();
+            block.extend_from_slice(target);
+            block.extend_from_slice(b" HTTP/1.1\r\n\r\n");
+            assert_eq!(
+                parse(&block).unwrap_err(),
+                RequestError::RequestLine,
+                "target {target:02x?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ten_digits_is_the_bound_that_keeps_the_content_length_accumulator_safe() {
+        // The accumulator is `total * 10 + digit` on a u64, and this constant
+        // is the only thing keeping it from overflowing. With `panic = "abort"`
+        // an overflow here is a remote abort of the web server, so pin it: the
+        // value range check alone does not, because it runs afterwards.
+        assert_eq!(MAX_CONTENT_LENGTH_DIGITS, 10);
+        let widest = 10_u64.pow(MAX_CONTENT_LENGTH_DIGITS as u32) - 1;
+        assert!(widest.checked_mul(10).is_some());
+    }
+
+    #[test]
+    fn a_value_exactly_filling_a_field_leaves_no_room_for_the_terminator() {
+        // copy_field is the last ABI check before bytes land in the C struct.
+        // At capacity there is no room for the NUL, and httpd would then read
+        // past the field with strlcpy; the bound has to be `>=`, not `>`.
+        let mut field = [0_i8; 8];
+        assert!(copy_field(&mut field, b"1234567"));
+        assert_eq!(field[7], 0);
+        assert!(!copy_field(&mut field, b"12345678"));
+        assert!(!copy_field(&mut field, b"123456789"));
     }
 
     #[test]
@@ -943,6 +1043,18 @@ mod tests {
                 MINIMAL.len(),
                 &mut output,
                 core::mem::size_of::<RustHttpdRequest>() - 1,
+            )
+        };
+        assert_eq!(status, ERR_INVALID_INPUT);
+        // The other direction matters just as much. A caller whose struct is
+        // larger has a different layout, not a compatible one, and accepting
+        // it would let a stale header write past the fields Rust knows about.
+        let status = unsafe {
+            rust_httpd_request_parse(
+                MINIMAL.as_ptr().cast::<c_char>(),
+                MINIMAL.len(),
+                &mut output,
+                core::mem::size_of::<RustHttpdRequest>() + 1,
             )
         };
         assert_eq!(status, ERR_INVALID_INPUT);

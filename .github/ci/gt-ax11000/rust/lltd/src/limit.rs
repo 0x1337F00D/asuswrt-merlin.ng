@@ -122,12 +122,28 @@ impl GenerationFilter {
         }
     }
 
-    /// Records the pair and reports whether it is new.
+    /// Reports whether this pair was already answered inside the window.
     ///
-    /// Returns false when this mapper's generation was already answered inside
-    /// the window; the caller must then drop the frame without replying and
-    /// without charging the rate limiter.
-    pub fn accept(&mut self, mapper: [u8; 6], generation: u16, now_millis: u64) -> bool {
+    /// Read-only on purpose. Recording is a separate step so that a frame the
+    /// caller ends up *not* answering never marks the generation as answered:
+    /// doing both at once meant an exhausted token bucket silenced that
+    /// mapper's generation permanently, because a real mapper retransmits the
+    /// same generation and every retry was then read as a duplicate.
+    #[must_use]
+    pub fn is_duplicate(&self, mapper: [u8; 6], generation: u16, now_millis: u64) -> bool {
+        self.entries.iter().flatten().any(|seen| {
+            seen.mapper == mapper
+                && seen.generation == generation
+                && now_millis.saturating_sub(seen.at_millis) < self.window_millis
+        })
+    }
+
+    /// Records the pair. Call this only once the reply is actually going out.
+    ///
+    /// The stored timestamp is never refreshed by a later sighting, so the
+    /// window measures the age of the answer rather than of the last attempt
+    /// and cannot be slid forward by an attacker replaying a Discover.
+    pub fn remember(&mut self, mapper: [u8; 6], generation: u16, now_millis: u64) {
         let mut free = None;
         for (index, slot) in self.entries.iter_mut().enumerate() {
             match slot {
@@ -138,8 +154,7 @@ impl GenerationFilter {
                     }
                 }
                 Some(seen) if seen.mapper == mapper && seen.generation == generation => {
-                    seen.at_millis = now_millis;
-                    return false;
+                    return;
                 }
                 Some(_) => {}
                 None => {
@@ -160,7 +175,6 @@ impl GenerationFilter {
                 at_millis: now_millis,
             });
         }
-        true
     }
 }
 
@@ -229,13 +243,16 @@ mod tests {
     fn a_repeated_generation_is_suppressed_until_the_window_expires() {
         let mut filter = GenerationFilter::new(1_000);
         let mapper = [1, 2, 3, 4, 5, 6];
-        assert!(filter.accept(mapper, 7, 0));
-        assert!(!filter.accept(mapper, 7, 100));
-        assert!(filter.accept(mapper, 8, 100));
-        assert!(filter.accept([9; 6], 7, 100));
-        // The repeat at 100 refreshed the entry, so it expires at 1100.
-        assert!(!filter.accept(mapper, 7, 1_099));
-        assert!(filter.accept(mapper, 7, 2_500));
+        filter.remember(mapper, 7, 0);
+        assert!(filter.is_duplicate(mapper, 7, 100));
+        assert!(!filter.is_duplicate(mapper, 8, 100));
+        assert!(!filter.is_duplicate([9; 6], 7, 100));
+        // A replay must not slide the window. The entry was written at 0, so
+        // it expires at 1000 however often it is seen in between; otherwise
+        // one frame every few seconds keeps a mapper suppressed for good.
+        filter.remember(mapper, 7, 100);
+        filter.remember(mapper, 7, 999);
+        assert!(!filter.is_duplicate(mapper, 7, 1_000));
     }
 
     #[test]
@@ -243,7 +260,9 @@ mod tests {
         let mut filter = GenerationFilter::new(1_000_000);
         for index in 0..(MAX_REMEMBERED as u32 * 4) {
             let mapper = [2, 0, 0, 0, 0, index as u8];
-            assert!(filter.accept(mapper, index as u16, 0));
+            assert!(!filter.is_duplicate(mapper, index as u16, 0));
+            filter.remember(mapper, index as u16, 0);
+            assert!(filter.is_duplicate(mapper, index as u16, 0));
         }
     }
 }

@@ -64,6 +64,51 @@ typedef struct rust_httpd_request {
 	char accept_language[RUST_HTTPD_ACCEPT_LANGUAGE_CAPACITY];
 } rust_httpd_request_t;
 
+/*
+ * Pin the layout at compile time, on whichever target this is built for.
+ *
+ * rust_httpd_request_struct_size() cannot do this job: without repr(C) the
+ * Rust size is unchanged while target moves from 40 to 8192, so the size
+ * check passes over a struct whose fields are in different places. These
+ * assertions and the matching offset_of! block in request.rs are the actual
+ * guard, and being compile-time they hold for ARM without needing to run.
+ */
+#define RUST_HTTPD_FIELD_AT(field, sixty_four, thirty_two)                    \
+	_Static_assert(offsetof(rust_httpd_request_t, field) ==                \
+	    (sizeof(void *) == 8 ? (sixty_four) : (thirty_two)),               \
+	    "rust_httpd_request_t." #field " moved")
+
+RUST_HTTPD_FIELD_AT(method, 0, 0);
+RUST_HTTPD_FIELD_AT(minor_version, 4, 4);
+RUST_HTTPD_FIELD_AT(present, 8, 8);
+RUST_HTTPD_FIELD_AT(content_length, 16, 12);
+RUST_HTTPD_FIELD_AT(target_len, 24, 16);
+RUST_HTTPD_FIELD_AT(query_offset, 32, 20);
+RUST_HTTPD_FIELD_AT(target, 40, 24);
+RUST_HTTPD_FIELD_AT(host, 4136, 4120);
+RUST_HTTPD_FIELD_AT(user_agent, 4648, 4632);
+RUST_HTTPD_FIELD_AT(cookie, 6696, 6680);
+RUST_HTTPD_FIELD_AT(referer, 14888, 14872);
+RUST_HTTPD_FIELD_AT(range, 15912, 15896);
+RUST_HTTPD_FIELD_AT(if_none_match, 16168, 16152);
+RUST_HTTPD_FIELD_AT(boundary, 16680, 16664);
+RUST_HTTPD_FIELD_AT(accept_language, 17192, 17176);
+_Static_assert(sizeof(rust_httpd_request_t) ==
+    (sizeof(void *) == 8 ? 17704 : 17688), "rust_httpd_request_t resized");
+
+/* The flag bits are an ABI too: httpd reads them to decide whether a field
+ * was filled, and transposing two of them miswires an auth-relevant header
+ * without changing any offset. */
+_Static_assert(RUST_HTTPD_HAS_HOST == 1u, "HAS_HOST moved");
+_Static_assert(RUST_HTTPD_HAS_USER_AGENT == 2u, "HAS_USER_AGENT moved");
+_Static_assert(RUST_HTTPD_HAS_COOKIE == 4u, "HAS_COOKIE moved");
+_Static_assert(RUST_HTTPD_HAS_REFERER == 8u, "HAS_REFERER moved");
+_Static_assert(RUST_HTTPD_HAS_RANGE == 16u, "HAS_RANGE moved");
+_Static_assert(RUST_HTTPD_HAS_IF_NONE_MATCH == 32u, "HAS_IF_NONE_MATCH moved");
+_Static_assert(RUST_HTTPD_HAS_BOUNDARY == 64u, "HAS_BOUNDARY moved");
+_Static_assert(RUST_HTTPD_HAS_ACCEPT_LANGUAGE == 128u, "HAS_ACCEPT_LANGUAGE moved");
+_Static_assert(RUST_HTTPD_HAS_CONTENT_LENGTH == 256u, "HAS_CONTENT_LENGTH moved");
+
 extern int rust_httpd_request_parse(const char *block, size_t length,
     rust_httpd_request_t *output, size_t output_size);
 extern size_t rust_httpd_request_struct_size(void);

@@ -1957,3 +1957,76 @@ before reading the sizes as a decision:
 - [ ] `ssl_client_fopen` has no caller. Decide whether the Rust replacement
   implements it at all, or whether the client half is removed rather than
   reimplemented and reintroduced only when something needs it.
+
+### 2026-09-10 independent review of the three Tier 2 packages
+
+The Tier 2 packages were merged on their implementing agents' self-reports.
+Three subagents then reviewed them against the code, with mutation testing of
+the suites. The wsdd2 review is still outstanding. Fixed here: the LLTD
+suppression defect, the LLTD reflector, the refusal of Quick Discovery, the
+self-referential amplification assertions, the unpinned httpd ABI layout, the
+two untested httpd bounds and an out-of-bounds read the httparse patch moved
+onto Rust-owned memory. What those reviews found and this change does **not**
+fix is recorded below.
+
+LLTD, where the reverse engineering and the blob disagree:
+
+- [ ] The UCS-2 name TLV includes the two-byte terminator in its length; the
+  blob's `write_ucs2char_t` (`0x17c20`) counts only non-NUL code units and
+  `memcpy`s without the terminator, so it emits `0f 04 41 00 42 00` where this
+  port emits `0f 06 41 00 42 00 00 00`. Two stray U+0000 reach whatever a
+  Windows mapper displays, and the property block is four bytes larger than
+  the blob's. `tests/frames.rs` hard-codes the divergence. Decide deliberately
+  whether to match the blob or the specification.
+- [ ] Sees-List Working Set is emitted as `00 04`; the blob emits `04 00`,
+  i.e. big-endian 1024, because `get_sees_max` (`0x12d00`) stores a plain `#4`
+  where its sibling getters fold `htons`/`htonl` into the constant. This port
+  is semantically right and byte-wise different. The comment claiming it
+  matches the blob is corrected; the value is not changed.
+- [ ] `sys::receive` clamps a `MSG_TRUNC` length to the buffer capacity, which
+  equals `MAX_FRAME_LEN`, so `Malformed::Oversized` can never fire on a real
+  socket. A 2000-byte frame is silently parsed as its 1514-byte prefix rather
+  than rejected. Harmless today, but the stated invariant is false.
+- [ ] The advertised names diverge from the blob. `start_lltd()` sets
+  `lld2d_hostname` from `get_productid()` and the blob's `get_machine_name`
+  reads that NVRAM variable, while this port reads the kernel hostname; and
+  the blob's Friendly Name is the fixed string `802.11 Broadcom Reference`
+  where this port repeats the machine name.
+- [ ] Two comments in `sys.rs` argue from false premises: `eval()` does wait
+  (`_eval(argv, NULL, 0, NULL)`), so `daemonize()` is load-bearing rather than
+  belt-and-braces, and `sendto` leaves `sll_protocol` at zero.
+- [ ] Three descriptions of the blob overstate it: the real-destination rule
+  does not apply to opcodes 1 and 4, which the blob accepts addressed to any
+  station; the blob never reads the reserved byte at offset 16, so refusing a
+  non-zero value is stricter than both the blob and the specification; and
+  `get_friendly_name`'s NVRAM write fires once per process, not per packet,
+  because `tlv_write_info` caches on the entry's state word.
+- [ ] `sys.rs` has no effective test coverage. Removing `SO_BINDTODEVICE`,
+  moving it after `bind`, zeroing the interface index in `send`, dropping the
+  `POLLERR` check or making `daemonize` never fork all leave the suite green.
+  `a_missing_interface_fails_before_a_socket_is_bound` claims to prove no
+  descriptor leaks; it cannot, because the failure it induces happens before
+  any socket is opened. The guarantee is `OwnedFd`, by construction.
+
+httpd request parsing:
+
+- [ ] A raw non-UTF-8 byte in the request target is now refused, where the
+  vendor served it. RFC 3986 requires percent-encoding for those bytes, so a
+  conforming client is unaffected, but a non-conforming one that worked before
+  now gets a 400. The comment claiming httparse does not validate UTF-8 is
+  corrected and the rule is pinned by a test.
+- [ ] `rust_httpd_request_parse` does not zero the output on the `output_size`
+  mismatch path, contradicting its own documented contract. Harmless in httpd,
+  which returns 400 on any non-OK status.
+- [ ] `RUST_HTTPD_REQUEST_BLOCK_MAX` and `MAX_REQUEST_BLOCK` must agree but do
+  not feed `sizeof`, so no gate detects drift between them. Fail-closed.
+- [ ] `httpd.c` calls `rust_httpd_request_parse` with no `#ifdef`, so a
+  patched tree without `rust-components/` fails to link. Inherited from the
+  earlier httpd patches, which already call about twenty `rust_httpd_*`
+  symbols the same way, but the overlay-less property does not hold for httpd.
+- [ ] `auth_check`, `referer_check` and `check_user_agent` live in the
+  closed-source `httpd/prebuild/GT-AX11000/web_hook.o`, and this change alters
+  exactly the strings they receive: cookie and referer used to carry a
+  trailing CRLF and are now trimmed. Unverifiable without a device.
+- [ ] Seven request tests pin httparse's behaviour rather than this module's.
+  Legitimate as an upgrade tripwire, but they are not coverage of this code.
