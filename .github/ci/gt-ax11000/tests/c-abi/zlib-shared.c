@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
 
 #include "zlib.h"
 
@@ -69,6 +70,29 @@ static int fail_combine(const char *what, uLong head, uLong tail,
 				(unsigned long)entry, expect[i],
 				(unsigned long)entry == expect[i] ? "ok"
 					: "MISMATCH");
+		}
+		/* zlib-rs types z_off64_t as i64 unconditionally, while the
+		 * vendor zconf.h makes it z_off_t (long) unless Z_LARGE64 is
+		 * set, so on a 32-bit target the *64 entry points disagree on
+		 * the argument width. Report the widths and the two entry
+		 * addresses so the target says whether the plain entry point
+		 * is distinct from the 64-bit one. */
+		{
+			uint32_t words[4];
+			uintptr_t a = (uintptr_t)crc32_combine;
+			uintptr_t b = (uintptr_t)crc32_combine64;
+
+			memcpy(&words[0], (const void *)a, 8);
+			memcpy(&words[2], (const void *)b, 8);
+			fprintf(stderr, "libz.so.1 fixture: combine=%08lx "
+				"combine64=%08lx opcodes %08lx %08lx / "
+				"%08lx %08lx sizeof(z_off64_t)=%u\n",
+				(unsigned long)a, (unsigned long)b,
+				(unsigned long)words[0],
+				(unsigned long)words[1],
+				(unsigned long)words[2],
+				(unsigned long)words[3],
+				(unsigned)sizeof(z_off64_t));
 		}
 		fprintf(stderr, "libz.so.1 fixture: gen=%08lx op(head,tail,gen)="
 			"%08lx combine64=%08lx\n", (unsigned long)op,
