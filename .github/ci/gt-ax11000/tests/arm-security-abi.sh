@@ -45,9 +45,11 @@ ln -sf libz.so.1 "$fixture_dir/libz.so"
 # The plain and the 64-bit combine entry points must not share an address:
 # the plain one has to sign-extend its 32-bit length into the register pair
 # the implementation reads, so an alias silently feeds it a garbage high word.
-"${ARM_CC%-gcc}-nm" -D --defined-only "$fixture_dir/libz.so.1" \
-    | grep -E ' (crc32_combine|crc32_combine64|adler32_combine|adler32_combine64)$' \
-    | sort | sed 's/^/libz.so.1 dynsym: /'
+arm_nm="${ARM_CC%-gcc}-nm"
+command -v "$arm_nm" >/dev/null 2>&1 || arm_nm=nm
+{ "$arm_nm" -D --defined-only "$fixture_dir/libz.so.1" 2>/dev/null \
+    | grep -E '(crc32|adler32)_combine(64)?$' | sort \
+    | sed 's/^/libz.so.1 dynsym: /'; } || true
 "$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 \
     -I"$root/tests/c-abi/include" "$root/tests/c-abi/zlib-shared.c" \
     -L"$fixture_dir" -lz -o "$fixture_dir/zlib-shared"
