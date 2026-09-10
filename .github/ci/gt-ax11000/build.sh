@@ -1265,6 +1265,7 @@ dict_enum_file=$(find "$SDK_DIR" -type f -path '*/src/image/dictenum.txt' -print
 # relinked against it, every package resolves it by SONAME at run time, so
 # reinstalling the shared object is all a rust-fast build has to do.
 rust_relinked_consumers=(
+	usr/lib/libmssl.so
 	usr/lib/libshared.so
 	usr/sbin/wlif-exec
 	usr/sbin/infosvr

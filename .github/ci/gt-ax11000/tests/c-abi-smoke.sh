@@ -29,7 +29,13 @@ export CARGO_HOME="$CARGO_DIR"
 cd "$(dirname "$MANIFEST")"
 cargo +"$RUST_TOOLCHAIN" build --manifest-path "$MANIFEST" --release \
 	--locked --offline -p httpd-parsers -p router-security -p wanduck-transition \
-	-p wlif-policy -p zlib-static -p zlib-shared
+	-p wlif-policy -p zlib-static -p zlib-shared -p mssl-server
+
+cc -shared -fPIC -Os -Wall -Wextra -Werror \
+	"$SCRIPT_ROOT/../rust/mssl-server/adapter.c" \
+	"$TARGET_DIR/release/libmssl_server.a" -Wl,--gc-sections,--exclude-libs,ALL \
+	-ldl -lpthread -lm -o "$FIXTURE_DIR/libmssl.so"
+python3 "$SCRIPT_ROOT/test_mssl_adapter.py" "$FIXTURE_DIR/libmssl.so"
 
 common=(-std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2)
 libraries=(-ldl -lpthread -lm -lrt -lutil)

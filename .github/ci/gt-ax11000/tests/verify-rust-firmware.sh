@@ -39,6 +39,7 @@ artifacts=(
 # Installed 0755 by networkmap-install, so it reaches the same ISA checks, but
 # it is a library: no interpreter, and it is loaded by the closed networkmap.
 shared_objects=(
+	"usr/lib/libmssl.so"
 	"usr/lib/libbwdpi.so"
 	"usr/lib/libshared.so"
 )

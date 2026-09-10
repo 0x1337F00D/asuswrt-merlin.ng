@@ -11,6 +11,29 @@ use wsdd2::{answer_discovery as answer, ReplyContext};
 
 const ENDPOINT: &str = "d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44";
 
+#[test]
+fn malformed_http_syntax_is_not_admitted() {
+    let good = format!("POST /{ENDPOINT} HTTP/1.1\r\nContent-Type: application/soap+xml\r\nContent-Length: 4\r\n\r\nbody");
+    for bad in [
+        good.replace("HTTP/1.1", "HTTP/1.garbage"),
+        good.replace("HTTP/1.1\r\n", "HTTP/1.1\n"),
+        good.replace("Content-Length:", "X Bad: value\r\nContent-Length:"),
+        good.replace("Content-Length:", "X-Test: a\0b\r\nContent-Length:"),
+        good.replace(
+            "Content-Length:",
+            "Content-Type: application/soap+xml\r\nContent-Length:",
+        ),
+    ] {
+        assert!(
+            matches!(
+                http::parse_header(bad.as_bytes(), ENDPOINT),
+                Progress::Failed(_)
+            ),
+            "{bad:?}"
+        );
+    }
+}
+
 fn identity() -> Identity {
     Identity {
         endpoint: String::from(ENDPOINT),

@@ -77,6 +77,13 @@ jobs:
             --profile minimal --component clippy,rustfmt \
             --target "${{ steps.inputs.outputs.rust_target }}"
 
+      # ring contains target C/assembly; this compiler is for the check job
+      # only. Firmware linking still uses the locked Broadcom toolchain.
+      - name: Install ARM cross-check compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabi
+
       - name: Restore Rust cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -101,6 +108,8 @@ jobs:
           python3 "$root/tests/test_gnu_make_bootstrap.py"
           python3 "$root/tests/test_build_stage_failures.py"
           python3 "$root/tests/test_shared_repack.py"
+          python3 "$root/tests/test_wlif_search_path.py"
+          python3 "$root/tests/test_lltd_socket_mutation.py"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
           # Cargo resolves the vendored crates.io mapping (rust/.cargo) from
           # the working directory, not from --manifest-path.
@@ -593,7 +602,7 @@ jobs:
               sha256sum usr/lib/libshared.so usr/sbin/wlif-exec usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
-                usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2
+                usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2 usr/lib/libmssl.so
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
           rootfs_excludes=(rom/etc/image_version)
@@ -620,6 +629,7 @@ jobs:
               usr/lib/libbwdpi.so
               usr/sbin/wget
               usr/lib/libz.so.1
+              usr/lib/libmssl.so
               usr/sbin/lld2d
               usr/sbin/wsdd2
             )
@@ -705,7 +715,7 @@ jobs:
               sha256sum usr/lib/libshared.so usr/sbin/wlif-exec usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
-                usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2
+                usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2 usr/lib/libmssl.so
             ) > cache-equivalence/consumers.after
             diff -u cache-equivalence/consumers.before \
               cache-equivalence/consumers.after
@@ -733,6 +743,7 @@ jobs:
               usr/lib/libbwdpi.so
               usr/sbin/wget
               usr/lib/libz.so.1
+              usr/lib/libmssl.so
               usr/sbin/lld2d
               usr/sbin/wsdd2
             )

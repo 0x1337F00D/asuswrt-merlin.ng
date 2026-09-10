@@ -85,6 +85,14 @@ pub fn parse_header(buffer: &[u8], endpoint: &str) -> Progress {
     let Some(head) = buffer.get(..end) else {
         return Progress::Failed(Status::BadRequest);
     };
+    // Reject bare CR/LF even inside ignored extension fields.
+    for (index, byte) in head.iter().enumerate() {
+        if (*byte == b'\r' && head.get(index + 1) != Some(&b'\n'))
+            || (*byte == b'\n' && index.checked_sub(1).and_then(|i| head.get(i)) != Some(&b'\r'))
+        {
+            return Progress::Failed(Status::BadRequest);
+        }
+    }
     let body_offset = match end.checked_add(4) {
         Some(offset) => offset,
         None => return Progress::Failed(Status::BadRequest),
@@ -119,7 +127,20 @@ pub fn parse_header(buffer: &[u8], endpoint: &str) -> Progress {
         ) else {
             return Progress::Failed(Status::BadRequest);
         };
+        if name.is_empty()
+            || !name
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(b))
+            || value
+                .iter()
+                .any(|b| (*b < 0x20 && *b != b'\t') || *b == 0x7f)
+        {
+            return Progress::Failed(Status::BadRequest);
+        }
         if name.eq_ignore_ascii_case(b"content-type") {
+            if content_type_seen {
+                return Progress::Failed(Status::BadRequest);
+            }
             content_type_seen = true;
             // The vendor demanded an exact `application/soap+xml`
             // (`wsd.c:949`), which a client that appends the charset
@@ -166,6 +187,9 @@ pub fn parse_header(buffer: &[u8], endpoint: &str) -> Progress {
 }
 
 fn check_request_line(line: &[u8], endpoint: &str) -> Result<(), Status> {
+    if line.len() > MAX_HEADER_LINE {
+        return Err(Status::BadRequest);
+    }
     let mut parts = line.split(|byte| *byte == b' ');
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default();
@@ -176,7 +200,7 @@ fn check_request_line(line: &[u8], endpoint: &str) -> Result<(), Status> {
     if method != b"POST" {
         return Err(Status::MethodNotAllowed);
     }
-    if !version.starts_with(b"HTTP/1.") {
+    if version != b"HTTP/1.0" && version != b"HTTP/1.1" {
         return Err(Status::MethodNotAllowed);
     }
     let Some(path) = target.strip_prefix(b"/".as_slice()) else {

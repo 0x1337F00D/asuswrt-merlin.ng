@@ -1,5 +1,7 @@
 # Tier 3 checkpoint
 
+Historical checkpoint; superseded by TIER3_IMPLEMENTATION.md.
+
 Base b2bae581786 is pushed to fork/codex/tier2-stable-boundaries.
 Working branch: codex/tier3-implementation. Router unchanged.
 

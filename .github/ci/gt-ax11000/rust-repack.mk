@@ -4,6 +4,8 @@ rust-components-relink:
 	# shared-install enters shared's install: all, rebuilding the wlif archive
 	# and libshared plus its exec helper before any dependent consumer is refreshed.
 	+$(MAKE) -C router shared-install
+	+$(MAKE) -C router mssl
+	+$(MAKE) -C router mssl-install
 	# AUTODICT rewrites the complete compressed Web tree and its dictionaries as
 	# one versioned set.  Generate that set before rebuilding httpd consumers.
 	+$(MAKE) -C router www-install
@@ -140,7 +142,9 @@ rust-firmware-repack:
 	promote_artifact $(PROFILE_DIR)/fs.install/lltd.arm/usr/sbin/lld2d \
 		$(PROFILE_DIR)/fs.install/usr/sbin/lld2d; \
 	promote_artifact $(PROFILE_DIR)/fs.install/wsdd2/usr/sbin/wsdd2 \
-		$(PROFILE_DIR)/fs.install/usr/sbin/wsdd2
+		$(PROFILE_DIR)/fs.install/usr/sbin/wsdd2; \
+	promote_artifact $(PROFILE_DIR)/fs.install/mssl/usr/lib/libmssl.so \
+		$(PROFILE_DIR)/fs.install/usr/lib/libmssl.so
 	# Package install targets stage their complete payload below a package-named
 	# directory. The selected artifacts have now been promoted into the
 	# flat firmware tree, so remove only those known duplicate staging roots.
@@ -155,7 +159,8 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/wget \
 		$(PROFILE_DIR)/fs.install/zlib \
 		$(PROFILE_DIR)/fs.install/lltd.arm \
-		$(PROFILE_DIR)/fs.install/wsdd2
+		$(PROFILE_DIR)/fs.install/wsdd2 \
+		$(PROFILE_DIR)/fs.install/mssl
 	# fsbuild creates these legacy containers for optional external payloads.
 	# On GT-AX11000 they are empty; leaving them behind only on a repeated
 	# build makes rust-fast rootfs topology differ from the clean reference.
@@ -166,6 +171,7 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/rom/rom/scripts \
 		$(PROFILE_DIR)/fs.install/rom/rom
 	cd $(PROFILE_DIR)/fs.install; sha256sum \
+		usr/lib/libmssl.so \
 		usr/lib/libshared.so \
 		usr/sbin/wlif-exec \
 		usr/sbin/infosvr \

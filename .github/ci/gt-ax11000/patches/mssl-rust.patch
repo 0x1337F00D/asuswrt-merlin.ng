@@ -1,0 +1,56 @@
+diff --git a/release/src/router/mssl/Makefile b/release/src/router/mssl/Makefile
+--- a/release/src/router/mssl/Makefile
++++ b/release/src/router/mssl/Makefile
+@@ -1,5 +1,53 @@
+ include ../common.mak
+ 
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_MSSL_MANIFEST := $(RUST_COMPONENTS_DIR)/mssl-server/Cargo.toml
++ifeq ($(BUILD_NAME),GT-AX11000)
++ifneq ($(wildcard $(RUST_MSSL_MANIFEST)),)
++USE_RUST_MSSL := y
++endif
++endif
++
++ifeq ($(USE_RUST_MSSL),y)
++.DEFAULT_GOAL := all
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++RUST_MSSL_ARCHIVE := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libmssl_server.a
++
++.PHONY: all install clean rust-mssl
++all: libmssl.so libmssl.a
++rust-mssl:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	CC_armv7_unknown_linux_gnueabi="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_MSSL_MANIFEST)" \
++		-p mssl-server --release --target "$(RUST_TARGET)" --locked --offline
++$(RUST_MSSL_ARCHIVE): rust-mssl
++
++mssl_adapter.o: $(RUST_COMPONENTS_DIR)/mssl-server/adapter.c
++	$(CC) -Os -Wall $(EXTRACFLAGS) -fPIC -c $< -o $@
++libmssl.so: mssl_adapter.o $(RUST_MSSL_ARCHIVE)
++	$(CC) -shared -Wl,--no-as-needed -lgcc_s -Wl,--as-needed \
++		-Wl,--gc-sections,--exclude-libs,ALL -o $@ $^ -ldl -lpthread -lm
++	$(STRIP) $@
++	$(CPTMP)
++libmssl.a: mssl_adapter.o $(RUST_MSSL_ARCHIVE)
++	cp $(RUST_MSSL_ARCHIVE) $@
++	$(AR) r $@ mssl_adapter.o
++install: all
++	install -D libmssl.so $(INSTALLDIR)/usr/lib/libmssl.so
++clean:
++	rm -f mssl_adapter.o libmssl.so libmssl.a
++else
+ CFLAGS	= -Os -Wall $(EXTRACFLAGS) -fPIC 
+ LIBS = 
+ LDFLAGS	= 
+@@ -51,3 +99,4 @@
+ 	@$(CC) $(CFLAGS) -M $< > $@
+ 
+ -include $(OBJS:%.o=.%.depend)
++endif
