@@ -1892,3 +1892,68 @@ merge did **not** fix is recorded here.
 - [ ] `-q` no longer terminates on a persistent clock-write failure. That is
   the right direction, it used to exit 0 falsely, but anything invoking
   `ntp -q` synchronously now waits indefinitely. Untested.
+
+### 2026-09-10 scoping: what a rustls port of `mssl` actually involves
+
+The TLS work was deferred pending a crypto-backend decision. Both parts of
+that question are now answered by measurement rather than by reading release
+notes. Nothing is ported yet; this is scope, not a change.
+
+**The boundary is much smaller than it looks.** `mssl.h` declares seven
+functions, but on GT-AX11000 only four are reachable and only the server half
+matters:
+
+- `httpd` is the sole consumer on this profile. `release/src/router/httpd/
+  httpd.c:2878` calls `ssl_server_fopen`, and that is the only call site of
+  either `fopen` entry point anywhere in the tree's first-party C.
+- `libwebapi`, `uploader` and `aws-iot` also link `-lmssl`, but `config_base`
+  leaves `RTCONFIG_AWSIOT` and `RTCONFIG_UPLOADER` unset.
+- `ssl_client_fopen` and `ssl_client_fopen_name` therefore have **no caller**.
+- `mssl.c` names 78 distinct OpenSSL identifiers, which overstates the work:
+  it is a thin wrapper, and roughly a third of the file is a bundled musl
+  `fopencookie` that `#if !defined(__GLIBC__)` compiles out here. glibc 2.26
+  supplies `fopencookie`, so a Rust replacement can call it directly and does
+  not have to reimplement stdio.
+
+**Latent, not shipped:** `mssl_init_ex` ends with an unconditional
+`SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL)` (`mssl.c:567`) and every
+connection gets `SSL_set_verify(kuki->ssl, SSL_VERIFY_NONE, NULL)`
+(`mssl.c:380`) *before* the `if (client)` branch. For a server that is
+correct: it is what "do not demand a client certificate" looks like. But it
+means the first component to enable a client consumer silently gets a TLS
+client that accepts any certificate. rustls verifies by default and cannot be
+told otherwise without naming a dangerous API, which is an argument for the
+port beyond memory safety.
+
+**Both backends build for this target.** Measured here, not assumed, with
+Rust 1.85.1 and the Broadcom GCC 5.5 cross toolchain as linker and `CC`:
+
+| Backend | Builds for `armv7-unknown-linux-gnueabi` | `Tag_CPU_arch` | `Tag_ABI_VFP_args` | Release staticlib |
+|---|---|---|---|---:|
+| `rustls` + `ring` 0.17.14 | yes | v7 | absent | 7,113,828 B |
+| `rustls` + `aws-lc-rs` 1.18.1 | yes | v7 | absent | 8,714,690 B |
+
+Both are soft-float ABI, which is what the firmware requires. Two caveats
+before reading the sizes as a decision:
+
+- A static archive is not shipped size. It carries every member and section
+  the linker would later discard, and the probe only touched
+  `default_provider()`. The number that matters is a linked, stripped shared
+  object exercising a real server handshake, and that has not been measured.
+- `aws-lc-sys` objects carry `Tag_FP_arch: VFPv2` where `ring` objects carry
+  no FP tag at all, so aws-lc may emit floating-point instructions. That is
+  fine on this SoC, but `verify-rust-firmware.sh` currently asserts only the
+  VFP *argument* ABI and the absence of CP15 barriers, so the ISA gate would
+  need an explicit decision about FP instructions before aws-lc could ship.
+
+- [ ] Measure a linked, stripped `libmssl.so` replacement against a real
+  server handshake for both backends before choosing. `ring` is the smaller
+  archive and pulls no cmake or C++ build, which favours it, but that is a
+  weak signal until the linked figure exists.
+- [ ] Decide what happens to `mssl_cert_key_match`, which today inspects RSA
+  moduli and EC public keys through OpenSSL to check that a certificate and a
+  private key belong together. rustls has no equivalent; this needs either a
+  small `rustls-pki-types`/`webpki` implementation or a decision to drop it.
+- [ ] `ssl_client_fopen` has no caller. Decide whether the Rust replacement
+  implements it at all, or whether the client half is removed rather than
+  reimplemented and reintroduced only when something needs it.
