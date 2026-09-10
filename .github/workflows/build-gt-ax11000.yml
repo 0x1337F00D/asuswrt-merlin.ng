@@ -96,6 +96,7 @@ jobs:
           set -euo pipefail
           root="$GITHUB_WORKSPACE/overlay/.github/ci/gt-ax11000"
           python3 "$root/tests/test_input_lock.py"
+          python3 "$root/tests/test_firmware_version.py"
           python3 "$root/tests/test_ccache_frontends.py"
           python3 "$root/tests/test_gnu_make_bootstrap.py"
           python3 "$root/tests/test_build_stage_failures.py"

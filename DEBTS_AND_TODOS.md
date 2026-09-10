@@ -3,6 +3,39 @@
 This file tracks known limitations of the GT-AX11000 overlay. A successful
 compile is not sufficient evidence for releasing or flashing a candidate.
 
+## Current deployment and next iteration (2026-09-10)
+
+- Supersedes the historical "not deployed" status below: combined candidate
+  123e6fb4621 / image fb0936818724 passed full build/extraction, native tests,
+  15-minute soak and real fallback; permanently accepted on Part1. Evidence:
+  CLAUDE_FINAL_REVIEW.md. Part2 remains the tested fallback. No blanket claim
+  of browser, WiFi roaming, factory-reset restore or complete WAN isolation.
+- Next firmware candidate is alpha2, reserved in
+  .github/ci/gt-ax11000/firmware-iteration. Increment for each changed candidate;
+  identical rebuilds retain the iteration. Local and CI share this file.
+- Version override and strict guard-version rendering are implemented and
+  host-tested; full alpha2 build/boot still pending. No relabeling of running
+  alpha1 via NVRAM. Concurrent branches require coordinated number reservations;
+  no global distributed automatic allocator has been implemented.
+
+## QoS/offload measurement before tuning
+
+- User supplied source-review notes identify hnd_nat_ac_init disabling Flow
+  Cache/Runner for non-Adaptive QoS (with exceptions). Local Traditional and
+  Bandwidth Limiter modes may therefore cost throughput; this is not yet a
+  measured regression and must not be "fixed" by bypassing the QoS boundary.
+- Read-only baseline first: actual QoS mode, qdiscs/classes, tc counters,
+  CPU/SoftIRQ, per-flow offload counters, available CAKE module. Kernel config
+  presence does not prove runtime availability or activation.
+- Plan a separately agreed saturation window on wired LAN: idle/upload/download/
+  bidirectional load, throughput and p95/p99 latency, drops and CPU together.
+  Saturation can interrupt calls; do not run it during read-only stability watch.
+- Only then compare bounded FQ-CoDel/CAKE shaping at the actual bottleneck,
+  including bandwidth and link overhead. Preserve rollback and offload semantics.
+- Rust should own typed plan validation/diagnostics and narrow apply/rollback
+  interfaces, not a per-packet userspace forwarding path. WLAN room-transition
+  dropouts remain a separate problem, not solved by faster NAT alone.
+
 ## Tier 1 re-review / Tier 2 stable boundaries (2026-09-10, not deployed)
 
 - Re-reviewed Claude's `210da6e7b2e` state and corrected HTTP incomplete

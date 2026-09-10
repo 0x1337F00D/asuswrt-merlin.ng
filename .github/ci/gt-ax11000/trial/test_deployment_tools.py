@@ -16,13 +16,14 @@ from verify_backup import decode_cfg, members
 
 ROOT = Path(__file__).parent
 HASHES = {name: "a" * 64 for name in ("HTTPD", "RC", "SHARED", "WGET")}
+VERSION = {"firmver": "3.0.0.6", "buildno": "102.9", "extendno": "alpha1"}
 
 
 class GuardTests(unittest.TestCase):
     def rendered(self, slot):
         return render((ROOT / "router-persistent-guard.sh").read_text(),
                       candidate=slot, web_hash="b" * 64, links_hash="c" * 64,
-                      binaries=HASHES)
+                      binaries=HASHES, version=VERSION)
 
     def test_explicit_slot_orientations(self):
         for slot in (1, 2):
@@ -37,7 +38,7 @@ class GuardTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 render((ROOT / "router-persistent-guard.sh").read_text(),
                        candidate=2, web_hash="b" * 64, links_hash="c" * 64,
-                       binaries=hashes)
+                       binaries=hashes, version=VERSION)
 
     def identity_fixture(self, slot, *, corrupt=None, old_bracket_bug=False):
         # Execute the actual identity predicate, not the dispatch's mock.
@@ -63,7 +64,7 @@ class GuardTests(unittest.TestCase):
             def digest(name):
                 return hashlib.sha256(files[name]).hexdigest()
             text = render((ROOT / "router-persistent-guard.sh").read_text(),
-                          candidate=slot,
+                          candidate=slot, version=VERSION,
                           web_hash=digest("usr/share/codex/web-payload.sha256"),
                           links_hash=digest("usr/share/codex/web-symlinks.manifest"),
                           binaries={name: digest(path) for name, path in {
@@ -98,6 +99,19 @@ is_candidate_identity
             with self.subTest(slot=slot):
                 result = self.identity_fixture(slot)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_iteration_rendered_and_untrusted_version_rejected(self):
+        template = (ROOT / "router-persistent-guard.sh").read_text()
+        kwargs = dict(candidate=1, web_hash="b" * 64, links_hash="c" * 64, binaries=HASHES)
+        for suffix in ("alpha2", "alpha42", "alpha999999"):
+            result = render(template, **kwargs, version={**VERSION, "extendno": suffix})
+            self.assertIn(f"EXPECTED_EXTENDNO={suffix}\n", result)
+            self.assertNotIn("RENDER_REQUIRED", result)
+        for value in ({}, {**VERSION, "extendno": "alpha2;reboot"},
+                      {**VERSION, "extendno": "alpha02"},
+                      {**VERSION, "buildno": "$(id)"}, {**VERSION, "extendno": 2}):
+            with self.assertRaises(ValueError):
+                render(template, **kwargs, version=value)
 
     def test_real_identity_rejects_tampered_binaries(self):
         for path in ("usr/sbin/httpd", "sbin/rc", "usr/lib/libshared.so", "usr/sbin/wget"):

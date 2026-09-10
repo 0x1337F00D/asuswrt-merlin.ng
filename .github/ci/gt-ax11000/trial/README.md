@@ -71,7 +71,7 @@ python3 -m unittest discover -s .github/ci/gt-ax11000/trial \
 `router-persistent-guard.sh` is deliberately separate from the one-shot trial
 controller. Its roles are intentionally asymmetric and must be rendered from
 the verified candidate image and an explicit candidate slot using
-`render_guard.py --candidate-slot 2 --rootfs ROOTFS --output NEW_GUARD`. It
+`render_guard.py --candidate-slot 2 --rootfs ROOTFS --version-file OUTPUT/FIRMWARE-VERSION.json --output NEW_GUARD`. It
 never derives those roles from the currently booted slot, because doing so can
 make a baseline boot re-arm a rejected candidate. Candidate identity requires
 the exact model/version, selected partition, final test-lab UI markers, the `httpd`

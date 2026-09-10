@@ -9,6 +9,8 @@ RUST_OVERLAY="$SCRIPT_ROOT/rust"
 RUST_REPACK_MAKEFILE="$SCRIPT_ROOT/rust-repack.mk"
 INPUT_LOCK="$SCRIPT_ROOT/inputs.lock"
 INPUT_LOCK_TOOL="$SCRIPT_ROOT/tools/input_lock.py"
+FIRMWARE_VERSION_TOOL="$SCRIPT_ROOT/tools/firmware_version.py"
+FIRMWARE_ITERATION_FILE="$SCRIPT_ROOT/firmware-iteration"
 PATCH_SERIES="$SCRIPT_ROOT/patches/series"
 SECURITY_OVERLAY_TEST="$SCRIPT_ROOT/tests/security-overlay-check.sh"
 NETWORK_HARDENING_TEST="$SCRIPT_ROOT/tests/network-hardening-check.sh"
@@ -301,6 +303,7 @@ compute_source_state_id() {
 	{
 		git -C "$SOURCE_REPO" rev-parse HEAD
 		printf '%s\n' "$SOURCE_PREP_VERSION"
+		sha256sum "$FIRMWARE_VERSION_TOOL" "$FIRMWARE_ITERATION_FILE" | awk '{print $1}'
 		# Hash the source-mutating preparation implementation itself. This keeps
 		# unrelated build-driver edits cheap while invalidating prepared trees
 		# automatically whenever their generated source state could change.
@@ -989,6 +992,11 @@ fi
 source_adapt_started=$SECONDS
 echo "Installing Rust component overlay"
 verify_locked_inputs
+export ASUSWRTVERSIONCONFDIR="$ROOT/.asuswrt-firmware-version"
+FIRMWARE_SUFFIX=$(python3 "$FIRMWARE_VERSION_TOOL" \
+	--source "$SDK_DIR/version.conf" --iteration "$FIRMWARE_ITERATION_FILE" \
+	--output "$ASUSWRTVERSIONCONFDIR")
+echo "Firmware iteration: $FIRMWARE_SUFFIX"
 install_rust_components
 
 echo "Verifying security overlay invariants"
@@ -1091,7 +1099,7 @@ find "$OUTPUT_DIR" -maxdepth 1 -type f \
 	\( -name "$IMAGE_GLOB" -o -name "output-${MAKE_TARGET}-wsl.log" -o \
 	-name SHA256SUMS -o -name MD5SUMS -o -name RUST-CONSUMERS.sha256 -o \
 	-name WEB-PAYLOAD.sha256 -o -name WEB-SYMLINKS.manifest -o \
-	-name BUILD-STATE.txt \) -delete
+	-name BUILD-STATE.txt -o -name FIRMWARE-VERSION.json \) -delete
 find "$SDK_DIR/image" "$SDK_DIR/targets/$PROFILE" -maxdepth 1 -type f \
 	-name "$IMAGE_GLOB" -delete 2>/dev/null || true
 build_started_marker="$(mktemp --tmpdir asuswrt-build-start.XXXXXX)"
@@ -1235,6 +1243,14 @@ if [ "$build_rc" -eq 0 ] && [ "${#built_images[@]}" -ne 1 ]; then
 	build_rc=1
 fi
 
+if [ "$build_rc" -eq 0 ]; then
+	if [[ "$(basename "${built_images[0]}")" != *"_${FIRMWARE_SUFFIX}_ubi.w" ]] ||
+		! grep -Fxq "#define RT_EXTENDNO \"$FIRMWARE_SUFFIX\"" "$ROOT/release/src/router/shared/version.h"; then
+		echo "Firmware filename/header does not match reserved iteration $FIRMWARE_SUFFIX" >&2
+		build_rc=1
+	fi
+fi
+
 rt_tables_link="$SDK_DIR/targets/$PROFILE/fs/tmp/etc/iproute2/rt_tables"
 if [ "$build_rc" -eq 0 ] && { [ ! -L "$rt_tables_link" ] || [ "$(readlink "$rt_tables_link")" != "/var/iproute2/rt_tables" ]; }; then
 	echo "Required rootfs link is missing or incorrect: $rt_tables_link" >&2
@@ -1347,7 +1363,9 @@ if [ "$build_rc" -eq 0 ]; then
 	) > "$OUTPUT_DIR/RUST-CONSUMERS.sha256"
 	cp -f "$WEB_PAYLOAD_MANIFEST" "$OUTPUT_DIR/WEB-PAYLOAD.sha256"
 	cp -f "$WEB_SYMLINK_MANIFEST" "$OUTPUT_DIR/WEB-SYMLINKS.manifest"
+	cp "$ASUSWRTVERSIONCONFDIR/firmware-version.json" "$OUTPUT_DIR/FIRMWARE-VERSION.json"
 	{
+		echo "firmware_suffix=$FIRMWARE_SUFFIX"
 		echo "upstream_sha=$(git -C "$SOURCE_REPO" rev-parse HEAD)"
 		echo "source_state=${ASUSWRT_SOURCE_STATE_ID:-unknown}"
 		echo "rust_state=${ASUSWRT_RUST_STATE_ID:-unknown}"
