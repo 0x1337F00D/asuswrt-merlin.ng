@@ -55,6 +55,21 @@ static int fail_combine(const char *what, uLong head, uLong tail,
 		 * so passing op last reproduces crc32_combine step by step.
 		 * op must never be zero: multmodp loops forever on a zero
 		 * multiplier, which is documented in the zlib-rs source. */
+		/* x2nmodp(2^i, 3) is exactly X2N_TABLE[3 + i], so this reads
+		 * the constant table through the public ABI and shows whether
+		 * the PC-relative load resolves to it on this target. */
+		static const unsigned long expect[6] = {
+			0x00800000UL, 0x00008000UL, 0xedb88320UL,
+			0xb1e6b092UL, 0xa06a2517UL, 0xed627daeUL
+		};
+		for (unsigned i = 0; i < 6; i++) {
+			uLong entry = crc32_combine_gen((z_off_t)(1L << i));
+			fprintf(stderr, "libz.so.1 fixture: table[%u]=%08lx "
+				"expect=%08lx %s\n", 3u + i,
+				(unsigned long)entry, expect[i],
+				(unsigned long)entry == expect[i] ? "ok"
+					: "MISMATCH");
+		}
 		fprintf(stderr, "libz.so.1 fixture: gen=%08lx op(head,tail,gen)="
 			"%08lx combine64=%08lx\n", (unsigned long)op,
 			(unsigned long)(op == 0 ? 0
