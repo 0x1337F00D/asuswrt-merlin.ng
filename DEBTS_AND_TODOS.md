@@ -1064,6 +1064,103 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   name, the functional claim in this entry is unverified. The binary is also
   325 KB stripped against the blob's 63 KB, which is a real rootfs cost that
   has not been measured against the free space on a built image.
+### Open-source network daemon replacements (wsdd2 first)
+
+- [x] Replace the NETGEAR/Samba `wsdd2` (`release/src/router/wsdd2`, five C
+  files, built for `RTCONFIG_SAMBASRV`, which `config_base` sets) with a
+  memory-safe Rust responder. It runs as root, parses SOAP/XML on UDP 3702 and
+  DNS-shaped packets on UDP 5355 from any LAN device, and `rc/firewall.c` has a
+  blanket `-A INPUT -i <lan_if> -m state --state NEW -j ACCEPT`, so every
+  device on the bridge can reach it. `rust/wsdd2` is written from scratch
+  against the vendor sources and the WS-Discovery/RFC 4795 wire formats with
+  `libc` as its only dependency, matching `infosvr`, `rstats`, `nt-event` and
+  `ntp`; no XML crate was added, because `rust/vendor` gains no new crates.io
+  dependency. `wsdd2-rust.patch` changes only
+  `release/src/router/wsdd2/Makefile`, behind the established
+  `ifneq ($(wildcard $(RUST_WSDD2_MANIFEST)),)` guard with the vendor C build
+  in the `else` branch, so `wsdd2-install` in `release/src/router/Makefile`
+  stays the single producer of `/usr/sbin/wsdd2` (proved by a tree-wide
+  `grep -rlE 'usr/sbin/wsdd2([^a-zA-Z0-9_]|$)' --include=Makefile` assertion
+  added to `security-overlay-check.sh`) and `rc/usb.c` is untouched. Two
+  vendor memory-safety defects are gone rather than reproduced: the LLMNR
+  label loop (`llmnr.c:172-193`) walked the question with no bound against
+  the datagram length and then read four more bytes for `QTYPE`/`QCLASS`,
+  which a 13-byte packet reaches; and the response was `memcpy`'d from a
+  9,217-byte receive buffer (`llmnr.c:275-277`), so a padded query was
+  reflected in full. Evidence on 2026-09-10, host only: 91 crate tests
+  (byte-level fixtures for Probe/Resolve/Get/ProbeMatches/ResolveMatches/
+  Hello/Bye and for every LLMNR header rule, plus truncated at every prefix
+  length, oversized, deeply nested, non-UTF-8, wrong-namespace, wrong-action,
+  action/body mismatch, spoofed and oversized message ids, unbound prefixes,
+  doctype/entity/CDATA/comment refusals, trailing content after the root, a
+  compression pointer, an unterminated question, a label with a control byte
+  or a dot, every wrong `QTYPE`/`QCLASS`, the whole HTTP framing table and the
+  exact `rc/usb.c` argument vector), the fuzz smoke extended with the XML
+  scanner, the SOAP parser, the LLMNR parser, the HTTP framer and the reply
+  builders at three fixed seeds and 250,000 iterations each, `cargo fmt`,
+  Clippy with warnings denied, the armv7 workspace check, an armv7 release
+  binary inspected with the Broadcom `readelf`/`objdump` (ARMv7, soft-float,
+  `/lib/ld-linux.so.3`, no `Tag_ABI_VFP_args`, no CP15 barriers), a full
+  31-patch replay re-locked to
+  `a7b6ee866012e0d7a21437c928d80c303252bb7924f3f2a885b8ac00e1c3b240`, and the
+  overlay checks. The host binary was also run for real in an unprivileged
+  network namespace against scripted clients on `lo`: a Windows-shaped Probe
+  for `wsdp:Device` was answered with a `ProbeMatches` carrying
+  `wsdp:Device pub:Computer` and `http://127.0.0.1:3702/<uuid>`; a probe for
+  `wprt:PrintDeviceType`, a `Resolve` for another endpoint, 400 bytes of
+  `0xff`, a 9,000-byte document, an action/body mismatch and a message id
+  containing `</wsa:RelatesTo>` were all answered with silence; a metadata
+  `POST` to the advertised XAddr returned `200` with
+  `<pub:Computer>GT-AX11000/Workgroup:WORKGROUP</pub:Computer>`, a POST to
+  another endpoint UUID returned `404` and a wrong `Content-Type` returned
+  `400` with a 167-byte reply and no SOAP fault; and an LLMNR `A` query for
+  the NetBIOS name was answered with a 44-byte response whether the 28-byte
+  query was padded to 148 bytes or not, while a query for another name, an
+  `MX` query and a truncated query went unanswered. No firmware build, hosted
+  build, QEMU run or hardware test has exercised any of this; `qemu-arm` is
+  not installed on this host, so the three `--self-test`/`-h`/`-i`
+  expectations added to `verify-rust-firmware.sh` have only been run on the
+  host binary.
+- [ ] Prove the Rust `wsdd2` against a real Windows client. Owed: a Windows 10
+  or 11 machine on `br0` with `samba_enable=1`, showing the router in
+  Explorer's Network view under its NetBIOS name and workgroup, which requires
+  the whole chain -- multicast `Hello` on `239.255.255.250:3702`, the
+  `ProbeMatches` answer, the WS-Transfer `Get` over TCP 3702 to the advertised
+  XAddr, and the metadata document -- to work end to end against WSDAPI rather
+  than against the scripted client used here. Also owed: `stop_wsdd()`'s
+  `pids("wsdd2")`/`killall_tk("wsdd2")` against the daemonised process, a
+  `SIGHUP` restart (Bye then Hello) observed by a real client, behaviour on a
+  LAN address change, and interaction with the `samba_enable`/`enable_samba`
+  restart paths in `rc`.
+- [ ] Deliberate deviations from the vendor `wsdd2` that need a decision or a
+  field check. It answers a `Probe` only when `wsd:Types` is absent or names
+  `wsdp:Device`/`pub:Computer` and a `Resolve` only for its own endpoint,
+  where the vendor answered everything; it requires SOAP 1.2, a
+  `Header`-then-`Body` envelope, exactly one body element and a `wsa:To` of
+  `urn:schemas-xmlsoap-org:ws:2005:04:discovery`, where the vendor required
+  nothing beyond two `strstr` hits; it caps a datagram reply at 1,400 bytes
+  and applies a 32-replies-per-second budget per protocol that the vendor did
+  not have. It opens one socket per family and protocol on the interface named
+  by `-i` instead of one per interface address, and drops the netlink monitor
+  and the `SIGHUP`-on-address-change restart with it: the sockets bind
+  `INADDR_ANY`/`in6addr_any` pinned to the device and the advertised address
+  comes from a per-request route lookup, so an address change needs no rebind,
+  but a *new* interface appearing is no longer picked up without a restart --
+  `rc` always passes `-i <lan_ifname>`, so this is only reachable by hand. It
+  does not implement LLMNR over TCP: the vendor registered `llmnr_recv` on the
+  TCP 5355 listener, where it called `recvfrom` on a listening socket, which
+  fails and drove `restart_service()`, so a single connection to that port was
+  a restart loop. It accepts a `Content-Type` of `application/soap+xml` with
+  parameters, where the vendor's exact `strcmp` rejected the
+  `; charset=utf-8` Windows sends, which means the metadata endpoint is
+  reachable here and was effectively dead there. It emits no SOAP fault. It
+  reproduces `ip2uri`: an IPv6 `XAddrs` publishes the host name rather than a
+  `[x::x]` literal, which is useless unless the client can resolve that name,
+  and on this firmware LLMNR is not even served because `rc` passes `-w`. A
+  missing or unusable endpoint UUID is a startup failure instead of a daemon
+  that runs with no WS-Discovery endpoint. `-A` and `-B` remain unimplemented,
+  as in the vendor getopt string, so `additional dns hostnames` and
+  `netbios aliases` can only come from `/etc/smb.conf`.
 
 ## Local client view and QoS debt
 

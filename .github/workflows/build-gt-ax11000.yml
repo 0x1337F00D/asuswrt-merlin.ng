@@ -588,7 +588,7 @@ jobs:
               sha256sum usr/lib/libshared.so usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
-                usr/lib/libz.so.1 usr/sbin/lld2d
+                usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2
             ) > "$GITHUB_WORKSPACE/cache-equivalence/consumers.before"
           fi
           rootfs_excludes=(rom/etc/image_version)
@@ -598,8 +598,9 @@ jobs:
             # libshared.so comes from shared-install (install: all),
             # /usr/sbin/ntp comes from rc-install alongside sbin/rc,
             # networkmap and its libbwdpi.so provider from networkmap-install,
-            # wget from its package target, libz.so.1 from zlib-install and
-            # the LLTD responder /usr/sbin/lld2d from lltd.arm-install.
+            # wget and wsdd2 from their package targets, libz.so.1 from
+            # zlib-install and the LLTD responder /usr/sbin/lld2d from
+            # lltd.arm-install.
             # build.sh separately fails the build if any of them is stale.
             rootfs_excludes+=(
               usr/lib/libshared.so
@@ -614,6 +615,7 @@ jobs:
               usr/sbin/wget
               usr/lib/libz.so.1
               usr/sbin/lld2d
+              usr/sbin/wsdd2
             )
           fi
           bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \
@@ -697,7 +699,7 @@ jobs:
               sha256sum usr/lib/libshared.so usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
-                usr/lib/libz.so.1 usr/sbin/lld2d
+                usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2
             ) > cache-equivalence/consumers.after
             diff -u cache-equivalence/consumers.before \
               cache-equivalence/consumers.after
@@ -725,6 +727,7 @@ jobs:
               usr/sbin/wget
               usr/lib/libz.so.1
               usr/sbin/lld2d
+              usr/sbin/wsdd2
             )
           fi
           bash overlay/.github/ci/gt-ax11000/tests/rootfs-equivalence-manifest.sh \

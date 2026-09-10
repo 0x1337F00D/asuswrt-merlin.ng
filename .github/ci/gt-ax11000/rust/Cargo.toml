@@ -14,6 +14,7 @@ members = [
     "router-diagnostics",
     "rstats",
     "wanduck-transition",
+    "wsdd2",
     "wlif-policy",
     "zlib-shared",
     "zlib-static",

@@ -119,6 +119,7 @@ dependencies = [
  "serde_json",
  "wanduck-transition",
  "wlif-policy",
+ "wsdd2",
 ]
 
 [[package]]
@@ -209,6 +210,13 @@ version = "0.1.0"
 [[package]]
 name = "wlif-policy"
 version = "0.1.0"
+
+[[package]]
+name = "wsdd2"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "zlib-rs"

@@ -32,6 +32,7 @@ artifacts=(
 	"usr/sbin/lld2d"
 	"usr/sbin/hostapd"
 	"usr/sbin/wpa_supplicant-2.7"
+	"usr/sbin/wsdd2"
 )
 
 # Installed 0755 by networkmap-install, so it reaches the same ISA checks, but
@@ -260,6 +261,17 @@ run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/ntp" --self-test
 grep -q '^ntp-rs: runtime self-test passed$' "$temporary/qemu.stdout"
 run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/ntp"
 grep -q 'no -p PEER was given' "$temporary/qemu.stderr"
+# The WS-Discovery/LLMNR responder parses a Windows Probe, a Resolve for
+# another endpoint, an LLMNR query padded with junk and a metadata POST, and
+# checks each reply, without opening a socket.  -h prints the vendor usage and
+# exits 0; a missing option argument is a startup failure, not a silent
+# default.  None of the three touches the network.
+run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wsdd2" --self-test
+grep -q '^wsdd2-rs: runtime self-test passed$' "$temporary/qemu.stdout"
+run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wsdd2" -h
+grep -q '^WSDD and LLMNR daemon$' "$temporary/qemu.stdout"
+run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/wsdd2" -i
+grep -q 'Option -i requires an argument' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
 # The LLTD responder exercises its frame parser, its property encoder and its

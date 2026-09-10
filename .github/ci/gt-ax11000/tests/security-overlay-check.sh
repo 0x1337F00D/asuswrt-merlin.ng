@@ -78,6 +78,9 @@ rc_makefile="$router/rc/Makefile"
 ntp_rust="$router/rust-components/ntp/src"
 lltd_makefile="$router/lltd.arm/Makefile"
 lltd_rust="$router/rust-components/lltd/src"
+wsdd2_rust="$router/rust-components/wsdd2/src"
+wsdd2_makefile="$router/wsdd2/Makefile"
+usb="$router/rc/usb.c"
 zlib_static="$router/rust-components/zlib-static/src/lib.rs"
 zlib_static_manifest="$router/rust-components/zlib-static/Cargo.toml"
 zlib_shared="$router/rust-components/zlib-shared/src/lib.rs"
@@ -100,7 +103,12 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$lltd_makefile" "$lltd_rust/lib.rs" "$lltd_rust/wire.rs" \
 	"$lltd_rust/tlv.rs" "$lltd_rust/device.rs" "$lltd_rust/limit.rs" \
 	"$lltd_rust/responder.rs" "$lltd_rust/main.rs" "$lltd_rust/sys.rs" \
-	"$rc_makefile" "$ntp_rust/lib.rs" "$ntp_rust/packet.rs" "$ntp_rust/client.rs" \
+	"$rc_makefile" "$wsdd2_makefile" "$usb" \
+	"$wsdd2_rust/lib.rs" "$wsdd2_rust/xml.rs" "$wsdd2_rust/wsd.rs" \
+	"$wsdd2_rust/llmnr.rs" "$wsdd2_rust/http.rs" "$wsdd2_rust/cli.rs" \
+	"$wsdd2_rust/config.rs" "$wsdd2_rust/budget.rs" "$wsdd2_rust/logging.rs" \
+	"$wsdd2_rust/main.rs" "$wsdd2_rust/sys.rs" \
+	"$ntp_rust/lib.rs" "$ntp_rust/packet.rs" "$ntp_rust/client.rs" \
 	"$ntp_rust/server.rs" "$ntp_rust/clock.rs" "$ntp_rust/cli.rs" \
 	"$ntp_rust/script.rs" "$ntp_rust/main.rs" "$ntp_rust/sys.rs" \
 	"$clientlist_rust/lib.rs" "$clientlist_rust/layout.rs" \
@@ -364,6 +372,85 @@ require_text "$ntp_rust/main.rs" 'other != index && peer.address == Some(address
 # an error rather than a silent busy loop.
 require_text "$ntp_rust/sys.rs" 'libc::POLLERR | libc::POLLHUP | libc::POLLNVAL'
 require_text "$ntp_rust/sys.rs" '"poll timeout must not be negative"'
+
+# The WS-Discovery/LLMNR responder is the Rust wsdd2, built from the overlay
+# by the package Makefile and installed by the vendor wsdd2-install rule.
+require_text "$wsdd2_makefile" 'RUST_WSDD2_MANIFEST := $(RUST_COMPONENTS_DIR)/wsdd2/Cargo.toml'
+require_text "$wsdd2_makefile" 'ifneq ($(wildcard $(RUST_WSDD2_MANIFEST)),)'
+require_text "$wsdd2_makefile" '-p wsdd2 --bin wsdd2 --release --target "$(RUST_TARGET)"'
+# The vendor C build must survive in the else branch, so a tree without the
+# overlay still produces a working wsdd2.
+require_text "$wsdd2_makefile" 'wsdd2: $(OBJFILES)'
+require_text "$wsdd2_makefile" '$(OBJFILES): $(HEADERS) Makefile'
+# Exactly one package Makefile may produce that path.  rc/usb.c execs it and
+# matches the process by the name "wsdd2", so a second producer would be a
+# race over the binary that answers every LAN device.
+wsdd2_producers=$(grep -rlE 'usr/sbin/wsdd2([^a-zA-Z0-9_]|$)' "$root" --include=Makefile | sort)
+if [ "$wsdd2_producers" != "$router_makefile" ]; then
+	echo "/usr/sbin/wsdd2 must have exactly one producer, found: $wsdd2_producers" >&2
+	exit 1
+fi
+# rc is untouched: the same argv, the same process name, the same stop path.
+require_text "$usb" 'char *wsdd_argv[] = { "/usr/sbin/wsdd2",'
+require_text "$usb" 'if (pids("wsdd2"))'
+require_text "$usb" 'killall_tk("wsdd2");'
+# Samba, and therefore this daemon, is part of the profile.
+require_text "$router_config_base" 'RTCONFIG_SAMBASRV=y'
+
+# All unsafe lives in one syscall module.
+require_text "$wsdd2_rust/lib.rs" '#![forbid(unsafe_code)]'
+require_text "$wsdd2_rust/main.rs" '#![forbid(unsafe_op_in_unsafe_fn)]'
+for module in xml.rs wsd.rs llmnr.rs http.rs cli.rs config.rs budget.rs logging.rs; do
+	reject_text "$wsdd2_rust/$module" 'unsafe'
+done
+if [ "$(grep -c 'unsafe {' "$wsdd2_rust/main.rs")" -ne 0 ]; then
+	echo 'all unsafe in the wsdd2 daemon must live in sys.rs' >&2
+	exit 1
+fi
+# Both service ports are pinned to the LAN interface before the port is bound,
+# so they are never reachable on the WAN, not even for the window between the
+# two calls.
+require_text "$wsdd2_rust/sys.rs" 'libc::SO_BINDTODEVICE,'
+require_text "$wsdd2_rust/sys.rs" 'bind_to_device(&owned, interface)?;'
+require_text "$wsdd2_rust/sys.rs" 'set_int_option(&owned, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;'
+require_text "$wsdd2_rust/sys.rs" 'pub fn route_probe_socket(v6: bool, interface: Option<&str>)'
+# The XML scanner fails closed: no doctype, no entity declaration, no CDATA,
+# no comment, no processing instruction past the declaration, and every
+# dimension of the document capped before anything is allocated.
+require_text "$wsdd2_rust/xml.rs" 'pub const MAX_DOCUMENT: usize = 8192;'
+require_text "$wsdd2_rust/xml.rs" 'pub const MAX_DEPTH: usize = 16;'
+require_text "$wsdd2_rust/xml.rs" 'pub const MAX_ELEMENTS: usize = 256;'
+require_text "$wsdd2_rust/xml.rs" 'return Err(XmlError::Unsupported);'
+require_text "$wsdd2_rust/xml.rs" 'return Err(XmlError::TooDeep);'
+require_text "$wsdd2_rust/xml.rs" 'None => Err(XmlError::UnboundPrefix),'
+# The action and the body must agree, the message id must be echo-safe, and a
+# Probe or Resolve must be addressed to the discovery URN.
+require_text "$wsdd2_rust/wsd.rs" 'return Err(if is_known_action(&action) {'
+require_text "$wsdd2_rust/wsd.rs" 'Refusal::ActionBodyMismatch'
+require_text "$wsdd2_rust/wsd.rs" 'pub const MAX_MESSAGE_ID: usize = 128;'
+require_text "$wsdd2_rust/wsd.rs" 'pub fn validate_message_id(raw: &str) -> Option<String>'
+require_text "$wsdd2_rust/wsd.rs" 'if to != TO_DISCOVERY {'
+require_text "$wsdd2_rust/wsd.rs" 'pub const MAX_DATAGRAM_REPLY: usize = 1400;'
+# Only a probe for a type this device publishes, and only a resolve for this
+# device's own endpoint, is ever answered.
+require_text "$wsdd2_rust/lib.rs" 'if *types_present && !*types_matched {'
+require_text "$wsdd2_rust/lib.rs" 'if !endpoint_matches(address, &context.identity.endpoint) {'
+# The LLMNR response is rebuilt from the parsed question, never copied from
+# the datagram, so a padded query cannot be reflected.
+require_text "$wsdd2_rust/llmnr.rs" 'pub fn build_response(query: &Query, answer: Answer) -> Vec<u8>'
+require_text "$wsdd2_rust/llmnr.rs" 'return Err(Refusal::Compressed);'
+require_text "$wsdd2_rust/llmnr.rs" 'pub const MAX_QUERY: usize = HEADER_LEN + MAX_NAME_WIRE + 4;'
+reject_text "$wsdd2_rust/llmnr.rs" 'extend_from_slice(datagram)'
+# The reply budget is charged only for a reply that is actually emitted, and
+# one readable wakeup is capped.
+require_text "$wsdd2_rust/main.rs" 'const MAX_DATAGRAMS_PER_WAKEUP: usize = 32;'
+require_text "$wsdd2_rust/main.rs" 'if !self.wsd_budget.allow(sys::now_unix()) {'
+require_text "$wsdd2_rust/main.rs" 'if !self.llmnr_budget.allow(sys::now_unix()) {'
+# The metadata endpoint answers a refused request with a status line only.
+# The vendor followed it with a ~700-byte SOAP fault echoing its own error.
+require_text "$wsdd2_rust/http.rs" 'pub fn response_header(status: Status, date: &str, length: usize) -> String'
+require_text "$wsdd2_rust/main.rs" 'let header = http::response_header(status, &self.date(), 0);'
+reject_text "$wsdd2_rust/wsd.rs" 'soap:Fault'
 
 # Compatibility gaps must fail closed instead of reporting successful work.
 require_text "$rc_stubs" 'return rust_validate_apply_input_value(name, value);'

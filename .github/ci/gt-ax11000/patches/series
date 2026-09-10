@@ -32,3 +32,4 @@ wlif-shell-hardening.patch
 ntp-rust.patch
 httpd-httparse.patch
 lltd-rust.patch
+wsdd2-rust.patch

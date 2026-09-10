@@ -56,6 +56,10 @@ use wlif_policy::{
     is_shell_metacharacter, network_id_ok, passphrase_ok, ssid_ok, supplicant_control_dir,
     supplicant_control_path, wps_pin_ok, MAX_CONTROL_PATH,
 };
+use wsdd2::budget::Budget as WsddBudget;
+use wsdd2::http as wsdd_http;
+use wsdd2::llmnr as wsdd_llmnr;
+use wsdd2::wsd as wsdd_wsd;
 
 const DEFAULT_ITERATIONS: u64 = 250_000;
 const DEFAULT_SEED: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -358,6 +362,93 @@ fn fuzz_wlif(input: &[u8]) {
             None => assert!(!accepted || input.len() + 24 >= MAX_CONTROL_PATH),
         }
     }
+}
+
+/// The WS-Discovery and LLMNR responder runs as root, answers every LAN
+/// device and is built with `panic = "abort"`, so a panic anywhere on the
+/// parsing path is a remote kill.  Drive the strict XML scanner, the SOAP
+/// request parser, the LLMNR question parser and the HTTP framer with random
+/// bytes, with mutations of real messages, and with the reply builders behind
+/// them.
+fn fuzz_wsdd2(rng: &mut Rng, input: &[u8]) {
+    let identity = wsdd_wsd::Identity {
+        endpoint: String::from("d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44"),
+        sequence: String::from("0b6a8f52-1a3c-4d5e-8f70-2b9c4d6e8a10"),
+        instance: 1_757_400_000,
+        netbios_name: String::from("GT-AX11000"),
+        workgroup: String::from("WORKGROUP"),
+        boot: wsdd_wsd::BootInfo::default(),
+    };
+    let context = wsdd2::ReplyContext {
+        identity: &identity,
+        message_id: "6f2c1b90-5e44-4a1d-b7c2-8f0d9e3a1c56",
+        number: 1,
+        host: "192.168.1.1",
+        port: wsdd_wsd::WSD_PORT,
+    };
+
+    // Raw bytes through every entry point.
+    if let Ok(request) = wsdd_wsd::Request::parse(input) {
+        if let Some(reply) = wsdd2::answer(&request, &context) {
+            assert!(reply.len() <= wsdd_wsd::MAX_REPLY);
+            assert!(reply.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
+        }
+    }
+    if let Ok(query) = wsdd_llmnr::Query::parse(input) {
+        let answer = wsdd_llmnr::choose_answer(
+            query.qtype,
+            Some([192, 168, 1, 1]),
+            Some([0; 16]),
+            rng.next_u64() % 2 == 0,
+        );
+        let response = wsdd_llmnr::build_response(&query, answer);
+        // The response is rebuilt from the question, never copied from the
+        // datagram, so it can never carry the request's padding.
+        assert!(response.len() <= input.len() + wsdd_llmnr::ANSWER_LEN_AAAA);
+        assert_eq!(
+            response.len(),
+            wsdd_llmnr::HEADER_LEN
+                + query.question_len()
+                + match answer {
+                    wsdd_llmnr::Answer::None => 0,
+                    wsdd_llmnr::Answer::V4(_) => wsdd_llmnr::ANSWER_LEN_A,
+                    wsdd_llmnr::Answer::V6(_) => wsdd_llmnr::ANSWER_LEN_AAAA,
+                }
+        );
+    }
+    let _ = wsdd_http::parse_header(input, &identity.endpoint);
+    let _ = wsdd2::cli::parse([ascii_projection(input)]);
+
+    // Mutations of a real Probe, so the deeper structural checks are reached
+    // instead of failing at the first byte.
+    let seed = wsdd2::probe_fixture("wsdp:Device").into_bytes();
+    let mut mutated = seed.clone();
+    let flips = (rng.next_u64() % 4) as usize;
+    for _ in 0..=flips {
+        let index = (rng.next_u64() as usize) % mutated.len().max(1);
+        if let Some(slot) = mutated.get_mut(index) {
+            *slot = rng.next_u64() as u8;
+        }
+    }
+    if let Ok(request) = wsdd_wsd::Request::parse(&mutated) {
+        if let Some(reply) = wsdd2::answer(&request, &context) {
+            assert!(reply.len() <= wsdd_wsd::MAX_DATAGRAM_REPLY);
+        }
+    }
+    let cut = (rng.next_u64() as usize) % (seed.len() + 1);
+    let _ = wsdd_wsd::Request::parse(seed.get(..cut).unwrap_or_default());
+
+    // A refused datagram must never consume the reply budget.
+    let mut budget = WsddBudget::default();
+    let now = 1_757_400_000.0_f64;
+    if wsdd_wsd::Request::parse(input)
+        .ok()
+        .and_then(|request| wsdd2::answer(&request, &context))
+        .is_some()
+    {
+        assert!(budget.allow(now));
+    }
+    assert!(budget.used() <= 1);
 }
 
 fn fuzz_infosvr(input: &[u8]) {
@@ -942,6 +1033,35 @@ fn regression_edges() {
         fuzz_ntp_discipline(&mut discipline_rng);
     }
 
+    // Every WS-Discovery message shape the daemon can be sent, plus the two
+    // it answers with silence, and every LLMNR record type and class.
+    let mut wsdd_rng = Rng(DEFAULT_SEED ^ 0x0f0f_0f0f_0f0f_0f0f);
+    for types in ["wsdp:Device", "pub:Computer", "wprt:PrintDeviceType", ""] {
+        fuzz_wsdd2(&mut wsdd_rng, wsdd2::probe_fixture(types).as_bytes());
+    }
+    for address in [
+        "urn:uuid:d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44",
+        "urn:uuid:00000000-0000-0000-0000-000000000000",
+        "",
+    ] {
+        fuzz_wsdd2(&mut wsdd_rng, wsdd2::resolve_fixture(address).as_bytes());
+    }
+    fuzz_wsdd2(
+        &mut wsdd_rng,
+        wsdd2::get_fixture("d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44").as_bytes(),
+    );
+    for qtype in [0_u16, 1, 28, 255, 256, u16::MAX] {
+        for qclass in [0_u16, 1, 255] {
+            for padding in [0_usize, 1, 64] {
+                let datagram = wsdd2::llmnr_query(b"gt-ax11000", qtype, qclass, padding);
+                fuzz_wsdd2(&mut wsdd_rng, &datagram);
+            }
+        }
+    }
+    assert!(wsdd_wsd::validate_message_id("urn:uuid:1-2").is_some());
+    assert!(wsdd_wsd::validate_message_id("urn:uuid:<x>").is_none());
+    assert!(wsdd_wsd::validate_message_id(&"a".repeat(wsdd_wsd::MAX_MESSAGE_ID + 1)).is_none());
+
     for opcode in [31_u16, 52, 53, 54, u16::MAX] {
         let mut packet = [0_u8; PDU_LEN];
         packet[0] = 12;
@@ -1035,7 +1155,7 @@ fn run(iterations: u64, seed: u64) {
     let mut rng = Rng(seed.max(1));
     for index in 0..iterations {
         let input = rng.bytes();
-        match index % 12 {
+        match index % 13 {
             0 => fuzz_http(&input),
             1 => fuzz_policy(&input),
             2 => fuzz_infosvr(&input),
@@ -1047,7 +1167,8 @@ fn run(iterations: u64, seed: u64) {
             8 => fuzz_ntp_discipline(&mut rng),
             9 => fuzz_wanduck(&mut rng),
             10 => fuzz_http_request(&mut rng, &input),
-            _ => fuzz_lltd(&mut rng, &input),
+            11 => fuzz_lltd(&mut rng, &input),
+            _ => fuzz_wsdd2(&mut rng, &input),
         }
     }
 }

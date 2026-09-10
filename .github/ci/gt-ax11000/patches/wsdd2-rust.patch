@@ -1,0 +1,43 @@
+diff --git a/release/src/router/wsdd2/Makefile b/release/src/router/wsdd2/Makefile
+--- a/release/src/router/wsdd2/Makefile
++++ b/release/src/router/wsdd2/Makefile
+@@ -21,13 +21,39 @@
+ MANDIR  ?= $(PREFIX)/share/man
+ LIBDIR  ?= $(PREFIX)/lib
+ 
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_WSDD2_MANIFEST := $(RUST_COMPONENTS_DIR)/wsdd2/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
+ all: wsdd2
+ 
+ nl_debug: CPPFLAGS+=-DMAIN
+ nl_debug: nl_debug.c; $(LINK.c) $^ $(LOADLIBES) $(LDLIBS) -o $@
+ 
++# The memory-safe replacement for the NETGEAR/Samba wsdd2.  It links against
++# libc alone -- nothing in this daemon touches nvram or libshared -- so the
++# cross build needs only the Broadcom linker and the ARMv7 CPU flags.  Only
++# the binary in this directory changes: the wsdd2-install rule in
++# release/src/router/Makefile stays the sole producer of the installed path,
++# so rc/usb.c keeps exec'ing it and pids("wsdd2") keeps matching the process.
++# Without the overlay the vendor C build below is used unchanged.
++ifneq ($(wildcard $(RUST_WSDD2_MANIFEST)),)
++.PHONY: wsdd2
++wsdd2:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_WSDD2_MANIFEST)" \
++			-p wsdd2 --bin wsdd2 --release --target "$(RUST_TARGET)" \
++			--locked --offline
++	cp "$(RUST_TARGET_DIR)/$(RUST_TARGET)/release/wsdd2" wsdd2
++else
+ wsdd2: $(OBJFILES)
+ $(OBJFILES): $(HEADERS) Makefile
++endif
+ 
+ install: wsdd2
+ 	install -d $(DESTDIR)$(SBINDIR)

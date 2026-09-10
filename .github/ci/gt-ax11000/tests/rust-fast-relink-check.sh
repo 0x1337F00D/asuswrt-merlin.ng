@@ -38,6 +38,14 @@ grep -Fq 'usr/sbin/lld2d > $(RUST_CONSUMER_MANIFEST)' "$repack_make"
 # same way it relinks infosvr rather than carrying the previous binary.
 grep -Fq '$(MAKE) -C router lltd.arm-install' "$repack_make"
 grep -Fq '$(PROFILE_DIR)/fs.install/lltd.arm/usr/sbin/lld2d' "$repack_make"
+grep -Fq 'usr/lib/libz.so.1 \' "$repack_make"
+# wsdd2 is rebuilt and reinstalled by its package targets.  Its install rule
+# in the vendor router Makefile has no build prerequisite, so the build target
+# has to be named explicitly or a rust-fast run would stage a stale binary.
+grep -Fq '$(MAKE) -C router wsdd2' "$repack_make"
+grep -Fq '$(MAKE) -C router wsdd2-install' "$repack_make"
+grep -Fq '$(PROFILE_DIR)/fs.install/wsdd2/usr/sbin/wsdd2' "$repack_make"
+grep -Fq 'usr/sbin/wsdd2 > $(RUST_CONSUMER_MANIFEST)' "$repack_make"
 grep -Fq 'zlib-install: $(RUST_ZLIB_SHARED_DEPS)' "$router_make"
 grep -Fq 'source_mode="$$(stat -c '\''%a'\'' "$$source_file")"' "$repack_make"
 grep -Fq 'install -D -m "$$source_mode" "$$source_file" "$$target_file"' "$repack_make"

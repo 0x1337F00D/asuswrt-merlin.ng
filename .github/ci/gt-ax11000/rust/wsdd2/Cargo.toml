@@ -1,0 +1,20 @@
+[package]
+name = "wsdd2"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# The binary keeps the vendor name because rc/usb.c execs
+# "/usr/sbin/wsdd2" and stop_wsdd() matches the process with
+# pids("wsdd2") / killall_tk("wsdd2").
+[[bin]]
+name = "wsdd2"
+path = "src/main.rs"
+
+[dependencies]
+libc = { version = "0.2.189", default-features = false }

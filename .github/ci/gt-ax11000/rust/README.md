@@ -325,6 +325,85 @@ number for the bridge the responder is bound to.
   writes nothing;
 - with no interface argument the daemon refuses to start. The blob assumed
   `eth1`.
+The thirteenth component is `wsdd2`, the WS-Discovery and LLMNR responder
+installed as `/usr/sbin/wsdd2`. It replaces the NETGEAR/Samba `wsdd2` the
+firmware builds for `RTCONFIG_SAMBASRV`, which is how a Windows client finds
+the router's SMB shares in Explorer's Network view. `wsdd2-rust.patch` changes
+only `release/src/router/wsdd2/Makefile`, behind the usual
+`ifneq ($(wildcard $(RUST_WSDD2_MANIFEST)),)` guard with the vendor C build in
+the `else` branch, so `wsdd2-install` in `release/src/router/Makefile` remains
+the single producer of the installed path and `rc/usb.c` is untouched:
+`start_wsdd()` still execs `/usr/sbin/wsdd2 -d -w -i <lan_ifname> -b
+sku:<productid>,serial:<mac>` through `_eval`, and `stop_wsdd()` still matches
+the process with `pids("wsdd2")` / `killall_tk("wsdd2")`. Note what that `-w`
+means: on this firmware only WS-Discovery is served, so LLMNR is implemented
+but never reached by the `rc` invocation. The library half forbids unsafe Rust
+and holds a strict namespace-aware XML scanner, the SOAP request and reply
+shapes, the LLMNR question parser and response builder, the HTTP framing of
+the WS-Transfer metadata endpoint and the reply budget; the daemon half keeps
+every system call in `src/sys.rs`.
+
+`wsdd2` security boundary:
+
+- the XML scanner is not a general parser and fails closed. Document type
+  declarations, entity declarations, `CDATA`, comments and processing
+  instructions other than a leading XML declaration are all refused, and so is
+  anything after the root element. Total length, nesting depth, element count,
+  attribute count, name length, text length and live namespace bindings are
+  each capped before anything is allocated, and entity expansion is limited to
+  the five predefined entities plus printable-ASCII character references, so
+  no input can expand. Namespaces are resolved through the prefix bindings
+  actually in scope and mapped onto a closed set of six URIs, so an unknown
+  namespace can never be mistaken for a known one. The vendor "parser" it
+  replaces was two `strstr` calls over a NUL-terminated copy of the datagram
+  (`wsd.c:353-420`) with no structural validation at all;
+- a request is answered only when the SOAP envelope, the `wsa:Action`, the
+  body element and the `wsa:To` all agree. The vendor dispatched on the action
+  string alone and never looked at the body;
+- a `Probe` is answered only when its `wsd:Types` is absent or names
+  `wsdp:Device` or `pub:Computer`, and a `Resolve` only when its endpoint
+  reference address is this device's own UUID. The vendor read neither field
+  and answered every probe and every resolve on the segment, printer and
+  scanner discovery included;
+- the `wsa:MessageID` is the one attacker-controlled string a reply must
+  carry. It is capped at 128 bytes and restricted to RFC 3986 URI characters
+  minus `&` and `'`, so echoing it into `wsa:RelatesTo` can neither change the
+  length of the reply nor open an element;
+- a datagram reply is built from a fixed template whose only variable parts
+  are this device's own UUIDs, its own address literal and that message id, so
+  the reply length does not grow with the request: a padded probe produces a
+  byte-identical answer. Five namespace prefixes are declared where the vendor
+  declared seven in every message, and the total is capped at 1,400 bytes so
+  one datagram in can never produce more than one un-fragmented datagram out.
+  WS-Discovery cannot be made strictly non-amplifying -- a conforming
+  `ProbeMatches` is larger than the smallest conforming `Probe` -- so what is
+  guaranteed is that the amplification is bounded and constant;
+- the LLMNR response is *rebuilt* from the parsed question rather than copied
+  from the datagram. The vendor did `calloc(inlen + answer_len)` and
+  `memcpy(out, in, inlen)` into a 9,217-byte receive buffer
+  (`llmnr.c:275-277`), so a 9 KiB query with one valid label was reflected in
+  full, additional records and all; here a padded query yields a *smaller*
+  response and `ARCOUNT` is forced to zero;
+- the LLMNR question is parsed inside the received slice. The vendor's label
+  loop (`llmnr.c:172-193`) walked `*in_name_p` with no bound against `inlen`
+  and then read four more bytes for `QTYPE`/`QCLASS`, which a 13-byte datagram
+  is enough to reach;
+- both service sockets are pinned to the LAN interface with `SO_BINDTODEVICE`
+  *before* the port is bound, so they are never reachable on the WAN, not even
+  briefly. The address advertised in `wsd:XAddrs` and returned in an LLMNR
+  answer comes from a route lookup on that pinned socket, so a request whose
+  source address does not route back through the LAN interface is never
+  answered at all;
+- the 32-replies-per-second budget, per protocol, is charged only for a reply
+  that is actually sent, so a flood of malformed, wrong-type or wrong-endpoint
+  datagrams cannot spend a legitimate client's share, and one readable wakeup
+  handles at most 32 datagrams before the loop moves on;
+- the metadata endpoint answers a refused request with a status line and an
+  empty body. The vendor followed its status line with a ~700-byte SOAP fault
+  whose text echoed its own internal error string (`wsd.c:1114-1119`);
+- unknown command-line options are a startup error rather than silently
+  ignored, and every value that can reach a log line or a reply is sanitised;
+- the daemon touches no NVRAM, exactly as the vendor did not.
 
 `infosvr` security boundary:
 
@@ -388,7 +467,12 @@ bash ../tests/security-overlay-check.sh /path/to/patched/source
 The structured fuzz runner covers the HTTP query/URL and multipart
 boundaries, NVRAM-facing WLAN/test-lab policy, OpenVPN/IPsec/WireGuard
 parsers, the wireless-interface identifier/credential policy, infosvr PDUs,
-rstats codecs, the wanduck transition machine, the client-list parsers
+rstats codecs, the wanduck transition machine, the WS-Discovery/LLMNR
+boundary (the XML scanner, the SOAP request parser and reply builders, the
+LLMNR question parser and its rebuilt response, the HTTP framer and the
+command line, driven with random bytes, with mutations and truncations of a
+real Probe, and with every message shape, record type and record class),
+the client-list parsers
 (synthetic legacy/public shared-memory segments with random counts and
 unterminated fields, the NVRAM list/schedule parsers, the AiMesh details
 file, the cache check and the persistent-database transform) and the whole
@@ -455,6 +539,25 @@ time daemon is owned by `rc/Makefile` because `rc` is its only consumer, so it
 is staged and promoted on the `rust-fast` relink path together with `sbin/rc`.
 The LLTD responder keeps its own package Makefile, `lltd.arm/Makefile`, so it
 is relinked on `rust-fast` in its own right rather than carried.
+paths for `infosvr`, `Notify_Event2NC`, `rstats`, `ntp` and `wsdd2` under
+`qemu-arm` using the generated firmware root filesystem. `ntp --self-test`
+runs the packet, discipline and refusal paths without opening a socket or
+writing the clock; `ntp` with no arguments must refuse to start.
+`wsdd2 --self-test` parses a Windows Probe, a Resolve for another endpoint, a
+padded LLMNR query and a metadata POST and checks each reply, again without a
+socket; `wsdd2 -h` prints the vendor usage and exits 0, and `wsdd2 -i` with no
+argument must refuse to start.
+
+The firmware Makefiles cross-compile with the existing Broadcom
+`arm-buildroot-linux-gnueabi` linker and install the results as
+`/usr/sbin/infosvr`, `/bin/rstats`, `/usr/sbin/ntp` and `/usr/sbin/wsdd2`. The
+time daemon is owned by `rc/Makefile` because `rc` is its only consumer, so it
+is staged and promoted on the `rust-fast` relink path together with `sbin/rc`.
+The discovery responder keeps its own package directory: `rust-repack.mk`
+names the `wsdd2` build target before `wsdd2-install`, because the vendor
+install rule has no build prerequisite, and then promotes
+`fs.install/wsdd2/usr/sbin/wsdd2` into the flat tree like every other package
+artifact. Both are relinked on `rust-fast`, not carried.
 
 Rust sources are not added to `release/src/router` in the fork. The build
 script copies this directory to the ephemeral build tree and

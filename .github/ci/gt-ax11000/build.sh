@@ -1261,6 +1261,7 @@ rust_relinked_consumers=(
 	usr/sbin/wget
 	usr/lib/libz.so.1
 	usr/sbin/lld2d
+	usr/sbin/wsdd2
 )
 rust_consumers=("${rust_relinked_consumers[@]}")
 fresh_consumers=("${rust_consumers[@]}")

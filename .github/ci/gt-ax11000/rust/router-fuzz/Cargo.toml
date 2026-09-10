@@ -17,3 +17,4 @@ router-policy = { path = "../router-policy" }
 rstats = { path = "../rstats" }
 wanduck-transition = { path = "../wanduck-transition" }
 wlif-policy = { path = "../wlif-policy" }
+wsdd2 = { path = "../wsdd2" }

@@ -20,6 +20,11 @@ rust-components-relink:
 	# wget's ordinary target rebuilds the Rust archive and refreshes the link.
 	+$(MAKE) -C router wget
 	+$(MAKE) -C router wget-install
+	# The vendor router Makefile gives wsdd2-install no build prerequisite, so
+	# the package target has to run first or the install rule would stage a
+	# stale binary.  Same shape as wget above.
+	+$(MAKE) -C router wsdd2
+	+$(MAKE) -C router wsdd2-install
 
 # Short iteration path for changes confined to the authenticated HTTP boundary
 # and its Web UI. Invoking this through the platform Makefile preserves all HND
@@ -131,7 +136,9 @@ rust-firmware-repack:
 	promote_artifact $(PROFILE_DIR)/fs.install/zlib/usr/lib/libz.so.1 \
 		$(PROFILE_DIR)/fs.install/usr/lib/libz.so.1; \
 	promote_artifact $(PROFILE_DIR)/fs.install/lltd.arm/usr/sbin/lld2d \
-		$(PROFILE_DIR)/fs.install/usr/sbin/lld2d
+		$(PROFILE_DIR)/fs.install/usr/sbin/lld2d; \
+	promote_artifact $(PROFILE_DIR)/fs.install/wsdd2/usr/sbin/wsdd2 \
+		$(PROFILE_DIR)/fs.install/usr/sbin/wsdd2
 	# Package install targets stage their complete payload below a package-named
 	# directory. The selected artifacts have now been promoted into the
 	# flat firmware tree, so remove only those known duplicate staging roots.
@@ -145,7 +152,8 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/networkmap \
 		$(PROFILE_DIR)/fs.install/wget \
 		$(PROFILE_DIR)/fs.install/zlib \
-		$(PROFILE_DIR)/fs.install/lltd.arm
+		$(PROFILE_DIR)/fs.install/lltd.arm \
+		$(PROFILE_DIR)/fs.install/wsdd2
 	# fsbuild creates these legacy containers for optional external payloads.
 	# On GT-AX11000 they are empty; leaving them behind only on a repeated
 	# build makes rust-fast rootfs topology differ from the clean reference.
@@ -167,7 +175,8 @@ rust-firmware-repack:
 		usr/lib/libbwdpi.so \
 		usr/sbin/wget \
 		usr/lib/libz.so.1 \
-		usr/sbin/lld2d > $(RUST_CONSUMER_MANIFEST)
+		usr/sbin/lld2d \
+		usr/sbin/wsdd2 > $(RUST_CONSUMER_MANIFEST)
 	cd $(TARGETS_DIR); ./buildFS
 	cd $(TARGETS_DIR); ./buildFS2
 	+$(MAKE) buildimage_final
