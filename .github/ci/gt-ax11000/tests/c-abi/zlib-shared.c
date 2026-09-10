@@ -51,9 +51,14 @@ static int fail_combine(const char *what, uLong head, uLong tail,
 	 * argument widths, which a host with 64-bit long cannot tell apart. */
 	{
 		uLong op = crc32_combine_gen((z_off_t)(PAYLOAD_LEN - 1777u));
-		fprintf(stderr, "libz.so.1 fixture: gen=%08lx op(gen,head)=%08lx "
-			"combine64=%08lx\n", (unsigned long)op,
-			(unsigned long)crc32_combine_op(op, head, 0),
+		/* crc32_combine_op(crc1, crc2, op) is multmodp(op, crc1) ^ crc2,
+		 * so passing op last reproduces crc32_combine step by step.
+		 * op must never be zero: multmodp loops forever on a zero
+		 * multiplier, which is documented in the zlib-rs source. */
+		fprintf(stderr, "libz.so.1 fixture: gen=%08lx op(head,tail,gen)="
+			"%08lx combine64=%08lx\n", (unsigned long)op,
+			(unsigned long)(op == 0 ? 0
+				: crc32_combine_op(head, tail, op)),
 			(unsigned long)crc32_combine64(head, tail,
 				(z_off64_t)(PAYLOAD_LEN - 1777u)));
 	}
