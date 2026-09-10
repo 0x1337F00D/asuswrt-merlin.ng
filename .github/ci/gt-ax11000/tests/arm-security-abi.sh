@@ -50,7 +50,11 @@ command -v "$arm_nm" >/dev/null 2>&1 || arm_nm=nm
 { "$arm_nm" -D --defined-only "$fixture_dir/libz.so.1" 2>/dev/null \
     | grep -E '(crc32|adler32)_combine(64)?$' | sort \
     | sed 's/^/libz.so.1 dynsym: /'; } || true
-"$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 \
+# The firmware compiles its zlib consumers with _LARGEFILE64_SOURCE, which is
+# what makes zconf.h give z_off64_t the eight bytes zlib-rs types it as. Build
+# the fixture the same way or the *64 entry points are handed half an argument.
+"$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -D_LARGEFILE64_SOURCE=1 \
+    -Wall -Wextra -Werror -O2 \
     -I"$root/tests/c-abi/include" "$root/tests/c-abi/zlib-shared.c" \
     -L"$fixture_dir" -lz -o "$fixture_dir/zlib-shared"
 timeout 60 "$ARM_QEMU" -L "$ARM_SYSROOT" -E "LD_LIBRARY_PATH=$fixture_dir" \

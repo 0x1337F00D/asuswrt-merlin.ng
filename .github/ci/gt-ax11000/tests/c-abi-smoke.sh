@@ -82,7 +82,9 @@ done
 # zlib package.  Without it the link silently falls through to the host zlib
 # and this fixture would assert nothing at link time.
 ln -sf libz.so.1 "$FIXTURE_DIR/libz.so"
-cc "${common[@]}" -I"$SCRIPT_ROOT/c-abi/include" \
+# Match the firmware's zlib consumers: _LARGEFILE64_SOURCE is what gives
+# z_off64_t eight bytes in zconf.h, which is the width zlib-rs types it as.
+cc "${common[@]}" -D_LARGEFILE64_SOURCE=1 -I"$SCRIPT_ROOT/c-abi/include" \
 	"$SCRIPT_ROOT/c-abi/zlib-shared.c" -L"$FIXTURE_DIR" -lz \
 	-o "$FIXTURE_DIR/zlib-shared"
 readelf -d "$FIXTURE_DIR/zlib-shared" | grep -q 'Shared library: \[libz\.so\.1\]'
