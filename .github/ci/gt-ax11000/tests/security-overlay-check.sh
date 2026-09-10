@@ -271,7 +271,11 @@ reject_text "$zlib_version_script" '    gzvprintf;'
 # /usr/sbin/ntp, so it must stay off and the applet itself must not be built.
 require_text "$src_rt_makefile" 'echo "# CONFIG_FEATURE_NTPD_NTP_ALIAS is not set" >>$(1);'
 require_text "$src_rt_makefile" 'echo "# CONFIG_NTPD is not set" >>$(1);'
-reject_text "$src_rt_makefile" 'echo "CONFIG_FEATURE_NTPD_NTP_ALIAS=y"'
+# The applet must be disabled only when the Rust crate is actually present:
+# an upstream tree without rust-components has to keep its busybox ntpd, or
+# the image would ship no time daemon at all while rc still execs
+# /usr/sbin/ntp. Both halves of the swap therefore test the same condition.
+require_text "$src_rt_makefile" 'if [ -f "$$(dirname $(1))/../rust-components/ntp/Cargo.toml" ]; then'
 require_text "$rc_makefile" 'RUST_NTP_MANIFEST := $(RUST_COMPONENTS_DIR)/ntp/Cargo.toml'
 require_text "$rc_makefile" '--bin ntp --release --target "$(RUST_TARGET)"'
 require_text "$rc_makefile" '@install -D $(RUST_NTP_BINARY) $(INSTALLDIR)/usr/sbin/ntp'
