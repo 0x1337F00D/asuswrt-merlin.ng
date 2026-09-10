@@ -2030,3 +2030,34 @@ httpd request parsing:
   trailing CRLF and are now trimmed. Unverifiable without a device.
 - [ ] Seven request tests pin httparse's behaviour rather than this module's.
   Legitimate as an upgrade tripwire, but they are not coverage of this code.
+
+### 2026-09-10 the discovery daemons rely on the firewall, not on their own bind
+
+Checked while reviewing the LLTD socket setup. Not a defect and not a
+regression, but a dependency worth writing down because nothing states it.
+
+`infosvr` binds `0.0.0.0:9999` with no `SO_BINDTODEVICE` on the listener; it
+uses the device pin only to steer outbound broadcasts, one interface at a
+time. That is exactly what the vendor `infosvr.c` does (`INADDR_ANY` at its
+bind, `SO_BINDTODEVICE` only around the broadcast loop), so the port is
+faithful. What keeps the port off the WAN is the firewall: `filter.default`
+opens with an `INPUT` policy of `DROP` and accepts NEW only on the LAN bridge
+and loopback. Every explicit port-9999 rule in `firewall.c` is `-p tcp`, and
+the daemon listens on UDP, so those rules are not what protects it.
+
+The same `filter.default` writes `ACCEPT` instead of `DROP` when
+`factory_debug()` is true. That function is not open source: it lives in
+`rc/prebuild/GT-AX11000/ate-broadcom.o` and reduces to a `cfe_nvram_match` of
+a bootloader variable against a fixed string, so it is a manufacturing mode
+rather than anything reachable from the web UI. The exposure is therefore
+bounded, but the whole default-deny rests on it.
+
+- [ ] Decide whether the Rust discovery daemons should pin their listeners to
+  the LAN bridge themselves rather than inheriting the firewall's default
+  deny. `ntp`, `lltd` and `wsdd2` already do; `infosvr` is the one that does
+  not, and it is the one whose port has TCP-only firewall rules.
+- [ ] `lltd` and `wsdd2` have no test that the device pin precedes the bind.
+  `ntp` does, and it is a good one: it holds the port first, so binding first
+  would fail with `AddrInUse` while pinning first fails on the interface. The
+  review showed that moving `bind_to_device` after `bind()` in either of the
+  other two leaves their suites green.
