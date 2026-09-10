@@ -38,6 +38,10 @@ done
     -Wl,--whole-archive \
     "$CARGO_TARGET_DIR/armv7-unknown-linux-gnueabi/release/libzlib_shared.a" \
     -Wl,--no-whole-archive -lpthread -ldl -lm
+# -lz resolves the SONAME-less development name, which the rootfs gets from
+# the vendor zlib package; provide it here so the fixture links the object
+# under test rather than a sysroot copy.
+ln -sf libz.so.1 "$fixture_dir/libz.so"
 "$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 \
     -I"$root/tests/c-abi/include" "$root/tests/c-abi/zlib-shared.c" \
     -L"$fixture_dir" -lz -o "$fixture_dir/zlib-shared"
