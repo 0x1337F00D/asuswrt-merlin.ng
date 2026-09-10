@@ -43,11 +43,9 @@ diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Make
 +libshared.so: $(OBJS) $(RUST_WLIF_LIB)
  	@echo " [shared] LD $@"
  ifeq ($(HND_ROUTER),y)
--	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^
-+	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $(OBJS) $(RUST_WLIF_LIB)
+ 	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^
  else
--	@$(LD) $(LDFLAGS) -shared -o $@ $^
-+	@$(LD) $(LDFLAGS) -shared -o $@ $(OBJS) $(RUST_WLIF_LIB)
+ 	@$(LD) $(LDFLAGS) -shared -o $@ $^
  endif
  
  	$(SIZECHECK)

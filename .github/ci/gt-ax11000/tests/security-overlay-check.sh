@@ -504,7 +504,12 @@ require_text "$wlif" 'rust_wlif_dpp_value_ok(value)'
 # object-only because nothing in the tree links it.
 require_text "$shared_makefile" 'RUST_WLIF_MANIFEST := $(RUST_COMPONENTS_DIR)/wlif-policy/Cargo.toml'
 require_text "$shared_makefile" 'libshared.so: $(OBJS) $(RUST_WLIF_LIB)'
-require_text "$shared_makefile" '-shared -o $@ $(OBJS) $(RUST_WLIF_LIB)'
+# The recipe must keep using $^, which deduplicates prerequisites: OBJS adds
+# bcmutils.o, bcmxtlv.o and eight more objects twice, so expanding the list
+# explicitly makes the link fail with "multiple definition". The archive is a
+# prerequisite, so $^ already passes it, and after the objects.
+require_text "$shared_makefile" '-shared -o $@ $^'
+reject_text "$shared_makefile" '-shared -o $@ $(OBJS) $(RUST_WLIF_LIB)'
 require_text "$shared_makefile" 'libshared.a: $(OBJS)'
 require_text "$wlif_rust" 'rust_wlif_ifname_ok => interface_name_ok'
 require_text "$wlif_rust" 'rust_wlif_ssid_ok => ssid_ok'
