@@ -560,6 +560,29 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   series replays on `6be5bc84b50` and re-locks to
   `6b4d567a3ffac0fd574e537abee1c30a3677be044029dbc111a363c9a133426a`. No
   firmware build, hosted run or hardware test has exercised the new wget yet.
+- [x] Run the zlib-rs `libz.so.1` on ARM. Hosted run 34441607350 (2026-09-10)
+  passed `ARM_SECURITY_ABI=PASS`: the object is linked with the exact
+  arguments `release/src/router/Makefile` uses, a C fixture links it through
+  `-lz` and executes under QEMU on ARM, covering streaming deflate/inflate,
+  one-shot compress/uncompress, the checksums, both combine helpers and the
+  `gz*` file API. Getting there cost four failed runs and each was a defect in
+  the gate, not in the library: `-lz` resolves the development name, so the
+  fixture directory needs a `libz.so` symlink or the link silently falls
+  through to the host zlib; a diagnostic ran under `set -e` and its exit
+  status killed the step; `crc32_combine_op` takes the multiplier last and a
+  zero multiplier makes `multmodp` loop forever; and the fixture was compiled
+  without `_LARGEFILE64_SOURCE`.
+- [ ] Watch the `z_off64_t` width difference. `zconf.h` defines `z_off64_t` as
+  `z_off_t` unless `Z_LARGE64` is set, so on this 32-bit target it is four
+  bytes, while `libz-rs-sys` types it as `i64` unconditionally. Verified on
+  ARM: without `_LARGEFILE64_SOURCE` the header gives four bytes, with it
+  eight, which is what `zlib-rs` expects. The exposure is small because
+  `zlib.h` declares `crc32_combine64`, `adler32_combine64`, `gzseek64`,
+  `gztell64` and `gzoffset64` only inside `#ifdef Z_LARGE64`, so a consumer
+  without the macro cannot call them at all; only hand-written declarations
+  can hit it, which is exactly how the fixture found it. A consumer that
+  defines the macro agrees with `zlib-rs`. Report it upstream and re-check if
+  a future package declares a `*64` entry point itself.
 - [ ] Prove the zlib-rs wget on a hosted build and on hardware: the firmware
   verifier now requires `usr/sbin/wget` without a `libz.so` dependency, with
   the `1.3.0-zlib-rs-` marker and a clean `wget --version` under QEMU; still
