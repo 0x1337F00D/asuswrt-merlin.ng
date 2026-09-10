@@ -1,6 +1,9 @@
 .PHONY: rust-components-relink rust-ui-httpd-relink httpd-ui-c-rebuild rc-c-rebuild networkmap-rust-compat-rebuild rust-firmware-repack
 
 rust-components-relink:
+	# shared-install enters shared's install: all, rebuilding the wlif archive
+	# and libshared before any dependent consumer is refreshed.
+	+$(MAKE) -C router shared-install
 	# AUTODICT rewrites the complete compressed Web tree and its dictionaries as
 	# one versioned set.  Generate that set before rebuilding httpd consumers.
 	+$(MAKE) -C router www-install
@@ -102,6 +105,8 @@ rust-firmware-repack:
 			test -f "$$target_file"; \
 		fi; \
 	}; \
+	promote_artifact $(PROFILE_DIR)/fs.install/shared/usr/lib/libshared.so \
+		$(PROFILE_DIR)/fs.install/usr/lib/libshared.so; \
 	promote_artifact $(PROFILE_DIR)/fs.install/infosvr/usr/sbin/infosvr \
 		$(PROFILE_DIR)/fs.install/usr/sbin/infosvr; \
 	promote_artifact $(PROFILE_DIR)/fs.install/rstats/bin/rstats \
@@ -126,6 +131,7 @@ rust-firmware-repack:
 	# directory. The selected artifacts have now been promoted into the
 	# flat firmware tree, so remove only those known duplicate staging roots.
 	rm -rf \
+		$(PROFILE_DIR)/fs.install/shared \
 		$(PROFILE_DIR)/fs.install/infosvr \
 		$(PROFILE_DIR)/fs.install/rstats \
 		$(PROFILE_DIR)/fs.install/nt_center \
@@ -144,6 +150,7 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/rom/rom/scripts \
 		$(PROFILE_DIR)/fs.install/rom/rom
 	cd $(PROFILE_DIR)/fs.install; sha256sum \
+		usr/lib/libshared.so \
 		usr/sbin/infosvr \
 		bin/rstats \
 		usr/sbin/Notify_Event2NC \

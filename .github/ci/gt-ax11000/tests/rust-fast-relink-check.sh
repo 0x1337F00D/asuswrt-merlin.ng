@@ -7,6 +7,14 @@ router_make="$source_root/release/src/router/Makefile"
 httpd_make="$source_root/release/src/router/httpd/Makefile"
 repack_make="$overlay_root/rust-repack.mk"
 
+# The shared install target rebuilds all, not just a cached copy. Every new
+# Rust consumer must also be promoted and included in the image manifest.
+grep -Fq '$(MAKE) -C router shared-install' "$repack_make"
+grep -Eq '^install:.*all' "$source_root/release/src/router/shared/Makefile"
+grep -Fq '$(PROFILE_DIR)/fs.install/shared/usr/lib/libshared.so' "$repack_make"
+grep -Fq 'usr/lib/libshared.so' "$overlay_root/build.sh"
+grep -Fq 'usr/lib/libshared.so' "$repack_make"
+
 grep -Fq 'httpd-rust-install:' "$router_make"
 grep -Fq 'INSTALLDIR=$(INSTALLDIR)/httpd rust-install' "$router_make"
 grep -Fq 'rust-relink: $(RUST_HTTPD_LIB)' "$httpd_make"

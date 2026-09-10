@@ -42,21 +42,9 @@ done
 # the vendor zlib package; provide it here so the fixture links the object
 # under test rather than a sysroot copy.
 ln -sf libz.so.1 "$fixture_dir/libz.so"
-# The plain and the 64-bit combine entry points must not share an address:
-# the plain one has to sign-extend its 32-bit length into the register pair
-# the implementation reads, so an alias silently feeds it a garbage high word.
-arm_nm="${ARM_CC%-gcc}-nm"
-command -v "$arm_nm" >/dev/null 2>&1 || arm_nm=nm
-{ "$arm_nm" -D --defined-only "$fixture_dir/libz.so.1" 2>/dev/null \
-    | grep -E '(crc32|adler32)_combine(64)?$' | sort \
-    | sed 's/^/libz.so.1 dynsym: /'; } || true
-# The firmware compiles its zlib consumers with _LARGEFILE64_SOURCE, which is
-# what makes zconf.h give z_off64_t the eight bytes zlib-rs types it as. Build
-# the fixture the same way or the *64 entry points are handed half an argument.
-"$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -D_LARGEFILE64_SOURCE=1 \
-    -Wall -Wextra -Werror -O2 \
-    -I"$root/tests/c-abi/include" "$root/tests/c-abi/zlib-shared.c" \
-    -L"$fixture_dir" -lz -o "$fixture_dir/zlib-shared"
-timeout 60 "$ARM_QEMU" -L "$ARM_SYSROOT" -E "LD_LIBRARY_PATH=$fixture_dir" \
-    "$fixture_dir/zlib-shared"
+# Exercise the configured vendor header both with native offsets and with
+# each large-file macro combination. Runtime results, not function/PLT
+# addresses or diagnostic nm output, decide ABI compatibility.
+bash "$root/tests/zlib-header-abi.sh" "$ARM_CC" "$fixture_dir" "$fixture_dir" \
+    "$ARM_QEMU" "$ARM_SYSROOT"
 echo "ARM_SECURITY_ABI=PASS fixture_dir=$fixture_dir (includes symlink and FIFO rejection)"

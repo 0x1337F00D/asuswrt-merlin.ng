@@ -36,7 +36,7 @@ const NTP_PORT: u16 = 123;
 /// Where busybox's ntpd wrote its pid; nothing on this firmware reads it, but
 /// leaving the file behind would be a behaviour change.
 const PID_FILE: &str = "/var/run/ntpd.pid";
-/// The kernel entropy pool, opened once and held for the life of the daemon.
+/// Best-effort seed for non-secret poll jitter only; never used for nonces.
 const URANDOM_PATH: &str = "/dev/urandom";
 /// How long to wait for a reply before giving up on a query, seconds.
 const RESPONSE_INTERVAL: u32 = 16;
@@ -57,6 +57,8 @@ const BIGOFF_INTERVAL: u32 = 128;
 const KISS_RATE_INTERVAL: u32 = 1_024;
 /// Queries sent per peer before the initial burst ends.
 const INITIAL_SAMPLES: u32 = 1;
+/// BusyBox's initial BURSTPOLL=0: collect the first two replies promptly.
+const BURST_POLL_SECONDS: u32 = 1;
 /// A reply whose delay grew by more than this factor is not worth using.
 const BAD_DELAY_GROWTH: f64 = 4.0;
 /// Delays below this are too small for the growth heuristic to mean anything.
@@ -150,6 +152,24 @@ impl Peer {
     fn close_socket(&mut self) {
         self.socket = None;
         self.query = None;
+    }
+}
+
+/// Clock writes are injectable so failure/rollback tests never set host time.
+trait ClockControl {
+    fn step(&mut self, offset: f64) -> std::io::Result<()>;
+    fn slew(&mut self, offset_micros: i64, status: i32, constant: i32) -> std::io::Result<i64>;
+}
+
+struct SystemClock;
+
+impl ClockControl for SystemClock {
+    fn step(&mut self, offset: f64) -> std::io::Result<()> {
+        sys::step_clock(offset)
+    }
+
+    fn slew(&mut self, offset_micros: i64, status: i32, constant: i32) -> std::io::Result<i64> {
+        sys::adjust_clock(offset_micros, status, constant)
     }
 }
 
@@ -290,6 +310,9 @@ impl Daemon {
                 return Ok(());
             }
             let now = sys::now_ntp_seconds();
+            // This must not depend on poll timing out: even sparse LAN
+            // traffic can otherwise starve periodic hooks indefinitely.
+            self.housekeeping(now);
             let mut next_action = (self.last_script_run + SCRIPT_PERIOD).max(now + 1.0);
 
             let mut descriptors: Vec<RawFd> = Vec::with_capacity(self.peers.len() + 1);
@@ -328,12 +351,7 @@ impl Daemon {
             let any_ready = ready.iter().any(|state| *state != Readiness::Idle);
             if !any_ready {
                 let now = sys::now_ntp_seconds();
-                if now - self.last_script_run > SCRIPT_PERIOD {
-                    let offset = self.discipline.last_offset();
-                    self.run_script(ScriptAction::Periodic, offset);
-                }
                 self.resolve_pending(now);
-                self.check_unsync();
                 continue;
             }
 
@@ -372,7 +390,13 @@ impl Daemon {
                     Some(Readiness::Idle) | None => {}
                 }
             }
-            self.check_unsync();
+        }
+    }
+
+    fn housekeeping(&mut self, now: f64) {
+        self.check_unsync(now);
+        if now - self.last_script_run >= SCRIPT_PERIOD {
+            self.run_script_at(ScriptAction::Periodic, self.discipline.last_offset(), now);
         }
     }
 
@@ -463,7 +487,12 @@ impl Daemon {
     /// A randomised poll interval, capped at `upper_bound`, matching the
     /// jitter busybox added so peers are not queried in lockstep.
     fn poll_interval(&mut self, upper_bound: u32) -> u32 {
-        let mut interval = self.discipline.poll_seconds().min(upper_bound).max(1);
+        let base = if self.burst_remaining > 0 {
+            BURST_POLL_SECONDS
+        } else {
+            self.discipline.poll_seconds()
+        };
+        let mut interval = base.min(upper_bound).max(1);
         let mask = ((interval - 1) >> 4) | 1;
         interval = interval.saturating_add((self.jitter.next_u32()) & mask);
         interval
@@ -477,9 +506,9 @@ impl Daemon {
                     // Nothing goes on the wire, but the reachability register
                     // must still shift: a peer whose bits are frozen at their
                     // last non-zero value keeps `check_unsync` from ever
-                    // firing. A DNS failure is deliberately excluded, because
-                    // it retries within seconds and would otherwise report a
-                    // loss of sync on a resolver blip.
+                    // firing. DNS retries can occur within seconds; those
+                    // use the elapsed-time holdover bound in check_unsync
+                    // instead of consuming eight bits on a resolver blip.
                     self.peers[index].filter.note_query_sent();
                 }
                 return;
@@ -505,12 +534,6 @@ impl Daemon {
             );
             self.peers[index].next_action_time = now + f64::from(NOREPLY_INTERVAL);
             return;
-        }
-        if self.burst_remaining > 0 {
-            self.burst_remaining -= 1;
-            if self.burst_remaining == 0 {
-                self.discipline.poll_exp = MIN_POLL_EXP;
-            }
         }
         let Some(address) = self.peers[index].address else {
             return;
@@ -541,6 +564,19 @@ impl Daemon {
         let (nonce, warning) = self.nonce.next_nonce();
         if let Some(warning) = warning {
             self.logger.warning(&warning);
+        }
+        let Some(nonce) = nonce else {
+            // Never put a predictable nonce on the wire. Retry the entropy
+            // source on the next bounded slot; elapsed holdover still ages
+            // the last sample if the outage persists.
+            self.set_next(index, RETRY_INTERVAL);
+            return;
+        };
+        if self.burst_remaining > 0 {
+            self.burst_remaining -= 1;
+            if self.burst_remaining == 0 {
+                self.discipline.poll_exp = MIN_POLL_EXP;
+            }
         }
         let datagram = client::build_query(nonce);
         // The register shifts even if the send fails locally: a pulled cable
@@ -618,13 +654,14 @@ impl Daemon {
         let payload = datagram.get(..received).unwrap_or(&[]);
         let sample = match client::evaluate_reply(payload, query, now, PRECISION_SECONDS) {
             Ok(sample) => sample,
-            Err(Rejection::OriginMismatch) => {
+            Err(Rejection::OriginMismatch | Rejection::Malformed(_)) => {
                 // Somebody else's packet, or a spoof. Keep waiting for the
-                // real reply on this socket instead of giving up the round.
+                // real reply. Malformed packets have not passed the nonce
+                // check either, so they must not cancel this round.
                 self.logger.debug(
                     1,
                     &format!(
-                        "ignored a reply with a foreign origin timestamp from {}",
+                        "ignored an unauthenticated or malformed reply from {}",
                         self.peers[index].describe()
                     ),
                 );
@@ -676,7 +713,9 @@ impl Daemon {
         self.set_next(index, interval);
         // -q is "act like ntpdate": leave as soon as the clock has been set,
         // or as soon as one usable datapoint showed it needed no correction.
-        if self.options.quit_after_set && (disciplined || self.discipline.has_usable_sample()) {
+        if self.options.quit_after_set
+            && disciplined.is_ok_and(|set| set || self.discipline.has_usable_sample())
+        {
             let _ = fs::remove_file(PID_FILE);
             std::process::exit(0);
         }
@@ -766,17 +805,26 @@ impl Daemon {
     }
 
     /// Re-runs peer selection and applies the winner to the system clock.
-    /// Returns true when the clock was actually set.
-    fn discipline_from_selection(&mut self, now: f64) -> bool {
+    /// Returns true when the clock was actually set, or an error on a failed
+    /// write. In particular, `-q` must not mistake a failed write for success.
+    fn discipline_from_selection(&mut self, now: f64) -> Result<bool, ()> {
+        self.discipline_from_selection_with(now, &mut SystemClock)
+    }
+
+    fn discipline_from_selection_with(
+        &mut self,
+        now: f64,
+        clock: &mut impl ClockControl,
+    ) -> Result<bool, ()> {
         let candidates = self.candidates(now);
         let Some(selected) = clock::select_peer(&candidates) else {
             if self.discipline.poll_exp < BIG_POLL_EXP {
                 self.discipline.increase_poll();
             }
-            return false;
+            return Ok(false);
         };
         let Some(peer) = self.peers.get(selected) else {
-            return false;
+            return Ok(false);
         };
         let (offset, received_at, stratum, leap) = (
             peer.filter.offset,
@@ -785,22 +833,38 @@ impl Daemon {
             peer.filter.leap,
         );
         if self.options.watch_only {
-            return false;
+            return Ok(false);
         }
-        let outcome = self.discipline.update(offset, received_at, stratum, leap);
-        self.refresh_root_variables(selected, offset, now);
+        // The discipline's timestamps/stratum describe successful clock
+        // operations, not intentions. Stage the update until the write wins.
+        let mut next_discipline = self.discipline;
+        let outcome = next_discipline.update(offset, received_at, stratum, leap);
         let mut clock_was_set = false;
         match outcome.action {
             ClockAction::None => {}
             ClockAction::Step(step) => {
-                clock_was_set = self.apply_step(step, now);
+                clock_was_set = self.apply_step(step, now, clock);
             }
             ClockAction::Slew {
                 offset_micros,
                 status,
                 constant,
             } => {
-                clock_was_set = self.apply_slew(offset_micros, status, constant);
+                clock_was_set = self.apply_slew(offset_micros, status, constant, clock);
+            }
+        }
+        if !matches!(outcome.action, ClockAction::None) && !clock_was_set {
+            // Keep the old sample epoch so a denied forward step cannot
+            // reject all later samples as stale. Stop publishing sync even
+            // if we had been synchronised before this failure.
+            self.discipline.clamp_poll_and_unsync();
+            return Err(());
+        }
+        self.discipline = next_discipline;
+        if clock_was_set {
+            self.refresh_root_variables(selected, offset, now);
+            if let ClockAction::Step(step) = outcome.action {
+                self.reference = Timestamp::from_secs_f64(now + step);
             }
         }
         if let Some(action) = outcome.script {
@@ -822,7 +886,10 @@ impl Daemon {
                 constant,
             } = self.discipline.post_step_slew()
             {
-                self.apply_slew(offset_micros, status, constant);
+                // A successful step cannot be undone if the PLL reset
+                // fails. Its step hook is still truthful; stratum remains
+                // unsynchronised until a later successful slew.
+                self.apply_slew(offset_micros, status, constant, clock);
             }
         }
         let decreased = self.discipline.apply_feedback(outcome.feedback);
@@ -834,11 +901,11 @@ impl Daemon {
                 }
             }
         }
-        clock_was_set
+        Ok(clock_was_set)
     }
 
-    fn apply_step(&mut self, offset: f64, now: f64) -> bool {
-        if let Err(error) = sys::step_clock(offset) {
+    fn apply_step(&mut self, offset: f64, now: f64, clock: &mut impl ClockControl) -> bool {
+        if let Err(error) = clock.step(offset) {
             self.logger
                 .warning(&format!("cannot set the system clock: {error}"));
             return false;
@@ -860,8 +927,14 @@ impl Daemon {
         true
     }
 
-    fn apply_slew(&mut self, offset_micros: i64, status: i32, constant: i32) -> bool {
-        match sys::adjust_clock(offset_micros, status, constant) {
+    fn apply_slew(
+        &mut self,
+        offset_micros: i64,
+        status: i32,
+        constant: i32,
+        clock: &mut impl ClockControl,
+    ) -> bool {
+        match clock.slew(offset_micros, status, constant) {
             Ok(frequency) => {
                 self.kernel_freq_ppm = frequency;
                 self.logger.debug(
@@ -893,7 +966,20 @@ impl Daemon {
         self.root_dispersion = peer.filter.root_dispersion + peer.filter.jitter + dispersion;
     }
 
-    fn check_unsync(&mut self) {
+    fn check_unsync(&mut self, now: f64) {
+        // Rapid DNS/entropy/socket-open retries do not shift reachability,
+        // but they must not preserve it forever. Allow eight complete normal
+        // polling slots, including response time, before expiring a sample.
+        // Respect long steady-state poll intervals, and ignore the short
+        // startup burst when calculating this holdover allowance.
+        let holdover = 8.0
+            * (f64::from(self.discipline.poll_seconds().max(1 << MIN_POLL_EXP))
+                + f64::from(RESPONSE_INTERVAL));
+        for peer in &mut self.peers {
+            if now - peer.filter.received_at >= holdover {
+                peer.filter.reachable_bits = 0;
+            }
+        }
         if self.peers.is_empty() || !self.discipline.is_synchronised() {
             return;
         }
@@ -902,12 +988,16 @@ impl Daemon {
         }
         self.discipline.clamp_poll_and_unsync();
         self.logger
-            .warning("no peer answered the last eight queries; clock is unsynchronised");
-        self.run_script(ScriptAction::Unsync, 0.0);
+            .warning("no usable peer remains within the reachability/holdover limit; clock is unsynchronised");
+        self.run_script_at(ScriptAction::Unsync, 0.0, now);
     }
 
     fn run_script(&mut self, action: ScriptAction, offset: f64) {
-        self.last_script_run = sys::now_ntp_seconds();
+        self.run_script_at(action, offset, sys::now_ntp_seconds());
+    }
+
+    fn run_script_at(&mut self, action: ScriptAction, offset: f64, now: f64) {
+        self.last_script_run = now;
         let Some(script) = self.script.clone() else {
             return;
         };
@@ -1128,82 +1218,105 @@ where
 /// Source of the 64-bit query nonce.
 ///
 /// The nonce is the only anti-spoofing token an unauthenticated SNTP client
-/// has, so every query draws eight fresh bytes from `/dev/urandom`. The file
-/// is held open for the life of the daemon: a poll must not depend on `open`
-/// succeeding, and there is no per-query system call beyond the read.
+/// has, so every query draws eight fresh bytes from nonblocking getrandom.
+/// Merely opening /dev/urandom is insufficient on an early Linux 4.1 boot:
+/// it may supply bytes before the kernel entropy pool has initialized.
 ///
-/// The [`Xorshift`] fallback below exists only for the window before `/dev` is
-/// mounted on a cold boot. It is not a cryptographic generator, so falling
-/// back to it is reported once at warning level.
+/// If secure entropy is not ready or the syscall is unsupported, no query
+/// may be sent. The next query slot retries, so an early-boot outage recovers
+/// without ever using a predictable anti-spoofing token.
 struct NonceSource {
-    pool: Option<fs::File>,
-    fallback: Xorshift,
+    read: fn() -> std::io::Result<[u8; 8]>,
+    #[cfg(test)]
+    fixture: Option<EntropyFixture>,
     warned: bool,
+}
+
+#[cfg(test)]
+struct EntropyFixture {
+    pool: Option<fs::File>,
+    path: PathBuf,
 }
 
 impl NonceSource {
     fn new() -> Self {
-        Self::open(URANDOM_PATH)
-    }
-
-    fn open(path: &str) -> Self {
         Self {
-            pool: fs::File::open(path).ok(),
-            fallback: Xorshift::seeded(),
+            read: sys::secure_random_bytes,
+            #[cfg(test)]
+            fixture: None,
             warned: false,
         }
+    }
+
+    #[cfg(test)]
+    fn open(path: &str) -> Self {
+        Self {
+            fixture: Some(EntropyFixture {
+                pool: fs::File::open(path).ok(),
+                path: PathBuf::from(path),
+            }),
+            ..Self::new()
+        }
+    }
+
+    fn read_bytes(&mut self) -> std::io::Result<[u8; 8]> {
+        #[cfg(test)]
+        if let Some(fixture) = self.fixture.as_mut() {
+            if fixture.pool.is_none() {
+                fixture.pool = Some(fs::File::open(&fixture.path)?);
+            }
+            let mut bytes = [0; 8];
+            let result = fixture
+                .pool
+                .as_mut()
+                .expect("opened fixture")
+                .read_exact(&mut bytes);
+            if let Err(error) = result {
+                fixture.pool = None;
+                return Err(error);
+            }
+            return Ok(bytes);
+        }
+        (self.read)()
     }
 
     /// Draws a fresh nonce.
     ///
     /// The second element is a message to log, produced only the first time
     /// the kernel pool could not be read.
-    fn next_nonce(&mut self) -> (Timestamp, Option<String>) {
-        let mut bytes = [0_u8; 8];
-        // `read_exact` loops over a short read and reports the end of file,
-        // which /dev/urandom never produces but a wrong path would.
-        let failure = match self.pool.as_mut() {
-            Some(pool) => pool
-                .read_exact(&mut bytes)
-                .err()
-                .map(|error| error.to_string()),
-            None => Some(format!("{URANDOM_PATH} could not be opened")),
+    fn next_nonce(&mut self) -> (Option<Timestamp>, Option<String>) {
+        let reason = match self.read_bytes() {
+            Ok(bytes) => {
+                let value = u64::from_be_bytes(bytes);
+                self.warned = false;
+                return (
+                    Some(Timestamp {
+                        seconds: (value >> 32) as u32,
+                        fraction: value as u32,
+                    }),
+                    None,
+                );
+            }
+            Err(error) => error,
         };
-        let Some(reason) = failure else {
-            let value = u64::from_be_bytes(bytes);
-            return (
-                Timestamp {
-                    seconds: (value >> 32) as u32,
-                    fraction: value as u32,
-                },
-                None,
-            );
-        };
-        // Do not keep trying a descriptor that has already failed once.
-        self.pool = None;
         let warning = if self.warned {
             None
         } else {
             self.warned = true;
             Some(format!(
-                "cannot read {URANDOM_PATH} ({reason}); query nonces fall back to a \
-                 non-cryptographic generator and are predictable"
+                "getrandom unavailable ({reason}); withholding queries until \
+                 secure entropy is available"
             ))
         };
-        let value = self.fallback.next_u64();
-        (
-            Timestamp {
-                seconds: (value >> 32) as u32,
-                fraction: value as u32,
-            },
-            warning,
-        )
+        (None, warning)
     }
 
     /// True while the kernel entropy pool is the source.
     #[cfg(test)]
     fn is_kernel_backed(&self) -> bool {
-        self.pool.is_some()
+        self.fixture
+            .as_ref()
+            .is_none_or(|fixture| fixture.pool.is_some())
     }
 }
 
@@ -1211,9 +1324,9 @@ impl NonceSource {
 ///
 /// NOT CRYPTOGRAPHIC. xorshift64 is F2-linear and invertible: the map from
 /// state to output has GF(2) rank 62 of 64, so a couple of observed outputs
-/// pin the state and every later output follows. Its only jobs here are the
-/// poll-interval jitter, whose effect is published to the LAN anyway, and the
-/// query-nonce fallback for a boot where `/dev/urandom` cannot be opened.
+/// pin the state and every later output follows. Its only job here is the
+/// poll-interval jitter, whose effect is published to the LAN anyway. It is
+/// never used for a query nonce, including during entropy-source failures.
 ///
 /// The nonce and the jitter use separate instances on purpose. Sharing one
 /// stream, as this daemon used to, meant a LAN device could recover the state
@@ -1287,6 +1400,264 @@ mod tests {
             root_delay: 0.01,
             root_dispersion: 0.01,
             reference_id: *b"TEST",
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeClock {
+        deny_step: bool,
+        deny_slew: bool,
+        calls: Vec<ClockAction>,
+    }
+
+    impl ClockControl for FakeClock {
+        fn step(&mut self, offset: f64) -> std::io::Result<()> {
+            self.calls.push(ClockAction::Step(offset));
+            if self.deny_step {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected step failure",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn slew(&mut self, offset_micros: i64, status: i32, constant: i32) -> std::io::Result<i64> {
+            self.calls.push(ClockAction::Slew {
+                offset_micros,
+                status,
+                constant,
+            });
+            if self.deny_slew {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected slew failure",
+                ))
+            } else {
+                Ok(7)
+            }
+        }
+    }
+
+    fn selectable_daemon(offset: f64) -> Daemon {
+        let mut daemon = Daemon::for_test(&["127.0.0.1"]);
+        daemon.options.trust_network = true;
+        daemon.peers[0].filter.accept(&sample(offset, NOW), NOW);
+        daemon.peers[0].filter.note_query_sent();
+        daemon.peers[0]
+            .filter
+            .accept(&sample(offset, NOW + 64.0), NOW + 64.0);
+        daemon
+    }
+
+    #[test]
+    fn malformed_datagrams_cannot_cancel_an_outstanding_query() {
+        for size in [0, 1, 47, 49, RECEIVE_BUFFER, RECEIVE_BUFFER + 100] {
+            let source = UdpSocket::bind("127.0.0.1:0").expect("ephemeral loopback source");
+            let socket = UdpSocket::bind("127.0.0.1:0").expect("ephemeral loopback client");
+            socket.connect(source.local_addr().unwrap()).unwrap();
+            source
+                .send_to(&vec![0; size], socket.local_addr().unwrap())
+                .unwrap();
+            let mut daemon = Daemon::for_test(&["127.0.0.1"]);
+            daemon.peers[0].socket = Some(socket);
+            daemon.peers[0].query = Some(Query {
+                nonce: Timestamp {
+                    seconds: 123,
+                    fraction: 456,
+                },
+                sent_at: NOW,
+            });
+            let deadline = daemon.peers[0].next_action_time;
+            daemon.receive_reply(0);
+            assert!(
+                daemon.peers[0].query.is_some(),
+                "length {size} cancelled the query without its nonce"
+            );
+            assert!(daemon.peers[0].socket.is_some());
+            assert_eq!(daemon.peers[0].next_action_time, deadline);
+        }
+    }
+
+    #[test]
+    fn denied_step_neither_reports_success_nor_commits_a_future_sample_epoch() {
+        let mut daemon = selectable_daemon(10_000.0);
+        let mut clock = FakeClock {
+            deny_step: true,
+            ..FakeClock::default()
+        };
+        let hook_time = daemon.last_script_run;
+        let reference = daemon.reference;
+        assert_eq!(
+            daemon.discipline_from_selection_with(NOW + 64.0, &mut clock),
+            Err(())
+        );
+        assert_eq!(
+            daemon.last_script_run, hook_time,
+            "a failed step dispatched a success hook"
+        );
+        assert_eq!(daemon.reference, reference);
+        assert!(!daemon.discipline.has_usable_sample());
+        assert!(!daemon.server_state().is_synchronised());
+        assert_eq!(
+            clock.calls,
+            [ClockAction::Step(10_000.0)],
+            "a failed step must not reset the PLL"
+        );
+
+        // The same sample is retryable after permissions recover: the failed
+        // attempt must not commit received_at + 10000 and reject it as old.
+        clock.deny_step = false;
+        assert_eq!(
+            daemon.discipline_from_selection_with(NOW + 64.0, &mut clock),
+            Ok(true)
+        );
+        assert_eq!(clock.calls.len(), 3); // denied step, successful step, PLL reset
+        assert_eq!(
+            daemon.reference,
+            Timestamp::from_secs_f64(NOW + 64.0 + 10_000.0)
+        );
+    }
+
+    #[test]
+    fn denied_slew_withdraws_sync_and_does_not_trigger_a_success_hook() {
+        let mut daemon = selectable_daemon(0.1);
+        daemon.synchronise_for_test();
+        // Make the staged sample newer than synchronise_for_test's last one.
+        daemon.peers[0]
+            .filter
+            .accept(&sample(0.1, NOW + 128.0), NOW + 128.0);
+        let hook_time = daemon.last_script_run;
+        let mut clock = FakeClock {
+            deny_slew: true,
+            ..FakeClock::default()
+        };
+        assert_eq!(
+            daemon.discipline_from_selection_with(NOW + 128.0, &mut clock),
+            Err(())
+        );
+        assert!(!daemon.server_state().is_synchronised());
+        assert_eq!(daemon.last_script_run, hook_time);
+        assert_eq!(daemon.kernel_freq_ppm, 0);
+        clock.deny_slew = false;
+        assert_eq!(
+            daemon.discipline_from_selection_with(NOW + 128.0, &mut clock),
+            Ok(true)
+        );
+        assert!(daemon.server_state().is_synchronised());
+        assert_eq!(daemon.kernel_freq_ppm, 7);
+    }
+
+    #[test]
+    fn first_small_sample_is_a_no_write_success_and_watch_mode_never_writes() {
+        let mut daemon = selectable_daemon(0.1);
+        let mut clock = FakeClock::default();
+        daemon.options.watch_only = true;
+        assert_eq!(
+            daemon.discipline_from_selection_with(NOW + 64.0, &mut clock),
+            Ok(false)
+        );
+        assert!(!daemon.discipline.has_usable_sample());
+        daemon.options.watch_only = false;
+        assert_eq!(
+            daemon.discipline_from_selection_with(NOW + 64.0, &mut clock),
+            Ok(false)
+        );
+        assert!(daemon.discipline.has_usable_sample());
+        assert!(clock.calls.is_empty());
+        assert_eq!(daemon.last_script_run, NOW);
+    }
+
+    #[test]
+    fn successful_step_with_denied_pll_reset_remains_unsynchronised() {
+        let mut daemon = selectable_daemon(3.0);
+        let mut clock = FakeClock {
+            deny_slew: true,
+            ..FakeClock::default()
+        };
+        assert_eq!(
+            daemon.discipline_from_selection_with(NOW + 64.0, &mut clock),
+            Ok(true)
+        );
+        assert!(!daemon.server_state().is_synchronised());
+        assert_eq!(clock.calls.len(), 2);
+        assert_eq!(daemon.reference, Timestamp::from_secs_f64(NOW + 67.0));
+    }
+
+    #[test]
+    fn initial_queries_use_burst_then_return_to_the_normal_poll_interval() {
+        let source = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut daemon = Daemon::for_test(&["127.0.0.1"]);
+        daemon.peers[0].address = Some(source.local_addr().unwrap());
+        daemon.burst_remaining = 2;
+        daemon.send_query(0, NOW);
+        assert_eq!(daemon.burst_remaining, 1);
+        for _ in 0..32 {
+            assert!((1..=2).contains(&daemon.poll_interval(u32::MAX)));
+        }
+        daemon.peers[0].close_socket();
+        daemon.send_query(0, NOW + 2.0);
+        assert_eq!(daemon.burst_remaining, 0);
+        assert!(daemon.poll_interval(u32::MAX) >= 64);
+    }
+
+    #[test]
+    fn dns_failure_after_a_permanent_kiss_has_a_finite_holdover() {
+        let mut daemon = selectable_daemon(0.001);
+        daemon.synchronise_for_test();
+        daemon.peers[0].address = Some(loopback(NTP_PORT));
+        daemon.handle_rejection(0, Rejection::KissOfDeath(KissCode::Deny));
+        // Empty input forces immediate resolver failure, without DNS traffic.
+        daemon.peers[0].hostname.clear();
+        daemon.send_query(0, NOW + 65.0);
+        daemon.check_unsync(NOW + 65.0);
+        assert!(
+            daemon.discipline.is_synchronised(),
+            "a one-second DNS blip must not exhaust reachability"
+        );
+        daemon.send_query(0, NOW + 705.0);
+        daemon.check_unsync(NOW + 705.0);
+        assert_eq!(daemon.peers[0].filter.reachable_bits, 0);
+        assert!(!daemon.server_state().is_synchronised());
+    }
+
+    #[test]
+    fn holdover_respects_long_polls_and_refreshes_after_a_reply() {
+        let mut daemon = selectable_daemon(0.001);
+        daemon.synchronise_for_test();
+        daemon.discipline.poll_exp = 16;
+        daemon.check_unsync(NOW + 65_536.0);
+        assert!(daemon.discipline.is_synchronised());
+        daemon.peers[0]
+            .filter
+            .accept(&sample(0.001, NOW + 500_000.0), NOW + 500_000.0);
+        daemon.check_unsync(NOW + 530_000.0);
+        assert!(daemon.discipline.is_synchronised());
+        daemon.check_unsync(NOW + 1_030_000.0);
+        assert!(!daemon.discipline.is_synchronised());
+    }
+
+    #[test]
+    fn housekeeping_runs_periodically_even_when_the_listener_is_always_ready() {
+        let mut daemon = Daemon::for_test(&[]);
+        let mut transport = FakeTransport::new();
+        for second in 1..=1_320 {
+            let now = NOW + f64::from(second);
+            transport.queue(mode_seven_request(), 1);
+            let outcome = serve_from(
+                &mut transport,
+                &daemon.server_state(),
+                &mut daemon.budget,
+                &daemon.logger,
+                || now,
+            );
+            assert_eq!(outcome.received, 1);
+            daemon.housekeeping(now);
+            assert_eq!(
+                daemon.last_script_run,
+                NOW + f64::from(second / 660) * SCRIPT_PERIOD
+            );
         }
     }
 
@@ -1421,6 +1792,7 @@ mod tests {
         for _ in 0..256 {
             let (nonce, warning) = source.next_nonce();
             assert!(warning.is_none(), "the kernel pool must not warn");
+            let nonce = nonce.expect("kernel entropy produces a nonce");
             assert!(
                 seen.insert((nonce.seconds, nonce.fraction)),
                 "a nonce repeated inside 256 queries"
@@ -1437,13 +1809,12 @@ mod tests {
         // exactly what this asserts: consuming any amount of jitter leaves
         // the nonce sequence untouched.
         let quiet = {
-            let mut source = NonceSource::open("/nonexistent/urandom");
-            source.fallback = Xorshift::from_state(0xfeed_face_dead_beef);
+            // Deterministic read-only fixture, never a production source.
+            let mut source = NonceSource::open("/dev/zero");
             (0..8).map(|_| source.next_nonce().0).collect::<Vec<_>>()
         };
         let noisy = {
-            let mut source = NonceSource::open("/nonexistent/urandom");
-            source.fallback = Xorshift::from_state(0xfeed_face_dead_beef);
+            let mut source = NonceSource::open("/dev/zero");
             let mut jitter = Xorshift::from_state(0xfeed_face_dead_beef);
             let mut nonces = Vec::new();
             for _ in 0..8 {
@@ -1454,11 +1825,12 @@ mod tests {
             }
             nonces
         };
+        assert!(quiet.iter().all(Option::is_some));
         assert_eq!(quiet, noisy);
     }
 
     #[test]
-    fn the_xorshift_fallback_is_predictable_which_is_why_it_is_only_a_fallback() {
+    fn the_jitter_generator_is_predictable_and_must_never_supply_nonces() {
         // The property that made the old design a defect, asserted directly:
         // xorshift64 is a pure function of its state, so an observer who
         // recovers the state predicts every later output. Nothing an attacker
@@ -1471,18 +1843,121 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_entropy_pool_warns_once_and_keeps_producing_nonces() {
+    fn an_unreadable_entropy_pool_warns_once_and_withholds_nonces() {
         let mut source = NonceSource::open("/nonexistent/urandom");
         assert!(!source.is_kernel_backed());
         let (first, warning) = source.next_nonce();
-        let warning = warning.expect("the first fallback is reported");
-        assert!(warning.contains("non-cryptographic"));
+        let warning = warning.expect("the first outage is reported");
+        assert!(warning.contains("withholding queries"));
         let (second, repeat) = source.next_nonce();
         assert!(
             repeat.is_none(),
             "the warning is emitted once, not per poll"
         );
-        assert_ne!(first, second);
+        assert_eq!(first, None);
+        assert_eq!(second, None);
+    }
+
+    #[test]
+    fn unready_or_unsupported_getrandom_withholds_queries_and_can_recover() {
+        for read in [
+            (|| Err(std::io::Error::from_raw_os_error(libc::EAGAIN)))
+                as fn() -> std::io::Result<[u8; 8]>,
+            (|| Err(std::io::Error::from_raw_os_error(libc::ENOSYS)))
+                as fn() -> std::io::Result<[u8; 8]>,
+        ] {
+            let mut source = NonceSource {
+                read,
+                ..NonceSource::new()
+            };
+            let (nonce, warning) = source.next_nonce();
+            assert!(nonce.is_none());
+            assert!(warning.unwrap().contains("withholding queries"));
+            assert_eq!(source.next_nonce(), (None, None));
+            // Inject readiness on the next scheduled attempt, without any
+            // real syscall, to show recovery does not require a restart.
+            source.read = || Ok([42; 8]);
+            let (nonce, warning) = source.next_nonce();
+            assert_eq!(
+                nonce,
+                Some(Timestamp {
+                    seconds: 0x2a2a_2a2a,
+                    fraction: 0x2a2a_2a2a
+                })
+            );
+            assert!(warning.is_none());
+            source.read = read;
+            let (nonce, warning) = source.next_nonce();
+            assert!(nonce.is_none());
+            assert!(warning.is_some());
+        }
+    }
+
+    #[test]
+    fn entropy_open_and_short_read_failures_recover_without_a_predictable_fallback() {
+        let name = format!(
+            "ntp-entropy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let directory = std::env::temp_dir().join(name);
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("pool");
+        let mut source = NonceSource::open(path.to_str().unwrap());
+        assert_eq!(source.next_nonce().0, None);
+        fs::write(&path, [1, 2, 3]).unwrap(); // short read must not become a token
+        assert_eq!(source.next_nonce().0, None);
+        assert!(!source.is_kernel_backed());
+        fs::write(&path, [1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let (nonce, warning) = source.next_nonce();
+        assert_eq!(
+            nonce,
+            Some(Timestamp {
+                seconds: 0x0102_0304,
+                fraction: 0x0506_0708
+            })
+        );
+        assert!(warning.is_none());
+        assert!(source.is_kernel_backed());
+        // Recovery resets warning suppression for a later outage.
+        let (nonce, warning) = source.next_nonce();
+        assert_eq!(nonce, None);
+        assert!(warning.is_some());
+        drop(source);
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&directory).unwrap();
+    }
+
+    #[test]
+    fn entropy_failure_sends_nothing_and_retries_without_spending_the_burst() {
+        let source = UdpSocket::bind("127.0.0.1:0").unwrap();
+        source.set_nonblocking(true).unwrap();
+        let mut daemon = Daemon::for_test(&["127.0.0.1"]);
+        daemon.peers[0].address = Some(source.local_addr().unwrap());
+        daemon.nonce = NonceSource::open("/nonexistent/urandom");
+        daemon.burst_remaining = 2;
+        daemon.send_query(0, NOW);
+        assert_eq!(daemon.burst_remaining, 2);
+        assert!(daemon.peers[0].socket.is_none());
+        assert!(daemon.peers[0].query.is_none());
+        let mut datagram = [0; PACKET_LEN];
+        assert_eq!(
+            source.recv(&mut datagram).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        assert!(daemon.peers[0].next_action_time > NOW);
+        // A later retry can recover and send an ordinary random query.
+        daemon.nonce = NonceSource::new();
+        daemon.send_query(0, NOW + f64::from(RETRY_INTERVAL));
+        assert!(daemon.peers[0].query.is_some());
+        assert_eq!(
+            sys::poll_readable(&[source.as_raw_fd()], 1_000).unwrap(),
+            [Readiness::Readable]
+        );
+        assert_eq!(source.recv(&mut datagram).unwrap(), PACKET_LEN);
     }
 
     #[test]
@@ -1532,7 +2007,7 @@ mod tests {
         );
 
         assert!(daemon.discipline.is_synchronised());
-        daemon.check_unsync();
+        daemon.check_unsync(NOW + 8.0 * f64::from(NOREPLY_INTERVAL));
         assert!(
             !daemon.discipline.is_synchronised(),
             "the daemon kept claiming synchronisation"

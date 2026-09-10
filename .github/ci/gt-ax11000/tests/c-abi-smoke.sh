@@ -49,7 +49,7 @@ cc "${common[@]}" "$SCRIPT_ROOT/c-abi/wanduck.c" \
 	"$TARGET_DIR/release/libwanduck_transition.a" "${libraries[@]}" \
 	-o "$FIXTURE_DIR/wanduck"
 # The wireless-interface policy is the archive libshared.so links; the vendor
-# shared/wlif_utils_ax.c calls exactly these entry points before _eval().
+# shared/wlif_utils_ax.c validates these inputs before its private argv runner.
 cc "${common[@]}" "$SCRIPT_ROOT/c-abi/wlif-policy.c" \
 	"$TARGET_DIR/release/libwlif_policy.a" "${libraries[@]}" \
 	-o "$FIXTURE_DIR/wlif-policy"
@@ -82,18 +82,14 @@ done
 # zlib package.  Without it the link silently falls through to the host zlib
 # and this fixture would assert nothing at link time.
 ln -sf libz.so.1 "$FIXTURE_DIR/libz.so"
-# Match the firmware's zlib consumers: _LARGEFILE64_SOURCE is what gives
-# z_off64_t eight bytes in zconf.h, which is the width zlib-rs types it as.
-cc "${common[@]}" -D_LARGEFILE64_SOURCE=1 -I"$SCRIPT_ROOT/c-abi/include" \
-	"$SCRIPT_ROOT/c-abi/zlib-shared.c" -L"$FIXTURE_DIR" -lz \
-	-o "$FIXTURE_DIR/zlib-shared"
-readelf -d "$FIXTURE_DIR/zlib-shared" | grep -q 'Shared library: \[libz\.so\.1\]'
+bash "$SCRIPT_ROOT/zlib-header-abi.sh" cc "$FIXTURE_DIR" "$FIXTURE_DIR"
+python3 "$SCRIPT_ROOT/test-zlib-consumer-abi.py"
 
 "$FIXTURE_DIR/httpd"
 "$FIXTURE_DIR/clientlist" "$FIXTURE_DIR"
 "$FIXTURE_DIR/router-security" "$FIXTURE_DIR"
 "$FIXTURE_DIR/wanduck"
 "$FIXTURE_DIR/wlif-policy"
+bash "$SCRIPT_ROOT/wlif-credentials.sh"
 "$FIXTURE_DIR/zlib"
-LD_LIBRARY_PATH="$FIXTURE_DIR" "$FIXTURE_DIR/zlib-shared"
 echo "RESULT=PASS"

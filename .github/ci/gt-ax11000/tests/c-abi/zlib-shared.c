@@ -15,11 +15,16 @@
 
 #include "zlib.h"
 
-/* Declared by zlib.h only under _LARGEFILE64_SOURCE; the fixture calls
- * them directly to isolate a target-specific divergence. */
-extern uLong crc32_combine_gen(z_off_t len2);
-extern uLong crc32_combine_op(uLong crc1, uLong crc2, uLong op);
-extern uLong crc32_combine64(uLong crc1, uLong crc2, z_off64_t len2);
+/* The firmware's configure enables the unistd branch of zconf.h, so z_off_t
+ * follows off_t. The header, never a handwritten declaration, decides which
+ * *64 functions are visible and whether ordinary names alias them. */
+_Static_assert(sizeof(z_off_t) == sizeof(off_t), "use configured zconf.h");
+#ifdef Z_WANT64
+_Static_assert(sizeof(z_off_t) == 8, "large-file aliases need 64-bit offsets");
+#endif
+#ifdef Z_LARGE64
+_Static_assert(sizeof(z_off64_t) == 8, "explicit *64 offsets must be 64-bit");
+#endif
 
 #define PAYLOAD_LEN 40000u
 
@@ -47,60 +52,8 @@ static int fail_combine(const char *what, uLong head, uLong tail,
 	fprintf(stderr, "libz.so.1 fixture: zlibVersion=%s "
 		"zlibCompileFlags=%08lx\n", zlibVersion(),
 		(unsigned long)zlibCompileFlags());
-	/* Decompose the computation so the target says which step diverges.
-	 * On a 32-bit target crc32_combine and crc32_combine64 have different
-	 * argument widths, which a host with 64-bit long cannot tell apart. */
-	{
-		uLong op = crc32_combine_gen((z_off_t)(PAYLOAD_LEN - 1777u));
-		/* crc32_combine_op(crc1, crc2, op) is multmodp(op, crc1) ^ crc2,
-		 * so passing op last reproduces crc32_combine step by step.
-		 * op must never be zero: multmodp loops forever on a zero
-		 * multiplier, which is documented in the zlib-rs source. */
-		/* x2nmodp(2^i, 3) is exactly X2N_TABLE[3 + i], so this reads
-		 * the constant table through the public ABI and shows whether
-		 * the PC-relative load resolves to it on this target. */
-		static const unsigned long expect[6] = {
-			0x00800000UL, 0x00008000UL, 0xedb88320UL,
-			0xb1e6b092UL, 0xa06a2517UL, 0xed627daeUL
-		};
-		for (unsigned i = 0; i < 6; i++) {
-			uLong entry = crc32_combine_gen((z_off_t)(1L << i));
-			fprintf(stderr, "libz.so.1 fixture: table[%u]=%08lx "
-				"expect=%08lx %s\n", 3u + i,
-				(unsigned long)entry, expect[i],
-				(unsigned long)entry == expect[i] ? "ok"
-					: "MISMATCH");
-		}
-		/* zlib-rs types z_off64_t as i64 unconditionally, while the
-		 * vendor zconf.h makes it z_off_t (long) unless Z_LARGE64 is
-		 * set, so on a 32-bit target the *64 entry points disagree on
-		 * the argument width. Report the widths and the two entry
-		 * addresses so the target says whether the plain entry point
-		 * is distinct from the 64-bit one. */
-		{
-			uint32_t words[4];
-			uintptr_t a = (uintptr_t)crc32_combine;
-			uintptr_t b = (uintptr_t)crc32_combine64;
-
-			memcpy(&words[0], (const void *)a, 8);
-			memcpy(&words[2], (const void *)b, 8);
-			fprintf(stderr, "libz.so.1 fixture: combine=%08lx "
-				"combine64=%08lx opcodes %08lx %08lx / "
-				"%08lx %08lx sizeof(z_off64_t)=%u\n",
-				(unsigned long)a, (unsigned long)b,
-				(unsigned long)words[0],
-				(unsigned long)words[1],
-				(unsigned long)words[2],
-				(unsigned long)words[3],
-				(unsigned)sizeof(z_off64_t));
-		}
-		fprintf(stderr, "libz.so.1 fixture: gen=%08lx op(head,tail,gen)="
-			"%08lx combine64=%08lx\n", (unsigned long)op,
-			(unsigned long)(op == 0 ? 0
-				: crc32_combine_op(head, tail, op)),
-			(unsigned long)crc32_combine64(head, tail,
-				(z_off64_t)(PAYLOAD_LEN - 1777u)));
-	}
+	/* Failure reporting must not call a potentially broken checksum helper
+	 * again or read implementation bytes through a PLT/Thumb address. */
 	maps = fopen("/proc/self/maps", "r");
 	if (maps != NULL) {
 		while (fgets(line, sizeof line, maps) != NULL) {
@@ -221,6 +174,24 @@ int main(void)
 	if (combined != whole)
 		return fail_combine("crc32_combine", head_sum, tail_sum,
 			combined, whole);
+#if defined(Z_LARGE64) || defined(Z_WANT64)
+	combined = crc32_combine64(head_sum, tail_sum,
+		(z_off64_t)(PAYLOAD_LEN - 1777));
+	if (combined != whole)
+		return fail_combine("crc32_combine64", head_sum, tail_sum,
+			combined, whole);
+	/* Cross the 32-bit boundary without allocating a multi-gigabyte body.
+	 * The independent published polynomial operator is checked below too. */
+	{
+		z_off64_t length = (z_off64_t)((UINT64_C(1) << 32) + 38223);
+		uLong op = crc32_combine_gen64(length);
+		if (op == 0 || op == crc32_combine_gen64(38223))
+			return fail("crc32_combine_gen64 lost the high length word", 0);
+		if (crc32_combine64(head_sum, tail_sum, length) !=
+		    crc32_combine_op(head_sum, tail_sum, op))
+			return fail("crc32_combine64 high-word operator", 0);
+	}
+#endif
 	whole = adler32(1, body, PAYLOAD_LEN);
 	head_sum = adler32(1, body, 1777);
 	tail_sum = adler32(1, body + 1777, PAYLOAD_LEN - 1777);
@@ -229,6 +200,23 @@ int main(void)
 	if (combined != whole)
 		return fail_combine("adler32_combine", head_sum, tail_sum,
 			combined, whole);
+#if defined(Z_LARGE64) || defined(Z_WANT64)
+	combined = adler32_combine64(head_sum, tail_sum,
+		(z_off64_t)(PAYLOAD_LEN - 1777));
+	if (combined != whole)
+		return fail_combine("adler32_combine64", head_sum, tail_sum,
+			combined, whole);
+#endif
+	/* Exercise the operator entry point as a real assertion, not only when
+	 * another test fails. Known CRC polynomial powers from vendor crc32.h. */
+	{
+		static const uLong expect[] = { 0x00800000UL, 0x00008000UL,
+			0xedb88320UL, 0xb1e6b092UL, 0xa06a2517UL, 0xed627daeUL };
+		for (unsigned i = 0; i < sizeof expect / sizeof expect[0]; ++i) {
+			if (crc32_combine_gen((z_off_t)(1L << i)) != expect[i])
+				return fail("crc32_combine_gen polynomial", i);
+		}
+	}
 
 	/* gz* file API: write through a descriptor, read back through a path. */
 	fd = mkstemp(path);
@@ -266,6 +254,9 @@ int main(void)
 		return fail("gzclose_r", rc);
 	unlink(path);
 
-	printf("libz.so.1 fixture: %s\n", zlibVersion());
+	printf("libz.so.1 fixture: %s offsets=%u/%u stream=%u header=%u\n",
+		zlibVersion(), (unsigned)sizeof(z_off_t),
+		(unsigned)sizeof(z_off64_t), (unsigned)sizeof(z_stream),
+		(unsigned)sizeof(gz_header));
 	return 0;
 }

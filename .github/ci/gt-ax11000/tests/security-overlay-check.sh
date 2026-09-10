@@ -323,7 +323,11 @@ reject_text "$ntp_rust/main.rs" 'UdpSocket::bind((Ipv4Addr::UNSPECIFIED, NTP_POR
 # client has.  It comes from the kernel entropy pool, one draw per query, and
 # never from the xorshift generator that also produces the poll jitter: that
 # jitter is observable from the LAN, and xorshift64 is invertible.
-require_text "$ntp_rust/main.rs" 'const URANDOM_PATH: &str = "/dev/urandom";'
+require_text "$ntp_rust/main.rs" 'read: sys::secure_random_bytes,'
+require_text "$ntp_rust/sys.rs" 'libc::SYS_getrandom,'
+require_text "$ntp_rust/sys.rs" 'libc::GRND_NONBLOCK,'
+reject_text "$ntp_rust/sys.rs" 'libc::getrandom('
+require_text "$ntp_rust/main.rs" 'let Some(nonce) = nonce else {'
 require_text "$ntp_rust/main.rs" 'let (nonce, warning) = self.nonce.next_nonce();'
 require_text "$ntp_rust/main.rs" 'nonce: NonceSource,'
 require_text "$ntp_rust/main.rs" 'jitter: Xorshift,'
@@ -484,17 +488,22 @@ require_text "$wlif" '? "<redacted>" : ""'
 
 # The two WPS entry points are called only by the prebuilt wps_pbcd object,
 # which may extract the result with WEXITSTATUS().  system() reported the raw
-# wait status and _eval() reports the plain exit code, so the exit code has to
-# be re-encoded or a failure would read as a success.
-require_text "$wlif" 'wl_wlif_wait_status(int status)'
-require_text "$wlif" 'return status << 8;'
-require_text "$wlif" 'ret = wl_wlif_wait_status(_eval(argv, NULL, 0, NULL));'
-reject_text "$wlif" 'ret = _eval(argv, NULL, 0, NULL);'
+# wait status. Preserve the original wait result, including signal deaths,
+# rather than guessing whether _eval's ambiguous integer was an exit code.
+require_text "$wlif" 'waited = waitpid(child, &status, WNOHANG);'
+require_text "$wlif" 'ret = wl_wlif_run_argv(argv, NULL, 0);'
+reject_text "$wlif" 'wl_wlif_wait_status('
+reject_text "$wlif" '_eval(argv, NULL, 0, NULL)'
 require_text "$wlif" 'argv[argc++] = "hostapd_cli";'
 require_text "$wlif" 'argv[5] = "get_config";'
-require_text "$wlif" 'wl_wlif_popen_argv(argv, &child)'
-require_text "$wlif" 'execvp(argv[0], argv);'
-require_text "$wlif" '_eval(argv, NULL, 0, NULL)'
+require_text "$wlif" 'wl_wlif_run_argv(argv, output, sizeof(output))'
+require_text "$wlif" 'execv(path, argv);'
+require_text "$wlif" 'pipe2(pipefd, O_CLOEXEC)'
+require_text "$wlif" 'error = ETIMEDOUT;'
+require_text "$wlif" 'error = EOVERFLOW;'
+require_text "$wlif" 'kill(-child, SIGKILL);'
+require_text "$wlif" 'SYS_getdents64'
+require_text "$wlif" 'if (needs_psk) {'
 require_text "$wlif" 'rust_wlif_ifname_ok(wps_ifname)'
 require_text "$wlif" 'rust_wlif_supplicant_ctrl_path(ctrl_path, sizeof(ctrl_path), nvifname)'
 require_text "$wlif" 'rust_wlif_supplicant_ctrl_dir(ctrl_dir, sizeof(ctrl_dir), prefix)'
@@ -503,6 +512,11 @@ require_text "$wlif" 'rust_wlif_passphrase_ok(clidata.key)'
 require_text "$wlif" 'rust_wlif_network_id_ok(network_id)'
 require_text "$wlif" 'rust_wlif_cli_word_list_ok(out_buf)'
 require_text "$wlif" 'rust_wlif_dpp_value_ok(value)'
+
+# Compile and exercise the actual private runner from this overlay. Static
+# source patterns alone cannot distinguish decoded exits from raw signals,
+# a blocking pipe from a deadline, or an argv vector from a shell fallback.
+bash "$(dirname "$0")/wlif-runtime.sh"
 
 # The policy archive is linked into libshared.so itself; libshared.a stays
 # object-only because nothing in the tree links it.

@@ -3,6 +3,20 @@
 This file tracks known limitations of the GT-AX11000 overlay. A successful
 compile is not sufficient evidence for releasing or flashing a candidate.
 
+## TIER1 independent review follow-up (2026-09-10, not deployed)
+
+- The four additional NTP defects are corrected with injected-clock and
+  loopback regression tests: unauthenticated query cancellation, false
+  clock-write success, unbounded stale reachability after DNS/KoD, and the
+  missing initial burst. Housekeeping cannot be starved by ready sockets;
+  secure nonce generation now fails closed until nonblocking getrandom works.
+- Wlif and zlib fixes, executable regression gates, the eleven-consumer
+  rust-fast contract, and remaining hardware/behavior gaps are tracked in
+  `TIER1_REVIEW_FIXES.md` and `TIER1_ZLIB_ABI.md`.
+- This follow-up does not supersede the hardware-tested image below. In
+  particular full firmware linkage, actual WPS behavior and NTP kernel/rc
+  lifecycle remain release gates, not implied successes.
+
 ## Current router state and latest hardware-tested candidate
 
 - As verified on **2026-09-10 at 01:34 CEST**, the live, permanently selected
@@ -426,11 +440,12 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   profile builds `UTF8_SSID=y`) and a passphrase must be 8..63 printable
   ASCII or exactly 64 hex digits. A legacy non-UTF-8 SSID or an out-of-spec
   passphrase now fails the operation closed instead of reaching a shell.
-- [ ] Reach `libshared.so` from `rust-fast`. `rust-components-relink` runs
-  `www-install`, `infosvr-install`, `rstats-install`, `nt_center-install`,
-  `httpd-rust-install`, `rc-install`, `networkmap-install`, the `wget` package
-  target and `zlib-install`, but has no `shared` target, so a change to
-  `wlif-policy` needs a full build.
+- [x] Reach `libshared.so` from `rust-fast`. The review follow-up explicitly
+  runs `shared-install` first (`install: all` rebuilds its Rust archive and
+  shared object), promotes its staged ELF and includes it in all eleven
+  freshness/hash/CI equivalence entries. The synthetic promotion regression
+  executes the actual shell recipe and rejects inconsistent consumer sets.
+  A complete firmware repack/equivalence run remains a release gate.
 - [ ] Re-audit every remaining `system`, `popen`, shell-script generation, and
   NVRAM-to-command path. Prefer fixed argv execution and typed Rust parsers.
   - Audit SEC-6a inventory (2026-09-07, `rc`, `shared`, `httpd`, `libdisk`,
@@ -580,24 +595,22 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   arguments `release/src/router/Makefile` uses, a C fixture links it through
   `-lz` and executes under QEMU on ARM, covering streaming deflate/inflate,
   one-shot compress/uncompress, the checksums, both combine helpers and the
-  `gz*` file API. Getting there cost four failed runs and each was a defect in
-  the gate, not in the library: `-lz` resolves the development name, so the
+  `gz*` file API. Earlier failed gate runs exposed these fixture defects:
+  `-lz` resolves the development name, so the
   fixture directory needs a `libz.so` symlink or the link silently falls
   through to the host zlib; a diagnostic ran under `set -e` and its exit
   status killed the step; `crc32_combine_op` takes the multiplier last and a
-  zero multiplier makes `multmodp` loop forever; and the fixture was compiled
-  without `_LARGEFILE64_SOURCE`.
-- [ ] Watch the `z_off64_t` width difference. `zconf.h` defines `z_off64_t` as
-  `z_off_t` unless `Z_LARGE64` is set, so on this 32-bit target it is four
-  bytes, while `libz-rs-sys` types it as `i64` unconditionally. Verified on
-  ARM: without `_LARGEFILE64_SOURCE` the header gives four bytes, with it
-  eight, which is what `zlib-rs` expects. The exposure is small because
-  `zlib.h` declares `crc32_combine64`, `adler32_combine64`, `gzseek64`,
-  `gztell64` and `gzoffset64` only inside `#ifdef Z_LARGE64`, so a consumer
-  without the macro cannot call them at all; only hand-written declarations
-  can hit it, which is exactly how the fixture found it. A consumer that
-  defines the macro agrees with `zlib-rs`. Report it upstream and re-check if
-  a future package declares a `*64` entry point itself.
+  zero multiplier makes `multmodp` loop forever. The prior attribution of
+  every ARM failure to missing `_LARGEFILE64_SOURCE` was not independently
+  reproduced with correctly configured headers; see the matrix below.
+- [ ] Keep testing the configured zlib header and large-file macro matrix.
+  The earlier fixture header was unconfigured, unlike the firmware header;
+  `_FILE_OFFSET_BITS=64` also activates the `Z_WANT64` declarations/aliases.
+  Thus the earlier explanation that only hand-written declarations expose
+  the mismatch was incorrect. Do not report an upstream ABI defect based
+  on that fixture alone. The review follow-up tests native, LARGEFILE64,
+  FILE_OFFSET_BITS=64 and combined modes using configured Linux branches;
+  see `TIER1_ZLIB_ABI.md` for scope and evidence.
 - [ ] Prove the zlib-rs wget on a hosted build and on hardware: the firmware
   verifier now requires `usr/sbin/wget` without a `libz.so` dependency, with
   the `1.3.0-zlib-rs-` marker and a clean `wget --version` under QEMU; still
@@ -775,12 +788,12 @@ compile is not sufficient evidence for releasing or flashing a candidate.
      SNTP client has, and `connect()` does not stop a source-spoofing LAN
      attacker on this firmware (LAN INPUT is a blanket ACCEPT in
      `rc/firewall.c` and `rp_filter` is off on non-default interfaces). The
-     nonce is now drawn from `/dev/urandom` for every query through a `File`
-     held open for the life of the daemon, short reads are handled by
-     `read_exact`, the jitter keeps a separate xorshift instance, the xorshift
-     is used for a nonce only when the kernel pool cannot be read and that
-     fallback is reported once at warning level, and the published reference
-     timestamp is truncated to whole seconds.
+     initial fix separated `/dev/urandom` from the jitter generator. The
+     follow-up now uses raw `SYS_getrandom` with `GRND_NONBLOCK`: unavailable,
+     uninitialised or unsupported entropy withholds queries until a bounded
+     retry succeeds. There is no xorshift nonce fallback and no new glibc
+     `getrandom` symbol requirement. The published reference timestamp is
+     still truncated to whole seconds.
   2. A `DENY`/`RSTR` kiss set `peer.refused = true` for the life of the
      process and `send_query` then returned before `note_query_sent()`, so the
      reachability register froze at its last non-zero value, `check_unsync()`

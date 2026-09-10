@@ -13,7 +13,7 @@ qemu_arm=$(readlink -f "$3")
 objdump="$toolchain_bin/arm-buildroot-linux-gnueabi-objdump"
 readelf="$toolchain_bin/arm-buildroot-linux-gnueabi-readelf"
 
-for tool in "$objdump" "$readelf" "$qemu_arm" file grep mktemp; do
+for tool in "$objdump" "$readelf" "$qemu_arm" file grep mktemp python3; do
 	if [ ! -x "$tool" ] && ! command -v "$tool" >/dev/null 2>&1; then
 		echo "required tool is unavailable: $tool" >&2
 		exit 1
@@ -37,9 +37,8 @@ artifacts=(
 # it is a library: no interpreter, and it is loaded by the closed networkmap.
 shared_objects=(
 	"usr/lib/libbwdpi.so"
+	"usr/lib/libshared.so"
 )
-
-elf_magic=$(printf '\177ELF')
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/gtax-rust-verify.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
@@ -72,7 +71,17 @@ for relative in "${artifacts[@]}" "${shared_objects[@]}"; do
 	# library identically as DYN, so the interpreter is required for
 	# everything that is not on the shared-object list.
 	case " ${shared_objects[*]} " in
-	*" $relative "*) ;;
+	*" $relative "*)
+		if [ ! -f "$binary" ] || [ -L "$binary" ]; then
+			echo "shared object must be a regular non-symlink: $relative" >&2
+			exit 1
+		fi
+		grep -q 'Type:.*DYN' "$temporary/header"
+		if grep -q 'INTERP' "$temporary/program-headers"; then
+			echo "shared object must not have PT_INTERP: $relative" >&2
+			exit 1
+		fi
+		;;
 	*) grep -q '/lib/ld-linux.so.3' "$temporary/program-headers" ;;
 	esac
 
@@ -88,6 +97,23 @@ for relative in "${artifacts[@]}" "${shared_objects[@]}"; do
 	"$objdump" -d "$binary" > "$temporary/disassembly"
 	if grep -Eiq 'mcr[a-z]*[[:space:]]+15,.*cr7,.*cr10,.*\{5\}' "$temporary/disassembly"; then
 		echo "obsolete ARMv6 CP15 barrier found in $relative" >&2
+		exit 1
+	fi
+done
+
+# The staged libshared must contain the Rust policy called by the hardened
+# wlif wrappers. A fresh filename alone cannot distinguish a stale C-only
+# library from the relinked archive. Require only definitions actually called
+# by the C wrapper: unused policy helpers may be removed by --gc-sections.
+"$readelf" --dyn-syms -W "$rootfs/usr/lib/libshared.so" | awk '
+	$4 == "FUNC" && $5 ~ /^(GLOBAL|WEAK)$/ && $7 != "UND" {sub(/@.*/, "", $8); print $8}
+' > "$temporary/shared-exports"
+for symbol in rust_wlif_ifname_ok \
+	rust_wlif_cli_token_ok rust_wlif_cli_word_list_ok rust_wlif_ssid_ok \
+	rust_wlif_passphrase_ok rust_wlif_dpp_value_ok \
+	rust_wlif_network_id_ok rust_wlif_supplicant_ctrl_path rust_wlif_supplicant_ctrl_dir; do
+	if ! grep -qxF "$symbol" "$temporary/shared-exports"; then
+		echo "usr/lib/libshared.so does not define $symbol" >&2
 		exit 1
 	fi
 done
@@ -178,35 +204,9 @@ for forbidden in deflate_copyright inflate_copyright inflate_fast \
 	fi
 done
 
-# Nothing installed may need a zlib entry point the replacement lacks.
-# zlib-rs has no gzprintf/gzvprintf (they need a nightly compiler), so prove
-# no consumer references them, and that every ZLIB_* version a consumer
-# recorded against libz.so.1 is one this object defines.
-libz_dependents=0
-while IFS= read -r candidate; do
-	[ "$(head -c 4 "$candidate" 2>/dev/null)" = "$elf_magic" ] || continue
-	"$readelf" -d "$candidate" 2>/dev/null > "$temporary/dep-dynamic" || continue
-	grep -q 'Shared library: \[libz\.so\.1\]' "$temporary/dep-dynamic" || continue
-	libz_dependents=$((libz_dependents + 1))
-	if "$readelf" --dyn-syms -W "$candidate" 2>/dev/null \
-		| awk '$7 == "UND" {sub(/@.*/, "", $8); print $8}' \
-		| grep -qxE 'gzprintf|gzvprintf'; then
-		echo "consumer needs gzprintf/gzvprintf: ${candidate#"$rootfs"/}" >&2
-		exit 1
-	fi
-	"$readelf" -V "$candidate" 2>/dev/null \
-		| sed -n '/File: libz\.so\.1/,/^$/p' \
-		| grep -oE 'ZLIB_[0-9.]+' | sort -u > "$temporary/dep-versions" || true
-	while IFS= read -r node; do
-		[ -n "$node" ] || continue
-		if ! grep -q "Name: $node$" "$temporary/libz-versions"; then
-			echo "${candidate#"$rootfs"/} needs $node, absent from libz.so.1" >&2
-			exit 1
-		fi
-	done < "$temporary/dep-versions"
-done < <(find "$rootfs/bin" "$rootfs/sbin" "$rootfs/lib" "$rootfs/usr/bin" \
-	"$rootfs/usr/sbin" "$rootfs/usr/lib" -type f 2>/dev/null)
-echo "libz.so.1 satisfies $libz_dependents installed consumers"
+# Check every imported zlib symbol and its exact requested version against
+# this object, using an independent vendor inventory for unversioned names.
+python3 "$(dirname "$0")/zlib-consumer-abi.py" "$rootfs" "$readelf"
 
 # The WLAN daemons must use the locked OpenSSL major, including on a cold
 # vendor-cache miss. A header-only fix must not leave a stale 1.1 consumer.
@@ -268,4 +268,4 @@ grep -q '^hostapd v2\.9' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wpa_supplicant-2.7" -v
 grep -q '^wpa_supplicant v2\.9' "$temporary/qemu.stdout"
 
-echo "verified $((${#artifacts[@]} + ${#shared_objects[@]})) ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 6 QEMU runtime paths"
+echo "verified $((${#artifacts[@]} + ${#shared_objects[@]})) ARMv7 soft-float consumers, the zlib-rs libz.so.1 and the QEMU runtime checks"

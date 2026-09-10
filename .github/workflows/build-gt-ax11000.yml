@@ -99,6 +99,7 @@ jobs:
           python3 "$root/tests/test_ccache_frontends.py"
           python3 "$root/tests/test_gnu_make_bootstrap.py"
           python3 "$root/tests/test_build_stage_failures.py"
+          python3 "$root/tests/test_shared_repack.py"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
           # Cargo resolves the vendored crates.io mapping (rust/.cargo) from
           # the working directory, not from --manifest-path.
@@ -584,7 +585,7 @@ jobs:
             # by rust-repack.mk.
             (
               cd "$root"
-              sha256sum usr/sbin/infosvr bin/rstats \
+              sha256sum usr/lib/libshared.so usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
                 usr/lib/libz.so.1
@@ -593,12 +594,14 @@ jobs:
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
             # rust-components-relink reinstalls every manifested consumer,
-            # so all ten may legitimately differ when the Rust state does:
+            # so all eleven may legitimately differ when the Rust state does:
+            # libshared.so comes from shared-install (install: all),
             # /usr/sbin/ntp comes from rc-install alongside sbin/rc,
             # networkmap and its libbwdpi.so provider from networkmap-install,
             # wget from its package target, and libz.so.1 from zlib-install.
             # build.sh separately fails the build if any of them is stale.
             rootfs_excludes+=(
+              usr/lib/libshared.so
               usr/sbin/infosvr
               bin/rstats
               usr/sbin/Notify_Event2NC
@@ -689,7 +692,7 @@ jobs:
             root=source/release/src-rt-5.02axhnd/targets/94908HND/fs.install
             (
               cd "$root"
-              sha256sum usr/sbin/infosvr bin/rstats \
+              sha256sum usr/lib/libshared.so usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
                 usr/lib/libz.so.1
@@ -706,8 +709,9 @@ jobs:
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
             # Keep this list identical to the snapshot step: only the
             # reinstalled consumers may differ, and rust-components-relink
-            # reinstalls all ten of them.
+            # reinstalls all eleven of them.
             rootfs_excludes+=(
+              usr/lib/libshared.so
               usr/sbin/infosvr
               bin/rstats
               usr/sbin/Notify_Event2NC

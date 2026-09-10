@@ -15,6 +15,55 @@ use ntp::packet::NTP_TO_UNIX_EPOCH;
 /// Set by the signal handler; read by the main loop.
 static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
+/// Eight unpredictable bytes, only after the kernel random pool is ready.
+/// Linux 4.1 may expose /dev/urandom before initialization. GRND_NONBLOCK
+/// returns EAGAIN in that window instead of supplying weak bytes or blocking
+/// the daemon. Calling syscall directly avoids a GLIBC_2.25 getrandom symbol
+/// requirement on the firmware's libc. ENOSYS also fails closed.
+pub fn secure_random_bytes() -> io::Result<[u8; 8]> {
+    read_random_bytes_with(|buffer| {
+        // SAFETY: buffer is an exclusive live slice for exactly the length
+        // passed. The kernel writes at most that length and retains nothing.
+        // SYS_getrandom and GRND_NONBLOCK are target-specific libc constants;
+        // syscall itself is available on the original firmware's glibc.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_getrandom,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                libc::GRND_NONBLOCK,
+            )
+        };
+        if result < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(result as usize)
+        }
+    })
+}
+
+/// Safe short-read/error handling shared with injected syscall tests.
+fn read_random_bytes_with(
+    mut read: impl FnMut(&mut [u8]) -> io::Result<usize>,
+) -> io::Result<[u8; 8]> {
+    let mut bytes = [0_u8; 8];
+    let mut filled = 0;
+    while filled < bytes.len() {
+        let remaining = &mut bytes[filled..];
+        // In particular EAGAIN, ENOSYS and EINTR return immediately. The
+        // daemon's next bounded query slot retries without busy looping.
+        let received = read(remaining)?;
+        if received == 0 || received > remaining.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "incomplete getrandom result",
+            ));
+        }
+        filled += received;
+    }
+    Ok(bytes)
+}
+
 /// Returns and clears the signal number recorded by the handler.
 pub fn take_pending_signal() -> i32 {
     PENDING_SIGNAL.swap(0, Ordering::Relaxed)
@@ -396,6 +445,51 @@ pub fn raise_priority() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unready_unsupported_and_interrupted_getrandom_fail_without_retrying() {
+        for errno in [libc::EAGAIN, libc::ENOSYS, libc::EINTR, libc::EPERM] {
+            let mut calls = 0;
+            let result = read_random_bytes_with(|_| {
+                calls += 1;
+                Err(io::Error::from_raw_os_error(errno))
+            });
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(errno));
+            assert_eq!(calls, 1, "entropy errors must not spin or block the daemon");
+        }
+    }
+
+    #[test]
+    fn getrandom_short_reads_fill_all_eight_bytes_before_returning() {
+        let mut calls = 0;
+        let bytes = read_random_bytes_with(|buffer| {
+            calls += 1;
+            let count = buffer.len().min(3);
+            buffer[..count].fill(calls);
+            Ok(count)
+        })
+        .unwrap();
+        assert_eq!(bytes, [1, 1, 1, 2, 2, 2, 3, 3]);
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn failed_partial_getrandom_never_exposes_partial_entropy() {
+        let mut calls = 0;
+        let result = read_random_bytes_with(|buffer| {
+            calls += 1;
+            if calls == 1 {
+                buffer[0] = 42;
+                Ok(1)
+            } else {
+                Err(io::Error::from_raw_os_error(libc::EAGAIN))
+            }
+        });
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EAGAIN));
+        assert_eq!(calls, 2);
+        assert!(read_random_bytes_with(|_| Ok(0)).is_err());
+        assert!(read_random_bytes_with(|buffer| Ok(buffer.len() + 1)).is_err());
+    }
     use std::io::Write;
     use std::os::unix::net::UnixStream;
 
