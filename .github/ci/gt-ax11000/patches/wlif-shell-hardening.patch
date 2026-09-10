@@ -21,6 +21,13 @@ diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Make
 +
 +ifneq ($(wildcard $(RUST_WLIF_MANIFEST)),)
 +RUST_WLIF_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libwlif_policy.a
++# The archive carries the Rust runtime.  On its own it needs only libc and
++# libgcc_s, but in this link the vendor objects' undefined memcpy/memset can
++# be satisfied from the archive's compiler_builtins, which drags in members
++# that reference dlsym.  Name the system libraries explicitly, the same set
++# httpd and rc already use for their Rust archives, so libshared.so records
++# them instead of leaving a symbol for every consumer to resolve.
++RUST_WLIF_SYSTEM_LIBS := -ldl -lpthread -lrt
 +
 +.DEFAULT_GOAL := all
 +
@@ -43,9 +50,11 @@ diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Make
 +libshared.so: $(OBJS) $(RUST_WLIF_LIB)
  	@echo " [shared] LD $@"
  ifeq ($(HND_ROUTER),y)
- 	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^
+-	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^
++	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^ $(RUST_WLIF_SYSTEM_LIBS)
  else
- 	@$(LD) $(LDFLAGS) -shared -o $@ $^
+-	@$(LD) $(LDFLAGS) -shared -o $@ $^
++	@$(LD) $(LDFLAGS) -shared -o $@ $^ $(RUST_WLIF_SYSTEM_LIBS)
  endif
  
  	$(SIZECHECK)

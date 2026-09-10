@@ -508,7 +508,8 @@ require_text "$shared_makefile" 'libshared.so: $(OBJS) $(RUST_WLIF_LIB)'
 # bcmutils.o, bcmxtlv.o and eight more objects twice, so expanding the list
 # explicitly makes the link fail with "multiple definition". The archive is a
 # prerequisite, so $^ already passes it, and after the objects.
-require_text "$shared_makefile" '-shared -o $@ $^'
+require_text "$shared_makefile" '-shared -o $@ $^ $(RUST_WLIF_SYSTEM_LIBS)'
+require_text "$shared_makefile" 'RUST_WLIF_SYSTEM_LIBS := -ldl -lpthread -lrt'
 reject_text "$shared_makefile" '-shared -o $@ $(OBJS) $(RUST_WLIF_LIB)'
 require_text "$shared_makefile" 'libshared.a: $(OBJS)'
 require_text "$wlif_rust" 'rust_wlif_ifname_ok => interface_name_ok'

@@ -389,6 +389,18 @@ compile is not sufficient evidence for releasing or flashing a candidate.
     the `NEW_WPA_CLI` and the `-p <ctrl-path>` configurations; the four
     remaining warnings are the vendor's own unused `RTCONFIG_WIFI7`
     variables in `get_wpacli_status`, which the unmodified file also emits.
+- [ ] Make `wlif-policy` `no_std`. It only validates byte strings, but it is a
+  normal `std` staticlib, so its archive carries the whole Rust runtime,
+  including `gimli`, `addr2line`, `miniz_oxide` and `posix_spawn`. Linked on
+  its own against the eleven entry points the C file calls it stays small
+  (9,672 bytes stripped, needing only `libc` and `libgcc_s`), but in the real
+  `libshared.so` link the vendor objects' undefined `memcpy`/`memset` can be
+  satisfied from the archive's `compiler_builtins`, which pulls members that
+  reference `dlsym`; firmware build 34445105519 failed on exactly that when
+  linking `write_smb_conf`. The link now names `-ldl -lpthread -lrt`, which
+  adds three `DT_NEEDED` entries to a library about sixty packages and
+  seventeen prebuilt blobs load. A `no_std` crate would remove the runtime and
+  those dependencies entirely.
 - [ ] Run the rewritten `shared/wlif_utils_ax.c` boundary on hardware. No
   firmware build and no device run happened, so the following are unproven:
   WPS PBC start and cancel on an AP-mode and on a STA-mode radio, the
