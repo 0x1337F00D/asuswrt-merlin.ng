@@ -649,7 +649,7 @@ require_text "$shared_makefile" 'libshared.so: $(OBJS) $(RUST_WLIF_LIB)'
 # bcmutils.o, bcmxtlv.o and eight more objects twice, so expanding the list
 # explicitly makes the link fail with "multiple definition". The archive is a
 # prerequisite, so $^ already passes it, and after the objects.
-require_text "$shared_makefile" '-shared -o $@ $^ $(RUST_WLIF_SYSTEM_LIBS)'
+require_text "$shared_makefile" '$(EXTRA_LD_FLAGS) -shared -o $@ -lgcc_s $^ $(RUST_WLIF_SYSTEM_LIBS)'
 require_text "$shared_makefile" 'RUST_WLIF_SYSTEM_LIBS := -ldl -lpthread -lrt'
 reject_text "$shared_makefile" '-shared -o $@ $(OBJS) $(RUST_WLIF_LIB)'
 require_text "$shared_makefile" 'libshared.a: $(OBJS)'
@@ -868,7 +868,7 @@ require_text "$lltd_rust/responder.rs" 'pub const MAX_AMPLIFICATION: usize = 4;'
 # frame that claims to come from this station.
 require_text "$lltd_rust/wire.rs" 'pub const ETHERTYPE_LLTD: u16 = 0x88D9;'
 require_text "$lltd_rust/wire.rs" 'return Err(Malformed::WrongVersion);'
-require_text "$lltd_rust/wire.rs" 'return Err(Malformed::UnsupportedService);'
+require_text "$lltd_rust/wire.rs" '_ => return Err(Malformed::UnsupportedService),'
 require_text "$lltd_rust/wire.rs" 'return Err(Malformed::SelfAddressed);'
 require_text "$lltd_rust/wire.rs" 'return Err(Malformed::Oversized);'
 # The blob wrote the NVRAM variable friendly_name from inside its packet
@@ -879,5 +879,6 @@ reject_text "$lltd_rust/main.rs" 'nvram_get'
 # Exercise the shared-producer race that a successful warm build can hide.
 python3 "$(dirname "$0")/test_wifi_openssl_inputs.py" "$root"
 python3 "$(dirname "$0")/test_netatalk_parallel.py" "$router_makefile"
+python3 "$(dirname "$0")/test_usbmuxd_parallel.py" "$router_makefile"
 python3 "$(dirname "$0")/test_lprng_parallel.py" "$(dirname "$router_makefile")/LPRng"
 echo "security overlay invariants verified"

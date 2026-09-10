@@ -111,22 +111,11 @@ for relative in "${artifacts[@]}" "${shared_objects[@]}"; do
 	fi
 done
 
-# The staged libshared must contain the Rust policy called by the hardened
-# wlif wrappers. A fresh filename alone cannot distinguish a stale C-only
-# library from the relinked archive. Require only definitions actually called
-# by the C wrapper: unused policy helpers may be removed by --gc-sections.
-"$readelf" --dyn-syms -W "$rootfs/usr/lib/libshared.so" | awk '
-	$4 == "FUNC" && $5 ~ /^(GLOBAL|WEAK)$/ && $7 != "UND" {sub(/@.*/, "", $8); print $8}
-' > "$temporary/shared-exports"
-for symbol in rust_wlif_ifname_ok \
-	rust_wlif_cli_token_ok rust_wlif_cli_word_list_ok rust_wlif_ssid_ok \
-	rust_wlif_passphrase_ok rust_wlif_dpp_value_ok \
-	rust_wlif_network_id_ok rust_wlif_supplicant_ctrl_path rust_wlif_supplicant_ctrl_dir; do
-	if ! grep -qxF "$symbol" "$temporary/shared-exports"; then
-		echo "usr/lib/libshared.so does not define $symbol" >&2
-		exit 1
-	fi
-done
+# Check the actual installed link: an isolated policy archive measurement
+# misses vendor __aeabi_* references that can extract the whole Rust runtime.
+# An optional original vendor library adds full dynamic-export preservation.
+bash "$(dirname "$(readlink -f "$0")")/wlif-link-size.sh" \
+	"$rootfs/usr/lib/libshared.so" "$readelf" "${WLIF_VENDOR_BASELINE:-}"
 
 # usr/lib/libz.so.1 is the zlib-rs replacement for the vendor libz.  It must
 # be a real ARMv7 soft-float shared object carrying the vendor SONAME and the

@@ -18,7 +18,7 @@
 //!   `hostapd_cli` option, and can never carry a shell metacharacter;
 //! * *opaque credentials* (SSID, passphrase/PSK) are validated only for
 //!   length, NUL, control characters and encoding.  They are never allowed
-//!   into a command line at all: the callers pass them as a single `execvp`
+//!   into a command line at all: the callers pass them as a single `execv`
 //!   argument, so no shell ever sees them.
 
 use core::ffi::{c_char, c_int, c_ulong, CStr};
@@ -141,7 +141,7 @@ pub fn cli_token_ok(value: &[u8]) -> bool {
 ///
 /// `wpa_cli` joins its trailing arguments with a single space before it
 /// writes the control-interface line, so the whole list travels as one
-/// `execvp` argument.  Leading, trailing and repeated separators are
+/// `execv` argument.  Leading, trailing and repeated separators are
 /// refused so that an empty token can never appear.
 #[must_use]
 pub fn cli_word_list_ok(value: &[u8]) -> bool {
@@ -198,12 +198,16 @@ pub fn utf8_ok(value: &[u8]) -> bool {
     true
 }
 
-/// An SSID handed to a CLI helper as one opaque `execvp` argument.
+/// An SSID handed to a CLI helper as one opaque `execv` argument.
 ///
-/// The GT-AX11000 profile builds with `UTF8_SSID=y`, so a valid UTF-8
-/// encoding is required; NUL, newline and every other control character are
-/// refused.  Shell metacharacters are deliberately *allowed*: an SSID may
-/// legitimately contain them, and no shell ever sees this value.
+/// NUL, newline and every other control character are refused. Shell
+/// metacharacters are deliberately *allowed*: an SSID may legitimately
+/// contain them, and no shell ever sees this value.
+///
+/// Valid UTF-8 is also required by this policy, not by the GT-AX11000 profile:
+/// `config_base` leaves `RTCONFIG_UTF8_SSID` unset. Consequently this validator
+/// refuses otherwise legitimate non-UTF-8 SSIDs; the policy must be revisited
+/// before enabling any currently compiled-out SSID-validation callers.
 #[must_use]
 pub fn ssid_ok(value: &[u8]) -> bool {
     !value.is_empty()
@@ -213,7 +217,7 @@ pub fn ssid_ok(value: &[u8]) -> bool {
 }
 
 /// A WPA passphrase (8..=63 printable ASCII) or a hex-encoded PSK (exactly
-/// 64 hex digits), handed to a CLI helper as one opaque `execvp` argument.
+/// 64 hex digits), handed to a CLI helper as one opaque `execv` argument.
 #[must_use]
 pub fn passphrase_ok(value: &[u8]) -> bool {
     if value.len() == PSK_HEX_LEN && value.iter().all(u8::is_ascii_hexdigit) {

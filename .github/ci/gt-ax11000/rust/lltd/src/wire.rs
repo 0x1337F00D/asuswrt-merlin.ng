@@ -49,6 +49,16 @@ pub const LLTD_VERSION: u8 = 1;
 /// Type of Service for topology discovery, the only service this port answers.
 pub const TOS_TOPOLOGY_DISCOVERY: u8 = 0;
 
+/// Quick Discovery, which the blob routes into the same topology dispatch.
+///
+/// `packetio_recv_handler` compares the byte against 1 and drops only above
+/// it, so 0 and 1 share a path; only 2 goes to `qosrcvpkt`.  Per MS-LLTD this
+/// is the fast Discover/Hello/Reset sweep a Windows mapper runs first, using
+/// exactly the three opcodes this port implements.  Refusing it risked the
+/// router never appearing in the Network Map at all, for no gain: the frame
+/// shape, the opcodes and the replies are identical.
+pub const TOS_QUICK_DISCOVERY: u8 = 1;
+
 /// Highest opcode the blob accepts before warning "g_opcode=%d is out of
 /// range".
 pub const MAX_OPCODE: u8 = 12;
@@ -135,6 +145,17 @@ impl Opcode {
         }
     }
 
+    /// Whether the vendor accepts this opcode with a broadcast real
+    /// destination.
+    ///
+    /// `packetio_recv_handler` compares the opcode against 8 and 1 on the
+    /// broadcast path and warns then drops anything above, leaving Discover,
+    /// Hello and Reset as the only broadcast-legal opcodes.
+    #[must_use]
+    pub fn may_be_broadcast(self) -> bool {
+        matches!(self, Self::Discover | Self::Hello | Self::Reset)
+    }
+
     /// True for the opcodes the blob refuses to accept with a non-zero
     /// sequence number ("g_opcode %d with seq=%u is illegal; dropping").
     ///
@@ -186,6 +207,9 @@ pub enum Malformed {
     GroupSource,
     /// The sequence number contradicts the opcode's sequencing rule.
     SequenceRuleViolated,
+    /// The real destination is the broadcast address for an opcode the vendor
+    /// only ever accepts unicast.
+    BroadcastNotPermitted,
 }
 
 /// A validated demultiplex header plus the payload that followed it.
@@ -256,8 +280,9 @@ impl<'a> Frame<'a> {
         if bytes.get(OFFSET_VERSION).copied() != Some(LLTD_VERSION) {
             return Err(Malformed::WrongVersion);
         }
-        if bytes.get(OFFSET_TOS).copied() != Some(TOS_TOPOLOGY_DISCOVERY) {
-            return Err(Malformed::UnsupportedService);
+        match bytes.get(OFFSET_TOS).copied() {
+            Some(TOS_TOPOLOGY_DISCOVERY | TOS_QUICK_DISCOVERY) => {}
+            _ => return Err(Malformed::UnsupportedService),
         }
         if bytes.get(OFFSET_RESERVED).copied() != Some(0) {
             return Err(Malformed::ReservedNotZero);
@@ -272,6 +297,14 @@ impl<'a> Frame<'a> {
             read_address(bytes, OFFSET_REAL_DESTINATION).ok_or(Malformed::Truncated)?;
         if &real_destination != station && real_destination != BROADCAST {
             return Err(Malformed::NotAddressedToUs);
+        }
+        // packetio_recv_handler drops a broadcast real destination for every
+        // opcode outside {Discover, Hello, Reset}, logging "broadcast of
+        // g_opcode %d ... is illegal".  Without this a Query need not even be
+        // addressed to this station to earn a reply directed at whatever real
+        // source it names, which turns the responder into a reflector.
+        if real_destination == BROADCAST && !opcode.may_be_broadcast() {
+            return Err(Malformed::BroadcastNotPermitted);
         }
         let real_source = read_address(bytes, OFFSET_REAL_SOURCE).ok_or(Malformed::Truncated)?;
         let ethernet_source = read_address(bytes, OFFSET_ETH_SOURCE).ok_or(Malformed::Truncated)?;
@@ -370,8 +403,8 @@ mod tests {
             (|f| f.resize(MAX_FRAME_LEN + 1, 0), Malformed::Oversized),
             (|f| f[12] = 0x08, Malformed::WrongEtherType),
             (|f| f[14] = 2, Malformed::WrongVersion),
-            (|f| f[15] = 1, Malformed::UnsupportedService),
             (|f| f[15] = 2, Malformed::UnsupportedService),
+            (|f| f[15] = 3, Malformed::UnsupportedService),
             (|f| f[16] = 1, Malformed::ReservedNotZero),
             (|f| f[17] = 13, Malformed::UnknownOpcode),
             (|f| f[18] = 0x02, Malformed::NotAddressedToUs),
@@ -390,10 +423,20 @@ mod tests {
             ),
             (
                 |f| {
+                    // Addressed to us: a broadcast Query is refused earlier,
+                    // so this case would not reach the sequencing rule.
+                    f[18..24].copy_from_slice(&STATION);
                     f[17] = Opcode::Query.to_byte();
                     f[30..32].copy_from_slice(&[0, 0]);
                 },
                 Malformed::SequenceRuleViolated,
+            ),
+            (
+                |f| {
+                    f[17] = Opcode::Query.to_byte();
+                    f[30..32].copy_from_slice(&[0, 1]);
+                },
+                Malformed::BroadcastNotPermitted,
             ),
         ] {
             let mut bytes = discover();

@@ -58,8 +58,35 @@ a new complete firmware validation, not just a library replacement.
   9,732 bytes stripped; its only DT_NEEDED is libc.so.6. These are fixture
   compiler measurements, not the final vendor Makefile link or image size.
 
-No native ARM hardware execution, full image link/rootfs validation or hosted
-CI run is implied by these results.
+The initial review results above do not imply full image validation or hosted CI.
+
+## Hardware preflight and clean-build follow-up (2026-09-10)
+
+- A fresh encrypted settings/JFFS/data backup was transferred off-router and
+  decrypted and structurally verified locally. Factory-reset restoration has
+  not been exercised. No flash or reboot has occurred at this stage.
+- Native isolated ARM tests passed on the router: actual WLAN process wrapper
+  and supervisor fixture, HTTP C-reader/Rust ABI fixture, and NTP/LLTD/wsdd2
+  offline self-tests. No live service was replaced.
+- The first full clean RAM build failed in libusbmuxd: its link ran before
+  libplist was staged. Explicit package and order-only configure-Makefile
+  dependencies now cover the complete USB library chain. The permanent DAG
+  fixture exercises fresh/cached build/install cases at -j2 and -j8.
+- The actual vendor libshared link measured 1,757,492 stripped bytes: vendor
+  ARM arithmetic references extracted Rust compiler-builtins and the panic
+  runtime. Resolving libgcc_s before the Rust archive reduces this to 637,000
+  bytes without losing original dynamic exports or adding DT_NEEDED libraries
+  relative to the prior Rust link (not relative to the original vendor library).
+  The permanent full-link gate requires all eleven policy FFIs, rejects a
+  library over 1 MiB and exported Rust runtime, and optionally compares every
+  original vendor export. Both positive and negative artifacts were tested.
+- Both original and corrected candidate libraries passed isolated native NVRAM
+  reads and hostapd PING on all three radios via private LD_LIBRARY_PATH.
+  The actual vendor-linked supervisor is 9,768 stripped bytes. These tests do
+  not exercise service startup, WPS or supplicant configuration changes.
+- All 33 corrected patches replay on the pinned upstream. Updated canonical
+  diff SHA-256: e047767d030555efafd05f07ef354b6dda665c2082f0e7fda9dbb7d4f980ec76.
+  A complete retry image and protected one-shot trial remain release gates.
 
 ## Remaining release gates and limits
 
@@ -69,7 +96,7 @@ CI run is implied by these results.
    measurement of this changed whole-image link.
 2. Run a protected hardware trial and real WPS/AP/supplicant operations,
    NTP rc/kernel lifecycle, HTTP clients and Windows discovery behavior.
-   No router operation was performed for this review.
+   Only the isolated native preflight operations above have been performed.
 3. LLTD remains a deliberately reduced responder: Windows topology links
    and attacker-selected frame emission are not restored. A successful
    send syscall means kernel acceptance, not proven radio/wire delivery.

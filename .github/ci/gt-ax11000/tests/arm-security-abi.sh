@@ -18,7 +18,7 @@ cargo +1.85.1 build --manifest-path "$root/rust/Cargo.toml" --release \
     "$CARGO_TARGET_DIR/armv7-unknown-linux-gnueabi/release/librouter_security.a" \
     -ldl -lpthread -lm -lrt -lutil -o "$fixture_dir/router-security"
 timeout 20 "$ARM_QEMU" -L "$ARM_SYSROOT" "$fixture_dir/router-security" "$fixture_dir"
-for fixture in clientlist zlib; do
+for fixture in clientlist httpd-request zlib; do
     archive=libhttpd_parsers.a
     [[ $fixture != zlib ]] || archive=libzlib_static.a
     "$ARM_CC" -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -O2 \

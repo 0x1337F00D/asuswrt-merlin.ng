@@ -252,10 +252,11 @@ fn a_wrong_version_is_dropped() {
 
 #[test]
 fn the_qos_and_reserved_services_are_dropped() {
-    // The blob routes Type of Service 2 to its QoS diagnostics handler and
-    // treats 1 as topology discovery. This port answers only 0.
+    // The blob routes Type of Service 2 to its QoS diagnostics handler, which
+    // this port does not implement, and drops everything above. Services 0 and
+    // 1 are both topology discovery and are answered.
     let mut responder = responder();
-    for service in [0x01, 0x02, 0x03, 0xFF] {
+    for service in [0x02, 0x03, 0x7F, 0xFF] {
         let mut frame = discover_fixture(1);
         frame[15] = service;
         assert_eq!(
@@ -415,5 +416,163 @@ fn a_flood_of_invalid_frames_leaves_the_budget_for_the_real_mapper() {
     assert_eq!(
         responder.handle(&discover_fixture(12), 0),
         Err(Dropped::RateLimited)
+    );
+}
+
+#[test]
+fn a_discover_that_loses_the_budget_race_is_answered_on_the_next_try() {
+    // One token, refilling every 250 ms. The mapper's first Discover arrives
+    // with the bucket already spent by someone else.
+    let mut responder = Responder::with_policy(
+        device(),
+        RateLimiter::new(1, 250, 0),
+        GenerationFilter::default(),
+    );
+    assert!(responder.handle(&discover_fixture(1), 0).is_ok());
+    // Same generation, no token left. Dropping it must not count as answered.
+    assert_eq!(
+        responder.handle(&discover_fixture(7), 0),
+        Err(Dropped::RateLimited)
+    );
+    // A mapper retransmits the same generation. Once a token exists again the
+    // reply must go out; before the fix this returned DuplicateGeneration for
+    // ever, so eight cheap frames removed the router from the network map.
+    assert!(responder.handle(&discover_fixture(7), 300).is_ok());
+}
+
+#[test]
+fn replaying_a_discover_cannot_hold_a_generation_suppressed() {
+    let mut responder = Responder::with_policy(
+        device(),
+        RateLimiter::new(64, 1, 0),
+        GenerationFilter::new(3_000),
+    );
+    assert!(responder.handle(&discover_fixture(5), 0).is_ok());
+    // An attacker replays the mapper's own broadcast Discover just inside the
+    // window.  Each replay is refused, and none of them may extend the window.
+    let mut now = 0;
+    while now < 2_500 {
+        now += 500;
+        assert_eq!(
+            responder.handle(&discover_fixture(5), now),
+            Err(Dropped::DuplicateGeneration)
+        );
+    }
+    // The entry was written at 0, so it has expired by 3000 regardless.
+    assert!(responder.handle(&discover_fixture(5), 3_000).is_ok());
+}
+
+#[test]
+fn a_broadcast_query_is_rejected_without_spending_a_token() {
+    let mut responder = responder();
+    let tokens = responder.tokens();
+    let mut query = query_fixture(1);
+    query[18..24].copy_from_slice(&BROADCAST);
+    assert_eq!(
+        responder.handle(&query, 0),
+        Err(Dropped::Malformed(Malformed::BroadcastNotPermitted))
+    );
+    assert_eq!(responder.tokens(), tokens);
+}
+
+#[test]
+fn quick_discovery_is_answered_like_ordinary_discovery() {
+    // Type of Service 1 is the fast sweep a Windows mapper runs first, and the
+    // blob routes it into the same dispatch as 0. Refusing it meant the router
+    // could be absent from the Network Map entirely.
+    let mut responder = unlimited();
+    let ordinary = responder.handle(&discover_fixture(1), 0).expect("ToS 0");
+    let mut quick = discover_fixture(2);
+    quick[15] = 1;
+    let fast = responder.handle(&quick, 0).expect("ToS 1");
+    // Same reply but for the generation the request carried.
+    assert_eq!(ordinary.len(), fast.len());
+    assert_eq!(ordinary[..32], fast[..32]);
+    assert_eq!(&fast[32..34], &2_u16.to_be_bytes());
+    // Only the QoS service stays refused.
+    let mut qos = discover_fixture(3);
+    qos[15] = 2;
+    assert_eq!(
+        responder.handle(&qos, 0),
+        Err(Dropped::Malformed(Malformed::UnsupportedService))
+    );
+}
+
+#[test]
+fn the_anti_amplification_constants_are_the_measured_ones() {
+    // Every other size assertion here compares a reply against the budget the
+    // constants define, so raising a constant keeps them green. Pin the
+    // numbers themselves, and the two points where the two clauses swap over.
+    assert_eq!(MAX_AMPLIFICATION, 4);
+    assert_eq!(MAX_RESPONSE_LEN, 300);
+    assert_eq!(reply_budget(32), 128);
+    assert_eq!(reply_budget(60), 240);
+    assert_eq!(reply_budget(75), 300);
+    assert_eq!(reply_budget(MIN_FRAME_LEN * 100), 300);
+}
+
+#[test]
+fn the_largest_possible_reply_is_the_measured_worst_case() {
+    // Longest names this device model can carry, so the property block is at
+    // its maximum. Measured at 209 bytes; the 300-byte cap never binds, which
+    // is worth knowing because it means the cap alone proves nothing.
+    let widest = Device::new(
+        STATION,
+        Some([192, 168, 50, 1]),
+        "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
+        "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+        u64::MAX,
+    );
+    let mut responder = Responder::with_policy(
+        widest,
+        RateLimiter::new(u32::MAX, 1, 0),
+        GenerationFilter::new(0),
+    );
+    let mut worst_len = 0_usize;
+    let mut worst_ratio = 0.0_f64;
+    for length in MIN_FRAME_LEN..=512 {
+        let mut frame = discover_fixture(1);
+        if length > frame.len() {
+            frame.resize(length, 0);
+        }
+        // Divide by the length actually received, not the one asked for.
+        let received = frame.len();
+        if let Ok(reply) = responder.handle(&frame, 0) {
+            worst_len = worst_len.max(reply.len());
+            worst_ratio = worst_ratio.max(reply.len() as f64 / received as f64);
+        }
+    }
+    assert_eq!(worst_len, 209, "largest reply changed");
+    assert!(worst_ratio <= 4.0, "ratio {worst_ratio} exceeds the bound");
+    // 209 / 60, the Ethernet minimum frame a Discover can arrive in.
+    assert!(
+        worst_ratio > 3.4 && worst_ratio < 3.5,
+        "ratio {worst_ratio}"
+    );
+    // The shortest frame the parser accepts at all. It cannot reach the wire on
+    // Ethernet, but it is what the multiplier clause actually has to bound, and
+    // it is where the true worst-case ratio lives.
+    let full = discover_fixture(1);
+    let shortest = (MIN_FRAME_LEN..=full.len())
+        .map(|len| {
+            let mut frame = full.clone();
+            frame.truncate(len);
+            frame
+        })
+        .find(|frame| responder.handle(frame, 0).is_ok())
+        .expect("some truncation of a Discover parses");
+    let reply = responder.handle(&shortest, 0).expect("shortest Discover");
+    assert_eq!(shortest.len(), 36);
+    assert_eq!(reply.len(), 143);
+    assert!(
+        reply.len() <= shortest.len() * MAX_AMPLIFICATION,
+        "{} bytes from {}",
+        reply.len(),
+        shortest.len()
+    );
+    println!(
+        "shortest accepted Discover {} bytes -> {} bytes",
+        shortest.len(),
+        reply.len()
     );
 }

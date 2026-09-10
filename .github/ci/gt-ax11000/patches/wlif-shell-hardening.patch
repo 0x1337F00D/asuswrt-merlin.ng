@@ -1,8 +1,8 @@
 diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
-index 54587599262..d7121b92efe 100644
+index 54587599262..67ef5ea35f5 100644
 --- a/release/src/router/shared/Makefile
 +++ b/release/src/router/shared/Makefile
-@@ -600,15 +600,57 @@ CFLAGS += -I$(TOP)/libhostapi/switch_hostapi/src \
+@@ -600,15 +600,56 @@ CFLAGS += -I$(TOP)/libhostapi/switch_hostapi/src \
  LDFLAGS += -L$(TOP)/libhostapi -lhostapi
  endif
  
@@ -21,12 +21,11 @@ index 54587599262..d7121b92efe 100644
  
 +ifneq ($(wildcard $(RUST_WLIF_MANIFEST)),)
 +RUST_WLIF_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libwlif_policy.a
-+# The archive carries the Rust runtime.  On its own it needs only libc and
-+# libgcc_s, but in this link the vendor objects' undefined memcpy/memset can
-+# be satisfied from the archive's compiler_builtins, which drags in members
-+# that reference dlsym.  Name the system libraries explicitly, the same set
-+# httpd and rc already use for their Rust archives, so libshared.so records
-+# them instead of leaving a symbol for every consumer to resolve.
++# Resolve the vendor C objects' ARM arithmetic helpers from libgcc_s before
++# considering Rust's compiler_builtins. Otherwise __aeabi_* extracts
++# __udivmoddi4 and rust_eh_personality, dragging in an unrelated std runtime.
++# Keep the established runtime dependencies explicit; final-link gates check
++# exports and size, including if future --as-needed flags change resolution.
 +RUST_WLIF_SYSTEM_LIBS := -ldl -lpthread -lrt
  
 -libshared.so: $(OBJS)
@@ -57,14 +56,14 @@ index 54587599262..d7121b92efe 100644
  	@echo " [shared] LD $@"
  ifeq ($(HND_ROUTER),y)
 -	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^
-+	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ $^ $(RUST_WLIF_SYSTEM_LIBS)
++	@$(CC) $(LDFLAGS) $(EXTRA_LD_FLAGS) -shared -o $@ -lgcc_s $^ $(RUST_WLIF_SYSTEM_LIBS)
  else
 -	@$(LD) $(LDFLAGS) -shared -o $@ $^
 +	@$(LD) $(LDFLAGS) -shared -o $@ $^ $(RUST_WLIF_SYSTEM_LIBS)
  endif
  
  	$(SIZECHECK)
-@@ -624,8 +666,12 @@ install: all
+@@ -624,8 +665,12 @@ install: all
  	@install -d $(INSTALLDIR)/usr/lib
  	@install -m 755 libshared.so $(INSTALLDIR)/usr/lib
  	$(if $(RTCONFIG_DEBUG),,@$(STRIP) $(INSTALLDIR)/usr/lib/libshared.so)

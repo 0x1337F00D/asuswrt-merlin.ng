@@ -1839,3 +1839,11 @@ image-boot blocker.
   commit was issued. A read-only half-hourly follow-up is scheduled until
   2026-09-11 02:00 CEST, with alerts only on actionable changes. This initial
   soak is not a guarantee of future crash freedom or automatic power recovery.
+
+### 2026-09-10 Claude final-state reconciliation
+
+See `CLAUDE_FINAL_REVIEW.md` for the separately reviewed Tier 1/2 integration,
+remaining compatibility debts and actual build/trial status. Prior successful
+CI images do not approve this changed candidate. The local full-image check
+must explicitly supply `WLIF_VENDOR_BASELINE` to verify preservation of vendor
+exports, as the general verification script accepts an optional baseline.
