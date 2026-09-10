@@ -26,6 +26,7 @@ fn parses_the_default_rc_argument_vector() {
         options,
         Options {
             peers: vec!["pool.ntp.org".to_owned()],
+            rejected_peers: Vec::new(),
             script: Some(PathBuf::from("/sbin/ntpd_synced")),
             interface: None,
             listen: false,
@@ -214,4 +215,87 @@ fn repeated_verbosity_accumulates_without_overflowing() {
         arguments.push("-d".to_owned());
     }
     assert_eq!(parse(arguments).expect("parses").verbose, u8::MAX);
+}
+
+/// `rc/ntpd.c` passes `nvram_safe_get("ntp_server0")` verbatim from a
+/// free-text UI field that has no validator at all, so the two forms a person
+/// actually types have to survive: a bracketed IPv6 literal and a value with
+/// stray whitespace around it.
+#[test]
+fn accepts_the_peer_forms_a_free_text_field_produces() {
+    for peer in ["[2001:db8::1]", "[::1]", "[fe80::1]"] {
+        let options = parse(argv(&["-p", peer])).unwrap_or_else(|error| {
+            panic!("{peer:?} was rejected: {error}");
+        });
+        assert_eq!(options.peers, [peer]);
+        assert!(options.rejected_peers.is_empty());
+    }
+    for peer in [" pool.ntp.org", "pool.ntp.org ", "\tpool.ntp.org\n"] {
+        let options = parse(argv(&["-p", peer])).expect("whitespace is trimmed, not fatal");
+        assert_eq!(options.peers, ["pool.ntp.org"]);
+    }
+}
+
+/// Brackets are not a bypass: only a real IPv6 literal may wear them.
+#[test]
+fn rejects_bracketed_values_that_are_not_addresses() {
+    for peer in [
+        "[]",
+        "[pool.ntp.org]",
+        "[$(reboot)]",
+        "[2001:db8::1",
+        "2001:db8::1]",
+        "[2001:db8::1];reboot",
+    ] {
+        assert!(
+            matches!(
+                parse(argv(&["-p", peer])),
+                Err(ArgumentError::InvalidPeer(_))
+            ),
+            "{peer:?} was accepted"
+        );
+    }
+}
+
+/// One unusable `-p` must not stop the daemon: `rc` has already logged
+/// "Started ntpd" by the time this runs, so exiting would leave the router
+/// with no time source and no visible reason for it.
+#[test]
+fn an_unusable_peer_is_skipped_while_another_remains() {
+    let options = parse(argv(&[
+        "-t",
+        "-S",
+        "/sbin/ntpd_synced",
+        "-p",
+        "pool.ntp.org extra",
+        "-p",
+        "time.example.net",
+    ]))
+    .expect("one usable peer is enough to start");
+    assert_eq!(options.peers, ["time.example.net"]);
+    assert_eq!(options.rejected_peers, ["pool.ntp.org extra"]);
+}
+
+/// With nothing usable left it is still a startup error, and the error names
+/// the first value that was refused.
+#[test]
+fn every_peer_being_unusable_is_still_fatal() {
+    assert_eq!(
+        parse(argv(&["-p", "pool.ntp.org extra", "-p", "a;reboot"])),
+        Err(ArgumentError::InvalidPeer("pool.ntp.org extra".to_owned()))
+    );
+}
+
+/// The skipped values are bounded, so a caller cannot make the daemon hold an
+/// unbounded list of rejected free text.
+#[test]
+fn the_skipped_peer_list_is_bounded() {
+    let mut arguments = argv(&["-p", "pool.ntp.org"]);
+    for index in 0..(MAX_PEERS * 4) {
+        arguments.push("-p".to_owned());
+        arguments.push(format!("bad peer {index}"));
+    }
+    let options = parse(arguments).expect("the one good peer keeps it alive");
+    assert_eq!(options.peers, ["pool.ntp.org"]);
+    assert_eq!(options.rejected_peers.len(), MAX_PEERS);
 }

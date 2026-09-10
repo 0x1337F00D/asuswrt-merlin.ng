@@ -41,6 +41,18 @@ impl Logger {
         }
     }
 
+    /// A logger with no destination at all, for the unit tests: they must not
+    /// write to the developer's syslog to assert a daemon decision.
+    #[cfg(test)]
+    #[must_use]
+    pub fn discard() -> Self {
+        Self {
+            socket: None,
+            verbose: 0,
+            stderr: false,
+        }
+    }
+
     /// A normal operational message.
     pub fn notice(&self, message: &str) {
         self.emit(SEVERITY_NOTICE, message);

@@ -175,22 +175,47 @@ call in `src/sys.rs`.
 
 `ntp` security boundary:
 
-- a reply is matched against the 64-bit random transmit nonce before any other
-  field is read, so an off-path spoofer has to guess it first;
+- a reply is matched against the 64-bit transmit nonce before any other field
+  is read, so an off-path spoofer has to guess it first. The nonce is eight
+  fresh bytes of `/dev/urandom` per query, read through a `File` the daemon
+  holds open; the poll-interval jitter keeps a separate xorshift generator,
+  because the jitter is observable from the LAN and xorshift64 is invertible.
+  The xorshift is the nonce source only when the kernel pool cannot be read,
+  and that fallback is reported once at warning level;
 - only mode-4 replies at version 3 or 4 and stratum 1..=15 are used; stratum 0
-  is decoded as a kiss-o'-death (`DENY`/`RSTR` retire the peer, `RATE` backs
-  it off) and never as time;
+  is decoded as a kiss-o'-death and never as time. `RATE` backs the peer off;
+  `DENY`/`RSTR` retires the *address* that sent it -- RFC 5905 section 7.4
+  demobilises the association with that server, not the configured name, and
+  `ntp_server0` defaults to `pool.ntp.org` -- and the reachability register
+  keeps shifting for a refused peer, so a refusal ends in a loss-of-sync
+  report rather than in a stale stratum served to the LAN;
 - root distance, round-trip delay and the absolute time the server claims are
   all range-checked, and a datagram that is neither 48 nor 68 bytes is rejected
   before decoding;
 - the reply the local clock is disciplined with is the one Marzullo
-  intersection agrees on, so a single lying peer out of three cannot move it;
-- server mode binds to the LAN interface with `SO_BINDTODEVICE`, stays silent
-  until the local clock is disciplined, answers only mode-3 requests with a
-  fixed 48-byte reply, echoes nothing but the mandatory origin timestamp and
-  has no mode-6 (control) or mode-7 (`monlist`) handler at all;
+  intersection agrees on, so a single lying peer out of three cannot move it.
+  No two peers may hold the same resolved address: the check runs on every
+  lookup, not once at startup, and a peer that becomes a duplicate keeps no
+  address and has its clock filter emptied, so it can offer neither a sample
+  nor a candidate while a single source would be voting twice;
+- server mode is pinned to the LAN interface with `SO_BINDTODEVICE` *before*
+  the port is bound, so the socket is never reachable on the WAN, not even
+  briefly, and a bind failure disables server mode with a warning instead of
+  taking the client half down with it. It stays silent until the local clock
+  is disciplined, answers only mode-3 requests with a fixed 48-byte reply,
+  echoes nothing but the mandatory origin timestamp, publishes a reference
+  timestamp truncated to whole seconds so the exact instant of the last
+  upstream reply is not disclosed, and has no mode-6 (control) or mode-7
+  (`monlist`) handler at all;
+- the 64-replies-per-second budget is charged only for a reply that is
+  actually sent, so a flood of malformed, mode-7 or oversized datagrams cannot
+  spend a legitimate client's share, and one readable wakeup handles at most
+  64 datagrams before the client half gets a turn;
 - the `-S` program is executed argv-only, never through a shell, and unknown
-  command-line options are a startup error rather than silently ignored;
+  command-line options are a startup error rather than silently ignored. A
+  `-p` value is trimmed and may be a bracketed IPv6 literal, because
+  `rc/ntpd.c` passes `ntp_server0` verbatim from an unvalidated free-text
+  field; an unusable one is a logged skip while another peer remains;
 - the daemon touches no NVRAM, exactly as the busybox applet did not.
 
 `infosvr` security boundary:
@@ -258,10 +283,14 @@ parsers, the wireless-interface identifier/credential policy, infosvr PDUs,
 rstats codecs, the wanduck transition machine, the client-list parsers
 (synthetic legacy/public shared-memory segments with random counts and
 unterminated fields, the NVRAM list/schedule parsers, the AiMesh details
-file, the cache check and the persistent-database transform) and the NTP
-client and server parsers (random datagrams at random lengths, with the
-query nonce both matched and mismatched, plus every mode and stratum
-boundary). It is deterministic and keeps Cargo state and artifacts in tmpfs:
+file, the cache check and the persistent-database transform) and the whole
+NTP path a reply takes: random datagrams at random lengths with the query
+nonce both matched and mismatched, every mode and stratum boundary, and --
+because random bytes are rejected long before a sample exists -- headers
+built to be accepted, with and without a flipped bit, driven through the
+eight-deep peer filter, the fitness test, Marzullo selection and the
+step/slew discipline for one to four peers over many poll rounds. It is
+deterministic and keeps Cargo state and artifacts in tmpfs:
 
 ```sh
 ASUSWRT_REQUIRE_TMPFS=1 \

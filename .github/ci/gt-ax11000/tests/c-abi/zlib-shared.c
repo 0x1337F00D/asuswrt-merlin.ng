@@ -14,6 +14,12 @@
 
 #include "zlib.h"
 
+/* Declared by zlib.h only under _LARGEFILE64_SOURCE; the fixture calls
+ * them directly to isolate a target-specific divergence. */
+extern uLong crc32_combine_gen(z_off_t len2);
+extern uLong crc32_combine_op(uLong crc1, uLong crc2, uLong op);
+extern uLong crc32_combine64(uLong crc1, uLong crc2, z_off64_t len2);
+
 #define PAYLOAD_LEN 40000u
 
 static int fail(const char *what, long code)
@@ -40,6 +46,17 @@ static int fail_combine(const char *what, uLong head, uLong tail,
 	fprintf(stderr, "libz.so.1 fixture: zlibVersion=%s "
 		"zlibCompileFlags=%08lx\n", zlibVersion(),
 		(unsigned long)zlibCompileFlags());
+	/* Decompose the computation so the target says which step diverges.
+	 * On a 32-bit target crc32_combine and crc32_combine64 have different
+	 * argument widths, which a host with 64-bit long cannot tell apart. */
+	{
+		uLong op = crc32_combine_gen((z_off_t)(PAYLOAD_LEN - 1777u));
+		fprintf(stderr, "libz.so.1 fixture: gen=%08lx op(gen,head)=%08lx "
+			"combine64=%08lx\n", (unsigned long)op,
+			(unsigned long)crc32_combine_op(op, head, 0),
+			(unsigned long)crc32_combine64(head, tail,
+				(z_off64_t)(PAYLOAD_LEN - 1777u)));
+	}
 	maps = fopen("/proc/self/maps", "r");
 	if (maps != NULL) {
 		while (fgets(line, sizeof line, maps) != NULL) {

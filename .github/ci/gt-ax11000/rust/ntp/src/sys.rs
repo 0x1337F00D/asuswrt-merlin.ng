@@ -6,7 +6,8 @@
 
 use std::ffi::CString;
 use std::io;
-use std::os::fd::{AsRawFd, RawFd};
+use std::net::UdpSocket;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use ntp::packet::NTP_TO_UNIX_EPOCH;
@@ -194,6 +195,62 @@ pub fn bind_to_device(socket: &impl AsRawFd, interface: &str) -> io::Result<()> 
     }
 }
 
+/// Creates a UDP socket, pins it to `interface` and only then binds it to
+/// `port` on every address that interface carries.
+///
+/// The order is the point. `UdpSocket::bind` followed by `SO_BINDTODEVICE`
+/// leaves the socket bound on *every* interface -- the WAN included -- for the
+/// window between the two calls, and leaves it bound there for good if the
+/// second call fails. Setting the device on a socket that is not bound yet
+/// means the port is never reachable anywhere but the named interface, and an
+/// interface that does not exist fails before anything is bound at all.
+///
+/// # Errors
+/// Returns the `socket`, `setsockopt` or `bind` error, or `InvalidInput` for
+/// an interface name containing a NUL. The descriptor is closed on every
+/// error path, so a failure leaks nothing.
+pub fn bind_udp_to_device(port: u16, interface: Option<&str>) -> io::Result<UdpSocket> {
+    // SAFETY: socket(2) takes three scalars, reads no pointer and returns an
+    // owned descriptor or -1.
+    let descriptor = unsafe {
+        libc::socket(
+            libc::AF_INET,
+            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+            libc::IPPROTO_UDP,
+        )
+    };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `descriptor` was just returned by socket(2), is not negative and
+    // is not owned by anything else, so `OwnedFd` may take it. From here on
+    // every early return closes it through that ownership.
+    let owned = unsafe { OwnedFd::from_raw_fd(descriptor) };
+    if let Some(interface) = interface {
+        bind_to_device(&owned, interface)?;
+    }
+    // SAFETY: `sockaddr_in` is plain-old-data; an all-zero value is the
+    // documented starting point and every field used below is set explicitly.
+    let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+    address.sin_family = libc::AF_INET as libc::sa_family_t;
+    address.sin_port = port.to_be();
+    address.sin_addr.s_addr = libc::INADDR_ANY.to_be();
+    // SAFETY: `address` is a live, fully initialised `sockaddr_in` owned by
+    // this frame and the length passed is exactly its size; the descriptor is
+    // owned by `owned` for the whole call.
+    let result = unsafe {
+        libc::bind(
+            owned.as_raw_fd(),
+            std::ptr::addr_of!(address).cast(),
+            std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(UdpSocket::from(owned))
+}
+
 /// `IPTOS_DSCP_AF21`, the DSCP class busybox's ntpd marked its packets with.
 pub const IPTOS_DSCP_AF21: libc::c_int = 0x48;
 
@@ -214,14 +271,37 @@ pub fn set_tos(socket: &impl AsRawFd) {
     }
 }
 
+/// What one descriptor reported in a [`poll_readable`] call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Readiness {
+    /// Nothing happened before the timeout expired.
+    Idle,
+    /// `POLLIN`: a datagram is queued and `recv` will return it.
+    Readable,
+    /// `POLLERR`, `POLLHUP` or `POLLNVAL`: the descriptor is in an error
+    /// state. Reporting this as readable would make a caller that keeps the
+    /// descriptor in its poll set spin at full speed forever, because the
+    /// condition is level-triggered and no read clears it, so the caller has
+    /// to be told the difference and act on it.
+    Errored,
+}
+
 /// Waits for readability on `descriptors` for at most `timeout_ms`.
 ///
-/// Returns the descriptors that became ready, as a parallel vector of flags.
+/// Returns one [`Readiness`] per descriptor, in the order they were given.
 ///
 /// # Errors
 /// Returns the `poll` error; `EINTR` is reported so the caller can service a
-/// signal and loop.
-pub fn poll_readable(descriptors: &[RawFd], timeout_ms: i32) -> io::Result<Vec<bool>> {
+/// signal and loop. A negative `timeout_ms` is `InvalidInput`: poll(2) reads it
+/// as "block forever", and clamping it to zero instead would turn a caller's
+/// arithmetic mistake into a busy loop, so neither is done silently.
+pub fn poll_readable(descriptors: &[RawFd], timeout_ms: i32) -> io::Result<Vec<Readiness>> {
+    if timeout_ms < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "poll timeout must not be negative",
+        ));
+    }
     let mut entries: Vec<libc::pollfd> = descriptors
         .iter()
         .map(|descriptor| libc::pollfd {
@@ -233,17 +313,22 @@ pub fn poll_readable(descriptors: &[RawFd], timeout_ms: i32) -> io::Result<Vec<b
     let count = entries.len();
     // SAFETY: `entries` owns `count` initialised `pollfd` values and stays
     // borrowed for the whole call; the length passed matches the allocation.
-    let result = unsafe {
-        libc::poll(
-            entries.as_mut_ptr(),
-            count as libc::nfds_t,
-            timeout_ms.max(0),
-        )
-    };
+    let result = unsafe { libc::poll(entries.as_mut_ptr(), count as libc::nfds_t, timeout_ms) };
     if result < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(entries.iter().map(|entry| entry.revents != 0).collect())
+    Ok(entries
+        .iter()
+        .map(|entry| {
+            if entry.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                Readiness::Errored
+            } else if entry.revents & libc::POLLIN != 0 {
+                Readiness::Readable
+            } else {
+                Readiness::Idle
+            }
+        })
+        .collect())
 }
 
 /// Detaches from the controlling terminal exactly as busybox's
@@ -305,5 +390,104 @@ pub fn raise_priority() {
     // SAFETY: setpriority takes only scalars and affects this process alone.
     unsafe {
         libc::setpriority(libc::PRIO_PROCESS, 0, -15);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    /// A free UDP port on the loopback interface, held open by the returned
+    /// socket so nothing else can take it while the test runs.
+    fn held_port() -> (UdpSocket, u16) {
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("a loopback port");
+        let port = socket.local_addr().expect("a local address").port();
+        (socket, port)
+    }
+
+    #[test]
+    fn the_device_is_pinned_before_the_port_is_bound() {
+        // Regression: the daemon used to call `UdpSocket::bind` first and
+        // `SO_BINDTODEVICE` afterwards, so the socket existed on every
+        // interface -- the WAN included -- until the second call returned.
+        //
+        // The order is observable: with the port already taken, binding first
+        // fails with `AddrInUse`, while pinning first fails on the interface
+        // and never reaches the bind at all.
+        let (_holder, port) = held_port();
+        let error = bind_udp_to_device(port, Some("ntp-no-such-if"))
+            .expect_err("a missing interface cannot be bound to");
+        assert_ne!(
+            error.kind(),
+            io::ErrorKind::AddrInUse,
+            "the port was bound before the interface was pinned: {error}"
+        );
+    }
+
+    #[test]
+    fn a_failed_bind_leaks_no_descriptor() {
+        // Every error path has to drop the raw descriptor. Two hundred
+        // failures inside the default file-descriptor limit would exhaust it
+        // if any of them leaked.
+        for _ in 0..200 {
+            assert!(bind_udp_to_device(0, Some("ntp-no-such-if")).is_err());
+        }
+        let socket = bind_udp_to_device(0, None).expect("descriptors are still available");
+        assert!(socket.local_addr().expect("a local address").is_ipv4());
+    }
+
+    #[test]
+    fn an_unpinned_socket_binds_the_requested_port() {
+        let socket = bind_udp_to_device(0, None).expect("an unpinned socket binds");
+        let address = socket.local_addr().expect("a local address");
+        assert!(address.is_ipv4());
+        assert_ne!(address.port(), 0);
+    }
+
+    #[test]
+    fn an_interface_name_with_a_nul_is_refused() {
+        let error = bind_udp_to_device(0, Some("br\u{0}0")).expect_err("a NUL is not a name");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn readable_and_errored_descriptors_are_told_apart() {
+        // Regression: `poll_readable` reported any non-zero `revents` as
+        // readable, so a hung-up descriptor looked like data forever and spun
+        // the main loop.
+        let (mut writer, reader) = UnixStream::pair().expect("a socket pair");
+        writer
+            .write_all(b"x")
+            .expect("a byte fits in the pipe buffer");
+        let ready = poll_readable(&[reader.as_raw_fd()], 0).expect("poll");
+        assert_eq!(ready, vec![Readiness::Readable]);
+
+        let (writer, reader) = UnixStream::pair().expect("a socket pair");
+        drop(writer);
+        let ready = poll_readable(&[reader.as_raw_fd()], 0).expect("poll");
+        assert_eq!(ready, vec![Readiness::Errored]);
+    }
+
+    #[test]
+    fn an_idle_descriptor_is_neither_readable_nor_errored() {
+        let (_writer, reader) = UnixStream::pair().expect("a socket pair");
+        let ready = poll_readable(&[reader.as_raw_fd()], 0).expect("poll");
+        assert_eq!(ready, vec![Readiness::Idle]);
+    }
+
+    #[test]
+    fn a_negative_timeout_is_an_error_rather_than_a_busy_poll() {
+        // Regression: the timeout was clamped with `max(0)`, which turned a
+        // negative value into a zero-timeout poll and spun the main loop.
+        let (_writer, reader) = UnixStream::pair().expect("a socket pair");
+        let error = poll_readable(&[reader.as_raw_fd()], -1).expect_err("a negative timeout");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn polling_no_descriptors_returns_no_flags() {
+        assert!(poll_readable(&[], 0).expect("poll").is_empty());
     }
 }

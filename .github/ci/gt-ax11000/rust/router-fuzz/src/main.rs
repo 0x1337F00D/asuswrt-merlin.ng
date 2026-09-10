@@ -19,7 +19,17 @@ use httpd_parsers::{
 };
 use infosvr::{build_response, parse_request, DeviceState, PDU_LEN};
 use ntp::client::{evaluate_reply, Query as NtpQuery};
-use ntp::packet::{Packet as NtpPacket, Timestamp as NtpTimestamp, PACKET_LEN as NTP_PACKET_LEN};
+use ntp::clock::{
+    is_fit as ntp_is_fit, select_peer as ntp_select_peer, Candidate as NtpCandidate,
+    ClockAction as NtpClockAction, Discipline as NtpDiscipline, PeerFilter as NtpPeerFilter,
+    MAX_POLL_EXP as NTP_MAX_POLL_EXP, MAX_STRATUM as NTP_MAX_STRATUM,
+    MIN_POLL_EXP as NTP_MIN_POLL_EXP, PRECISION_SECONDS as NTP_PRECISION,
+    SLEW_THRESHOLD as NTP_SLEW_THRESHOLD, STEP_THRESHOLD as NTP_STEP_THRESHOLD,
+};
+use ntp::packet::{
+    Leap as NtpLeap, Mode as NtpMode, Packet as NtpPacket, Timestamp as NtpTimestamp,
+    PACKET_LEN as NTP_PACKET_LEN,
+};
 use ntp::server::{build_reply as build_ntp_reply, ServerState as NtpServerState};
 use router_policy::testlab::TestlabRequest;
 use router_policy::vpn::openvpn_custom_config_allowed;
@@ -225,6 +235,24 @@ fn fuzz_ntp(rng: &mut Rng, input: &[u8]) {
         assert!(sample.delay.is_finite());
         assert!(sample.stratum >= 1 && sample.stratum < 16);
     }
+    // One header that is built to be accepted, with a random byte flipped in
+    // it half the time: the checks past the anti-spoofing gate are otherwise
+    // reached only by chance, and a filtered sample never is.
+    let mut plausible = plausible_ntp_reply(rng, nonce, sent_at, 0.25, 0.01);
+    if rng.next_u64() % 2 == 0 {
+        let position = (rng.next_u64() as usize) % NTP_PACKET_LEN;
+        if let Some(byte) = plausible.get_mut(position) {
+            *byte ^= 1 << (rng.next_u64() % 8);
+        }
+    }
+    if let Ok(sample) = evaluate_reply(&plausible, query, sent_at + 0.01, 0.002) {
+        let mut filter = NtpPeerFilter::new();
+        filter.note_query_sent();
+        filter.accept(&sample, sent_at + 0.01);
+        assert!(filter.is_reachable());
+        assert!(filter.offset.is_finite());
+        assert!(filter.root_distance(sent_at + 0.01).is_finite());
+    }
     // Truncations and the authenticated length must be refused or accepted,
     // never crash.
     for length in [0, 1, 47, NTP_PACKET_LEN, 49, 67, 68, 69] {
@@ -252,6 +280,151 @@ fn fuzz_ntp(rng: &mut Rng, input: &[u8]) {
         let decoded = NtpPacket::decode(&reply).expect("our own reply decodes");
         assert_eq!(decoded.mode, ntp::packet::Mode::Server);
         assert!(decoded.stratum >= 1 && decoded.stratum < 16);
+    }
+}
+
+/// Earliest server time the client will believe, plus a margin.
+const NTP_BASE_SECONDS: f64 = 3_960_000_000.0;
+
+/// A reply that passes every check in `evaluate_reply`.
+///
+/// Random bytes almost never do: the origin, mode, version, stratum, leap,
+/// root distance, absolute time and delay checks reject them long before a
+/// sample exists. Without a generator like this the fuzzer never reaches the
+/// peer filter, peer selection or the clock discipline at all.
+fn plausible_ntp_reply(
+    rng: &mut Rng,
+    nonce: NtpTimestamp,
+    sent_at: f64,
+    offset: f64,
+    delay: f64,
+) -> [u8; NTP_PACKET_LEN] {
+    let receive = sent_at + offset + delay / 2.0;
+    let transmit = receive + (rng.next_u64() % 1_000) as f64 / 1e6;
+    NtpPacket {
+        leap: match rng.next_u64() % 8 {
+            0 => NtpLeap::AddSecond,
+            1 => NtpLeap::DeleteSecond,
+            _ => NtpLeap::NoWarning,
+        },
+        version: if rng.next_u64() % 2 == 0 { 3 } else { 4 },
+        mode: NtpMode::Server,
+        stratum: 1 + (rng.next_u64() % 15) as u8,
+        poll: 6,
+        precision: -(6 + (rng.next_u64() % 20) as i8),
+        root_delay: (rng.next_u64() % 1_000) as f64 / 1_000.0,
+        root_dispersion: (rng.next_u64() % 1_000) as f64 / 1_000.0,
+        reference_id: *b"FUZZ",
+        reference: NtpTimestamp::from_secs_f64(receive - 64.0),
+        origin: nonce,
+        receive: NtpTimestamp::from_secs_f64(receive),
+        transmit: NtpTimestamp::from_secs_f64(transmit),
+    }
+    .encode()
+}
+
+/// Drives one to four peers through accepted samples, peer selection and the
+/// clock discipline, so the whole path a real reply takes is fuzzed and not
+/// just the parsers at the front of it.
+fn fuzz_ntp_discipline(rng: &mut Rng) {
+    let peer_count = 1 + (rng.next_u64() % 4) as usize;
+    let mut filters = vec![NtpPeerFilter::new(); peer_count];
+    let mut discipline = NtpDiscipline::new();
+    let trust_network = rng.next_u64() % 4 == 0;
+    let mut now = NTP_BASE_SECONDS + (rng.next_u64() % 100_000) as f64;
+    for _round in 0..(4 + rng.next_u64() % 12) {
+        for filter in &mut filters {
+            filter.note_query_sent();
+            // One query in eight is never answered, so the reachability
+            // register really does decay in some runs.
+            if rng.next_u64() % 8 == 0 {
+                continue;
+            }
+            let nonce = NtpTimestamp {
+                seconds: rng.next_u64() as u32,
+                fraction: rng.next_u64() as u32,
+            };
+            // Offsets spread over +/- two seconds, so some rounds hold peers
+            // that disagree by far more than their error bars: that is what
+            // makes the Marzullo falseticker loop run rather than fall out on
+            // its first pass.
+            let offset = ((rng.next_u64() % 4_001) as f64 - 2_000.0) / 1_000.0;
+            let delay = (rng.next_u64() % 2_000) as f64 / 1_000.0;
+            let datagram = plausible_ntp_reply(rng, nonce, now, offset, delay);
+            let received_at = now + delay;
+            let query = NtpQuery {
+                nonce,
+                sent_at: now,
+            };
+            let Ok(sample) = evaluate_reply(&datagram, query, received_at, NTP_PRECISION) else {
+                continue;
+            };
+            filter.accept(&sample, received_at);
+            assert!(filter.is_reachable());
+            assert!(filter.offset.is_finite());
+            assert!(filter.dispersion.is_finite() && filter.dispersion >= 0.0);
+            assert!(filter.jitter >= NTP_PRECISION);
+            assert!(filter.delay >= NTP_PRECISION);
+            let distance = filter.root_distance(received_at);
+            assert!(distance.is_finite() && distance >= 0.0);
+        }
+        now += 64.0;
+        let candidates: Vec<NtpCandidate> = filters
+            .iter()
+            .enumerate()
+            .filter(|(_, filter)| filter.is_reachable())
+            .map(|(index, filter)| NtpCandidate {
+                index,
+                offset: filter.offset,
+                root_distance: filter.root_distance(now),
+                stratum: filter.stratum,
+                reachable_bits: filter.reachable_bits,
+            })
+            .filter(|candidate| ntp_is_fit(candidate, discipline.poll_exp, trust_network))
+            .collect();
+        match ntp_select_peer(&candidates) {
+            Some(index) => {
+                assert!(candidates.iter().any(|candidate| candidate.index == index));
+                let filter = filters[index];
+                let outcome = discipline.update(
+                    filter.offset,
+                    filter.received_at,
+                    filter.stratum,
+                    filter.leap,
+                );
+                match outcome.action {
+                    NtpClockAction::None => {}
+                    NtpClockAction::Step(step) => {
+                        assert!(step.is_finite());
+                        assert!(step.abs() > NTP_STEP_THRESHOLD);
+                    }
+                    NtpClockAction::Slew {
+                        offset_micros,
+                        constant,
+                        ..
+                    } => {
+                        assert!(offset_micros.abs() <= (NTP_SLEW_THRESHOLD * 1e6) as i64);
+                        assert!(constant >= 0);
+                    }
+                }
+                let _ = discipline.apply_feedback(outcome.feedback);
+            }
+            None => discipline.increase_poll(),
+        }
+        assert!((NTP_MIN_POLL_EXP..=NTP_MAX_POLL_EXP).contains(&discipline.poll_exp));
+        assert!(discipline.stratum <= NTP_MAX_STRATUM);
+        assert!(discipline.poll_seconds() >= 1);
+        assert_eq!(
+            discipline.is_synchronised(),
+            discipline.stratum < NTP_MAX_STRATUM
+        );
+    }
+    // A peer that fell out of reach can never be a candidate again until it
+    // answers, which is the property `check_unsync` depends on.
+    for filter in &filters {
+        if !filter.is_reachable() {
+            assert_eq!(filter.reachable_bits, 0);
+        }
     }
 }
 
@@ -487,6 +660,41 @@ fn regression_edges() {
         }
     }
 
+    // Peer selection. Two peers that disagree by far more than their error
+    // bars are a falseticker pair and must select nobody; two candidates that
+    // are really one server agree trivially and are selected, which is why the
+    // daemon refuses to let two peers hold the same resolved address.
+    let candidate = |index: usize, offset: f64| NtpCandidate {
+        index,
+        offset,
+        root_distance: 0.05,
+        stratum: 2,
+        reachable_bits: 0xff,
+    };
+    assert_eq!(
+        ntp_select_peer(&[candidate(0, -1.0), candidate(1, 1.0)]),
+        None
+    );
+    assert_eq!(
+        ntp_select_peer(&[candidate(0, 1.0), candidate(1, 1.0)]),
+        Some(0)
+    );
+    assert_eq!(ntp_select_peer(&[]), None);
+    assert_eq!(ntp_select_peer(&[candidate(3, 0.0)]), Some(3));
+    // Fewer than two answered queries in the register is never fit, with or
+    // without -t.
+    for bits in [0x00_u8, 0x01, 0x80] {
+        for trust in [false, true] {
+            let mut lonely = candidate(0, 0.0);
+            lonely.reachable_bits = bits;
+            assert!(!ntp_is_fit(&lonely, 6, trust));
+        }
+    }
+    let mut discipline_rng = Rng(DEFAULT_SEED ^ 0x5555_5555_5555_5555);
+    for _ in 0..16 {
+        fuzz_ntp_discipline(&mut discipline_rng);
+    }
+
     for opcode in [31_u16, 52, 53, 54, u16::MAX] {
         let mut packet = [0_u8; PDU_LEN];
         packet[0] = 12;
@@ -501,7 +709,7 @@ fn run(iterations: u64, seed: u64) {
     let mut rng = Rng(seed.max(1));
     for index in 0..iterations {
         let input = rng.bytes();
-        match index % 9 {
+        match index % 10 {
             0 => fuzz_http(&input),
             1 => fuzz_policy(&input),
             2 => fuzz_infosvr(&input),
@@ -510,6 +718,7 @@ fn run(iterations: u64, seed: u64) {
             5 => fuzz_clientlist_segment(&mut rng, &input),
             6 => fuzz_wlif(&input),
             7 => fuzz_ntp(&mut rng, &input),
+            8 => fuzz_ntp_discipline(&mut rng),
             _ => fuzz_wanduck(&mut rng),
         }
     }

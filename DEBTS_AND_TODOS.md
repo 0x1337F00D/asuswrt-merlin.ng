@@ -722,6 +722,112 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   run on the host binary. A live server *reply* has not been observed on a
   socket, only in the byte-exact unit tests and the fuzzer, because the
   upstream peer and the server both need UDP/123 in one namespace.
+- [x] Fix the four defects and the three lesser findings an independent
+  adversarial review of `rust/ntp` raised on 2026-09-10. All seven were real
+  and all seven are fixed in the overlay sources; none of them touches a
+  patched upstream file, so `patched_diff_sha256` is unchanged at
+  `20918ec02342f4780cf220e32218608de8d9e2804114cf03309a7ab0d22fb61d`.
+  1. The query nonce came from one xorshift64 generator that also produced
+     the poll-interval jitter. xorshift64 is F2-linear and invertible, and the
+     jitter is observable from the LAN because `server_state()` published both
+     the poll exponent and a full-precision reference timestamp set to the
+     instant of the last accepted upstream reply, so any LAN device could
+     recover the generator state without ever seeing a query and then predict
+     every nonce. The nonce is the only anti-spoofing token an unauthenticated
+     SNTP client has, and `connect()` does not stop a source-spoofing LAN
+     attacker on this firmware (LAN INPUT is a blanket ACCEPT in
+     `rc/firewall.c` and `rp_filter` is off on non-default interfaces). The
+     nonce is now drawn from `/dev/urandom` for every query through a `File`
+     held open for the life of the daemon, short reads are handled by
+     `read_exact`, the jitter keeps a separate xorshift instance, the xorshift
+     is used for a nonce only when the kernel pool cannot be read and that
+     fallback is reported once at warning level, and the published reference
+     timestamp is truncated to whole seconds.
+  2. A `DENY`/`RSTR` kiss set `peer.refused = true` for the life of the
+     process and `send_query` then returned before `note_query_sent()`, so the
+     reachability register froze at its last non-zero value, `check_unsync()`
+     could never fire, `/sbin/ntpd_synced unsync` never ran and the daemon
+     kept serving LAN clients a stratum derived from a free-running clock.
+     `ntp_server0` defaults to `pool.ntp.org`, so any volunteer pool member
+     could trigger it. Decision: the retirement is kept but bound to the
+     *address* that sent the kiss rather than to the configured name, which is
+     what RFC 5905 section 7.4 actually demobilises; the name is looked up
+     again on the next slot, so a rotating pool hands over a different member
+     and a single-address peer stays retired. busybox
+     (`networking/ntpd.c:1934-1949`) only backs off and retries forever, and
+     that is the behaviour a pool name now gets. Either way the reachability
+     register keeps shifting on the refused path, so `check_unsync` fires and
+     the router reports loss of sync instead of publishing a stale stratum.
+     A DNS failure deliberately still does not shift the register: it retries
+     within seconds and would otherwise declare loss of sync on a blip.
+  3. The LAN reply budget was charged before validation, so 65 malformed,
+     mode-7 or oversized datagrams a second from any LAN device exhausted the
+     64/s budget and denied NTP to every legitimate client. The drain also ran
+     to `WouldBlock` with no per-wakeup cap, so a sustained flood starved the
+     client half, and the `Interrupted` arm continued the drain instead of
+     returning, which hid a pending `SIGTERM`. The budget is now charged only
+     for a reply that is actually going to be sent, one readable wakeup
+     handles at most `MAX_REQUESTS_PER_WAKEUP` (64, the same number as a full
+     second of budget) datagrams before returning to the main loop, and
+     `EINTR` ends the drain.
+  4. `resolve` had no duplicate-address check, unlike busybox's `add_peers`.
+     Two `-p` names resolving to one server became two independent Marzullo
+     candidates backed by a single source, so a lone hostile server passed the
+     intersection test that exists to catch exactly that. Decision: the check
+     lives in `resolve` and therefore runs on *every* lookup, not once at
+     startup, because peers resolve lazily and a pool name rotates: a peer
+     that was distinct when first looked up can become a duplicate later. A
+     peer that resolves to an address another peer holds keeps no address,
+     has its clock filter emptied so the samples it collected while it was
+     distinct cannot vote, closes any socket it had, and retries in 512 s.
+  Minor 1: `UdpSocket::bind` ran before `sys::bind_to_device`, so the server
+  socket existed on every interface including the WAN for the window between
+  the two calls, and a missing interface aborted the whole daemon including
+  the client half. `sys::bind_udp_to_device()` now creates the socket with
+  `libc::socket`, applies `SO_BINDTODEVICE` and only then binds, all inside
+  `sys.rs` where the rest of the unsafe lives, and a server-mode failure is a
+  warning that leaves the client half running.
+  Minor 2: `poll_readable` reported any non-zero `revents` as readable, so a
+  persistently errored descriptor would spin the main loop, and
+  `timeout_ms.max(0)` turned a negative timeout into a busy poll. It now
+  returns a `Readiness` of `Idle`/`Readable`/`Errored`, refuses a negative
+  timeout with `InvalidInput`, and the main loop handles `Errored` explicitly:
+  a peer socket is read once and then dropped with a retry, and the server
+  socket is drained once and dropped if it had nothing to read.
+  Minor 3: `peer_is_valid` refused a bracketed IPv6 literal and a value with
+  stray whitespace, both of which `rc/ntpd.c:49` can pass verbatim from the
+  unvalidated free-text `ntp_server0` field, and a refusal exited 1 after `rc`
+  had already logged "Started ntpd". A `-p` value is now trimmed, a bracketed
+  IPv6 literal is accepted when the brackets really hold an address, a bare
+  IPv6 literal is bracketed before it reaches the resolver, and an unusable
+  `-p` is a logged skip as long as one other peer remains valid.
+  Evidence on 2026-09-10, host only: 11 regression tests transcribed against
+  the *unmodified* sources all fail there (nonce/jitter sharing, full-precision
+  reference, frozen reachability after `DENY`, budget spent by 120 invalid
+  datagrams, 1,024 datagrams in one uncapped wakeup, the second peer adopting
+  the first peer's address, `AddrInUse` proving the bind ran before the device
+  pin, a hung-up descriptor reported readable, a negative timeout silently
+  clamped, `[2001:db8::1]` rejected, a good peer lost to a bad one) and all
+  pass after; 90 crate tests in `ntp` (up from 54: 31 new daemon unit tests in
+  `main.rs`/`sys.rs` and 5 new command-line tests), `cargo fmt`, Clippy with
+  warnings denied, the armv7 workspace check, `cargo vendor` byte-identical,
+  the fuzzer extended to reach `PeerFilter`, `Discipline` and `select_peer`
+  with accepted samples at three fixed seeds and 250,000 iterations each, an
+  armv7 release binary built with the Broadcom linker and inspected with the
+  Broadcom `readelf`/`objdump` (ARMv7 Cortex-A9, soft-float ABI, no
+  `Tag_ABI_VFP_args`, `/lib/ld-linux.so.3`, no obsolete CP15 barrier), the
+  full 29-patch replay re-hashing to the unchanged
+  `20918ec02342f4780cf220e32218608de8d9e2804114cf03309a7ab0d22fb61d`,
+  `input_lock.py verify` and the three overlay checks with 24 new invariants
+  added to `security-overlay-check.sh` (which the pre-fix sources fail). The
+  host binary was also run for real in an unprivileged network namespace:
+  with `-l -I lo` the socket appears as `0.0.0.0%lo:123` in `ss`, a mode-7
+  `monlist` and a mode-3 request while unsynchronised both go unanswered, and
+  `SIGTERM` exits cleanly; with `-I ntp-no-such-if` the daemon logs "server
+  mode disabled: cannot bind ntp-no-such-if:123: No such device" and the
+  client half still queries a scripted stratum-2 server and reports
+  `offset +2.999956s`; and `-p '[::1]'` resolves and queries. No firmware
+  build, hosted build, QEMU run or hardware test has exercised any of this.
 - [ ] Prove the Rust `ntp` on a hosted build and on hardware. Owed: a real
   boot with a dead or wrong RTC, where the first reply is years off and must
   step rather than slew; `/sbin/ntpd_synced step` actually setting

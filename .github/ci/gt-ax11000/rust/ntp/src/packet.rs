@@ -184,6 +184,21 @@ impl Timestamp {
     pub fn is_zero(self) -> bool {
         self.seconds == 0 && self.fraction == 0
     }
+
+    /// The same instant with the binary fraction cleared.
+    ///
+    /// The reference timestamp a server publishes is the instant its clock was
+    /// last corrected. At full precision that is a sub-microsecond reading of
+    /// when the last upstream reply arrived, which any LAN client may ask for
+    /// and which leaks the exact phase of the poll timer. Whole seconds are
+    /// all a client can use, so that is all this daemon publishes.
+    #[must_use]
+    pub fn truncated_to_seconds(self) -> Self {
+        Self {
+            seconds: self.seconds,
+            fraction: 0,
+        }
+    }
 }
 
 /// A decoded NTP header. The optional authenticator is deliberately dropped.

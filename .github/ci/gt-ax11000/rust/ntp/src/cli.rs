@@ -12,6 +12,7 @@
 //! future firmware change believe it had configured something it had not.
 
 use std::fmt;
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
 
 /// Largest number of `-p` peers accepted; `rc` configures at most two.
@@ -25,6 +26,11 @@ pub const MAX_INTERFACE_LEN: usize = 15;
 pub struct Options {
     /// `-p PEER`, repeatable, in the order given.
     pub peers: Vec<String>,
+    /// `-p PEER` values this daemon will not use. `rc/ntpd.c` passes
+    /// `nvram_safe_get("ntp_server0")` straight from a free-text UI field that
+    /// has no validator, so one unusable value must not stop the daemon from
+    /// starting with the other; the caller logs each of these instead.
+    pub rejected_peers: Vec<String>,
     /// `-S PROG`, run after a step, a stratum change and every 11 minutes.
     pub script: Option<PathBuf>,
     /// `-I IFACE`, binds the server socket to one interface; implies `-l`.
@@ -98,13 +104,28 @@ pub const USAGE: &str = concat!(
 );
 
 /// True when a host name is safe to hand to the resolver and to log.
+///
+/// busybox handed whatever `-p` carried straight to `host2sockaddr()`. This
+/// daemon keeps a charset, because the value is logged and reaches a resolver,
+/// but it accepts the two forms a person actually types into the free-text
+/// `ntp_server0` field and that are safe to pass on: surrounding whitespace,
+/// which the caller trims, and a bracketed IPv6 literal, which is the only
+/// notation in which `host:port` can express an IPv6 address at all.
 #[must_use]
 pub fn peer_is_valid(peer: &str) -> bool {
-    !peer.is_empty()
-        && peer.len() <= 255
-        && peer
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
+    if peer.is_empty() || peer.len() > 255 {
+        return false;
+    }
+    if let Some(literal) = peer
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        // Only if the brackets really do hold an address: `[$(reboot)]` must
+        // not become a name the resolver or a log line ever sees.
+        return literal.parse::<Ipv6Addr>().is_ok();
+    }
+    peer.bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
 }
 
 /// True when a name can be used with `SO_BINDTODEVICE`.
@@ -141,8 +162,19 @@ where
         match argument.as_str() {
             "-p" => {
                 let peer = arguments.next().ok_or(ArgumentError::MissingValue("-p"))?;
+                // A stray space around a host name is a configuration typo in
+                // a free-text field, not an attack, and busybox's resolver
+                // would have been handed it verbatim.
+                let peer = peer.trim().to_owned();
                 if !peer_is_valid(&peer) {
-                    return Err(ArgumentError::InvalidPeer(peer));
+                    // Not fatal here: a second `-p` may still be usable, and
+                    // `rc` has already logged "Started ntpd" by this point, so
+                    // exiting would leave the router with no time source and
+                    // no visible reason.
+                    if options.rejected_peers.len() < MAX_PEERS {
+                        options.rejected_peers.push(peer);
+                    }
+                    continue;
                 }
                 if options.peers.len() >= MAX_PEERS {
                     return Err(ArgumentError::TooManyPeers);
@@ -183,6 +215,11 @@ where
         }
     }
     if options.peers.is_empty() {
+        // Every `-p` was unusable: there is nothing left to query, so this is
+        // still a startup error. One usable peer is enough to run.
+        if let Some(peer) = options.rejected_peers.first() {
+            return Err(ArgumentError::InvalidPeer(peer.clone()));
+        }
         return Err(ArgumentError::NoPeers);
     }
     Ok(options)

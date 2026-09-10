@@ -308,8 +308,44 @@ require_text "$ntp_rust/client.rs" 'if packet.origin != query.nonce {'
 require_text "$ntp_rust/client.rs" 'return Err(Rejection::OriginMismatch);'
 require_text "$ntp_rust/client.rs" 'MIN_PLAUSIBLE_NTP_SECONDS: u32 = 3_913_056_000;'
 require_text "$ntp_rust/packet.rs" 'pub fn encode(&self) -> [u8; PACKET_LEN] {'
-require_text "$ntp_rust/main.rs" 'sys::bind_to_device(&socket, interface)?;'
+# The server socket is pinned to the LAN interface before it is bound, so it
+# is never reachable on the WAN, not even for the window between the two
+# calls, and a missing interface fails before any port is taken.
+require_text "$ntp_rust/main.rs" 'sys::bind_udp_to_device(NTP_PORT, interface)?;'
 require_text "$ntp_rust/sys.rs" 'libc::SO_BINDTODEVICE,'
+require_text "$ntp_rust/sys.rs" 'pub fn bind_udp_to_device(port: u16, interface: Option<&str>)'
+reject_text "$ntp_rust/main.rs" 'UdpSocket::bind((Ipv4Addr::UNSPECIFIED, NTP_PORT))'
+# The query nonce is the only anti-spoofing token an unauthenticated SNTP
+# client has.  It comes from the kernel entropy pool, one draw per query, and
+# never from the xorshift generator that also produces the poll jitter: that
+# jitter is observable from the LAN, and xorshift64 is invertible.
+require_text "$ntp_rust/main.rs" 'const URANDOM_PATH: &str = "/dev/urandom";'
+require_text "$ntp_rust/main.rs" 'let (nonce, warning) = self.nonce.next_nonce();'
+require_text "$ntp_rust/main.rs" 'nonce: NonceSource,'
+require_text "$ntp_rust/main.rs" 'jitter: Xorshift,'
+require_text "$ntp_rust/main.rs" 'interval.saturating_add((self.jitter.next_u32()) & mask)'
+# The published reference timestamp carries whole seconds only, so the exact
+# instant of the last upstream reply is not disclosed to LAN clients.
+require_text "$ntp_rust/main.rs" 'reference: self.reference.truncated_to_seconds(),'
+require_text "$ntp_rust/packet.rs" 'pub fn truncated_to_seconds(self) -> Self {'
+# A DENY/RSTR kiss retires the address that sent it, never the configured
+# name, and the reachability register keeps shifting either way so the daemon
+# reports the loss of sync instead of serving a stale stratum.
+require_text "$ntp_rust/main.rs" 'refused_address: Option<SocketAddr>,'
+reject_text "$ntp_rust/main.rs" 'self.peers[index].refused = true;'
+# The LAN reply budget is charged only for a reply that is actually sent, and
+# one readable wakeup is capped so a flood cannot starve the client half.
+require_text "$ntp_rust/main.rs" 'const MAX_REQUESTS_PER_WAKEUP: usize'
+require_text "$ntp_rust/main.rs" 'if !budget.allow(arrival) {'
+require_text "$ntp_rust/main.rs" 'outcome.capped = true;'
+# Two peers may never hold one resolved address: they would become two
+# Marzullo candidates backed by a single server.
+require_text "$ntp_rust/main.rs" 'Resolution::Duplicate'
+require_text "$ntp_rust/main.rs" 'other != index && peer.address == Some(address)'
+# POLLERR/POLLHUP/POLLNVAL is not readability, and a negative poll timeout is
+# an error rather than a silent busy loop.
+require_text "$ntp_rust/sys.rs" 'libc::POLLERR | libc::POLLHUP | libc::POLLNVAL'
+require_text "$ntp_rust/sys.rs" '"poll timeout must not be negative"'
 
 # Compatibility gaps must fail closed instead of reporting successful work.
 require_text "$rc_stubs" 'return rust_validate_apply_input_value(name, value);'
