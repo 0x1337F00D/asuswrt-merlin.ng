@@ -100,6 +100,7 @@ jobs:
           python3 "$root/tests/test_gnu_make_bootstrap.py"
           python3 "$root/tests/test_build_stage_failures.py"
           python3 "$root/tests/test_shared_repack.py"
+          bash "$root/tests/socket-bind-order.sh" "$root/rust"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
           # Cargo resolves the vendored crates.io mapping (rust/.cargo) from
           # the working directory, not from --manifest-path.
