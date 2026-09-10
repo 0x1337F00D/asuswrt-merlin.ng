@@ -22,6 +22,36 @@ static int fail(const char *what, long code)
 	return 1;
 }
 
+/* A wrong combine() is the kind of defect that only shows on the target, so
+ * report the inputs, both results and the argument width rather than a bare
+ * label, and name the shared object that actually answered the call. */
+static int fail_combine(const char *what, uLong head, uLong tail,
+	uLong got, uLong want)
+{
+	char line[512];
+	FILE *maps;
+
+	fprintf(stderr, "libz.so.1 fixture: %s head=%08lx tail=%08lx "
+		"len=%u got=%08lx want=%08lx sizeof(z_off_t)=%u "
+		"sizeof(uLong)=%u\n", what, (unsigned long)head,
+		(unsigned long)tail, (unsigned)(PAYLOAD_LEN - 1777u),
+		(unsigned long)got, (unsigned long)want,
+		(unsigned)sizeof(z_off_t), (unsigned)sizeof(uLong));
+	fprintf(stderr, "libz.so.1 fixture: zlibVersion=%s "
+		"zlibCompileFlags=%08lx\n", zlibVersion(),
+		(unsigned long)zlibCompileFlags());
+	maps = fopen("/proc/self/maps", "r");
+	if (maps != NULL) {
+		while (fgets(line, sizeof line, maps) != NULL) {
+			if (strstr(line, "libz.so") != NULL)
+				fputs(line, stderr);
+		}
+		fclose(maps);
+	}
+
+	return 1;
+}
+
 static void fill(unsigned char *buffer, unsigned length)
 {
 	for (unsigned i = 0; i < length; i++)
@@ -41,6 +71,7 @@ int main(void)
 	uLongf packed_len;
 	uLongf round_len;
 	uLong whole;
+	uLong combined;
 	uLong head_sum;
 	uLong tail_sum;
 	gzFile gz;
@@ -124,13 +155,19 @@ int main(void)
 	whole = crc32(0, body, PAYLOAD_LEN);
 	head_sum = crc32(0, body, 1777);
 	tail_sum = crc32(0, body + 1777, PAYLOAD_LEN - 1777);
-	if (crc32_combine(head_sum, tail_sum, (z_off_t)(PAYLOAD_LEN - 1777)) != whole)
-		return fail("crc32_combine", 0);
+	combined = crc32_combine(head_sum, tail_sum,
+		(z_off_t)(PAYLOAD_LEN - 1777));
+	if (combined != whole)
+		return fail_combine("crc32_combine", head_sum, tail_sum,
+			combined, whole);
 	whole = adler32(1, body, PAYLOAD_LEN);
 	head_sum = adler32(1, body, 1777);
 	tail_sum = adler32(1, body + 1777, PAYLOAD_LEN - 1777);
-	if (adler32_combine(head_sum, tail_sum, (z_off_t)(PAYLOAD_LEN - 1777)) != whole)
-		return fail("adler32_combine", 0);
+	combined = adler32_combine(head_sum, tail_sum,
+		(z_off_t)(PAYLOAD_LEN - 1777));
+	if (combined != whole)
+		return fail_combine("adler32_combine", head_sum, tail_sum,
+			combined, whole);
 
 	/* gz* file API: write through a descriptor, read back through a path. */
 	fd = mkstemp(path);
