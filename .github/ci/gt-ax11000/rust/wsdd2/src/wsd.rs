@@ -9,6 +9,7 @@
 //! header's word.
 
 use crate::xml::{escape, Event, Namespace, QName, Scanner, XmlError};
+use std::collections::HashSet;
 
 /// The WS-Discovery UDP and HTTP port (`wsd.h:30`).
 pub const WSD_PORT: u16 = 3702;
@@ -108,6 +109,75 @@ pub struct Request {
     pub body: Body,
 }
 
+/// Requests permitted on the discovery datagram transport. Metadata cannot
+/// inhabit this type and therefore cannot reach its reply encoder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveryRequest {
+    pub(crate) message_id: String,
+    pub(crate) body: DiscoveryBody,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DiscoveryBody {
+    Probe {
+        types_present: bool,
+        types_matched: bool,
+    },
+    Resolve {
+        address: String,
+    },
+}
+
+impl DiscoveryRequest {
+    /// Validate SOAP and admit only Probe or Resolve on UDP.
+    ///
+    /// # Errors
+    /// Reject malformed SOAP or a metadata request on this transport.
+    pub fn parse(document: &[u8]) -> Result<Self, Refusal> {
+        let request = Request::parse(document)?;
+        let body = match request.body {
+            Body::Probe {
+                types_present,
+                types_matched,
+            } => DiscoveryBody::Probe {
+                types_present,
+                types_matched,
+            },
+            Body::Resolve { address } => DiscoveryBody::Resolve { address },
+            Body::Get => return Err(Refusal::UnsupportedBody),
+        };
+        Ok(Self {
+            message_id: request.message_id,
+            body,
+        })
+    }
+}
+
+/// A metadata Get validated against this server's endpoint identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataRequest {
+    pub(crate) message_id: String,
+}
+
+impl MetadataRequest {
+    /// Validate a Get body after HTTP framing has validated its request path.
+    ///
+    /// # Errors
+    /// Reject other actions, malformed SOAP, or a Get for another endpoint.
+    pub fn parse(document: &[u8], endpoint: &str) -> Result<Self, Refusal> {
+        let request = Request::parse(document)?;
+        if request.body != Body::Get {
+            return Err(Refusal::UnsupportedBody);
+        }
+        if !crate::endpoint_matches(&request.to, endpoint) {
+            return Err(Refusal::BadTo);
+        }
+        Ok(Self {
+            message_id: request.message_id,
+        })
+    }
+}
+
 /// Why a datagram produced no reply.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
@@ -201,10 +271,14 @@ impl Request {
         let mut types_matched = false;
         let mut header_seen = false;
         let mut body_seen = false;
+        let mut fields_seen = HashSet::new();
 
         while let Some(event) = scanner.next()? {
             match event {
                 Event::Start(name) => {
+                    if simple_field(&path).is_some() {
+                        return Err(Refusal::NotAField);
+                    }
                     match path.len() {
                         0 => {
                             if !name.is(Namespace::Soap12, "Envelope") {
@@ -253,6 +327,11 @@ impl Request {
                         }
                     }
                     path.push(name);
+                    if let Some(field) = simple_field(&path) {
+                        if !fields_seen.insert(field) {
+                            return Err(Refusal::Duplicate);
+                        }
+                    }
                 }
                 Event::End(_) => {
                     path.pop();
@@ -338,6 +417,31 @@ fn assign(slot: &mut Option<String>, value: &str) -> Result<(), Refusal> {
     }
     *slot = Some(value.to_owned());
     Ok(())
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+enum Field {
+    Action,
+    MessageId,
+    To,
+    Types,
+    ResolveAddress,
+}
+
+fn simple_field(path: &[QName<'_>]) -> Option<Field> {
+    if in_header_field(path, Namespace::Addressing, "Action") {
+        Some(Field::Action)
+    } else if in_header_field(path, Namespace::Addressing, "MessageID") {
+        Some(Field::MessageId)
+    } else if in_header_field(path, Namespace::Addressing, "To") {
+        Some(Field::To)
+    } else if is_probe_types(path) {
+        Some(Field::Types)
+    } else if is_resolve_address(path) {
+        Some(Field::ResolveAddress)
+    } else {
+        None
+    }
 }
 
 fn in_body(path: &[QName<'_>]) -> bool {

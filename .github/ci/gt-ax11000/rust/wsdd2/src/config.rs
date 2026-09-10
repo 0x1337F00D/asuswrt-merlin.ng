@@ -11,9 +11,9 @@ pub const MAX_SMB_VALUE: usize = 255;
 /// Parses the contents of `/etc/machine-id` or
 /// `/proc/sys/kernel/random/boot_id` into a canonical endpoint UUID.
 ///
-/// `wsd.c:126-163` accepted any 36-character run of `-`, digits and
-/// lower-case hex, then re-derived the dashes; this requires the canonical
-/// `8-4-4-4-12` shape outright, which every writer of either file produces.
+/// machine-id uses 32 lower-case hexadecimal digits; boot_id uses the
+/// dashed 8-4-4-4-12 UUID form. Normalize the former before validating the
+/// latter so a persisted machine identity never falls back to a boot ID.
 ///
 /// Returns `None` when the file holds anything else, which disables
 /// WS-Discovery exactly as `wsd_init` failing did (`wsd.c:1004-1012`).
@@ -21,6 +21,20 @@ pub const MAX_SMB_VALUE: usize = 255;
 pub fn parse_endpoint_uuid(contents: &[u8]) -> Option<String> {
     let text = core::str::from_utf8(contents).ok()?;
     let candidate = text.trim();
+    if candidate.len() == 32
+        && candidate
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Some(format!(
+            "{}-{}-{}-{}-{}",
+            &candidate[..8],
+            &candidate[8..12],
+            &candidate[12..16],
+            &candidate[16..20],
+            &candidate[20..]
+        ));
+    }
     if candidate.len() != UUID_LEN {
         return None;
     }

@@ -169,21 +169,25 @@ fn run(settings: &Settings) -> io::Result<()> {
         match sys::wait_readable(&socket, POLL_TIMEOUT_MS) {
             Ok(false) => {}
             Ok(true) => {
-                let received = match sys::receive(&socket, &mut frame) {
-                    Ok(received) => received,
+                let bytes = match sys::receive(&socket, &mut frame) {
+                    Ok(sys::ReceivedFrame::Complete(bytes)) => bytes,
+                    Ok(sys::ReceivedFrame::Truncated { .. }) => continue,
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => return Err(error),
                 };
                 let now = sys::monotonic_millis();
-                let Some(bytes) = frame.get(..received) else {
-                    continue;
-                };
                 // Every refusal is a silent drop: telling an unauthenticated
                 // sender why its frame was rejected is itself a reply.
-                if let Ok(reply) = responder.handle(bytes, now) {
+                if let Ok(reply) = responder
+                    .prepare(bytes, now)
+                    .and_then(|reply| reply.admit(now))
+                {
                     // A send failure is a link condition, not a reason to
                     // abandon the responder.
-                    let _ = sys::send(&socket, index, &reply);
+                    let _ = reply.transmit(|bytes| {
+                        sys::send(&socket, index, bytes)?;
+                        Ok::<_, io::Error>(sys::monotonic_millis())
+                    });
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -268,6 +272,19 @@ fn parse_uptime_field(field: &str) -> u64 {
 /// This is what `CI/tests/verify-rust-firmware.sh` runs under QEMU: a raw
 /// socket needs `CAP_NET_RAW`, which the CI runner does not have, so the
 /// deterministic path has to avoid one entirely.
+fn self_test_reply(responder: &mut Responder, bytes: &[u8], now: u64) -> Result<Vec<u8>, Dropped> {
+    let reply = responder.prepare(bytes, now)?.admit(now)?;
+    let mut captured = Vec::new();
+    let result = reply.transmit(|bytes| {
+        captured.extend_from_slice(bytes);
+        Ok::<_, std::convert::Infallible>(now)
+    });
+    match result {
+        Ok(()) => Ok(captured),
+        Err(never) => match never {},
+    }
+}
+
 fn self_test() -> Result<(), String> {
     let station = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
     let mapper = [0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
@@ -281,8 +298,7 @@ fn self_test() -> Result<(), String> {
     let mut responder = Responder::new(device, 0);
 
     let discover = fixture(&mapper, lltd::wire::Opcode::Discover, 0, &[0, 5, 0, 0]);
-    let reply = responder
-        .handle(&discover, 0)
+    let reply = self_test_reply(&mut responder, &discover, 0)
         .map_err(|reason| format!("a conforming Discover was dropped: {reason:?}"))?;
     if reply.len() > lltd::responder::MAX_RESPONSE_LEN {
         return Err(format!("the Hello is {} bytes", reply.len()));
@@ -290,27 +306,27 @@ fn self_test() -> Result<(), String> {
     if reply.get(17) != Some(&lltd::wire::Opcode::Hello.to_byte()) {
         return Err("the reply is not a Hello".into());
     }
-    if responder.handle(&discover, 1) != Err(Dropped::DuplicateGeneration) {
+    if self_test_reply(&mut responder, &discover, 1) != Err(Dropped::DuplicateGeneration) {
         return Err("a repeated generation was answered twice".into());
     }
 
     let mut truncated = discover.clone();
     truncated.truncate(31);
-    if responder.handle(&truncated, 2).is_ok() {
+    if self_test_reply(&mut responder, &truncated, 2).is_ok() {
         return Err("a truncated frame was answered".into());
     }
     let mut wrong_ethertype = discover.clone();
     if let Some(slot) = wrong_ethertype.get_mut(12..14) {
         slot.copy_from_slice(&[0x08, 0x00]);
     }
-    if responder.handle(&wrong_ethertype, 3).is_ok() {
+    if self_test_reply(&mut responder, &wrong_ethertype, 3).is_ok() {
         return Err("a non-LLTD EtherType was answered".into());
     }
     let mut unknown = discover.clone();
     if let Some(slot) = unknown.get_mut(17..18) {
         slot.copy_from_slice(&[0xFF]);
     }
-    if responder.handle(&unknown, 4).is_ok() {
+    if self_test_reply(&mut responder, &unknown, 4).is_ok() {
         return Err("an unknown opcode was answered".into());
     }
 

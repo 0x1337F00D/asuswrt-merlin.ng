@@ -1,10 +1,12 @@
 diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Makefile
+index 54587599262..d7121b92efe 100644
 --- a/release/src/router/shared/Makefile
 +++ b/release/src/router/shared/Makefile
-@@ -607,15 +607,51 @@
+@@ -600,15 +600,57 @@ CFLAGS += -I$(TOP)/libhostapi/switch_hostapi/src \
  LDFLAGS += -L$(TOP)/libhostapi -lhostapi
  endif
  
+-all: libshared.so libshared.a
 +# wlif_utils_ax.c no longer builds shell command strings; every value it
 +# passes to hostapd_cli/wpa_cli is validated by this archive first.  The
 +# validator keeps its own small UTF-8 implementation; do not replace it
@@ -16,7 +18,7 @@ diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Make
 +RUST_TARGET ?= armv7-unknown-linux-gnueabi
 +RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
 +RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
-+
+ 
 +ifneq ($(wildcard $(RUST_WLIF_MANIFEST)),)
 +RUST_WLIF_LIB := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/libwlif_policy.a
 +# The archive carries the Rust runtime.  On its own it needs only libc and
@@ -26,7 +28,8 @@ diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Make
 +# httpd and rc already use for their Rust archives, so libshared.so records
 +# them instead of leaving a symbol for every consumer to resolve.
 +RUST_WLIF_SYSTEM_LIBS := -ldl -lpthread -lrt
-+
+ 
+-libshared.so: $(OBJS)
 +.DEFAULT_GOAL := all
 +
 +.PHONY: rust-wlif-policy
@@ -41,10 +44,15 @@ diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Make
 +$(RUST_WLIF_LIB): rust-wlif-policy
 +endif
 +
- all: libshared.so libshared.a
- 
- 
--libshared.so: $(OBJS)
++OBJS += wlif_process.o
++wlif_process.o: wlif_process.h
++
++all: libshared.so libshared.a wlif-exec
++
++wlif-exec: wlif_exec.c wlif_process.h
++	$(CC) $(CFLAGS) $(EXTRA_LD_FLAGS) -o $@ wlif_exec.c
++
++
 +libshared.so: $(OBJS) $(RUST_WLIF_LIB)
  	@echo " [shared] LD $@"
  ifeq ($(HND_ROUTER),y)
@@ -56,7 +64,417 @@ diff --git a/release/src/router/shared/Makefile b/release/src/router/shared/Make
  endif
  
  	$(SIZECHECK)
+@@ -624,8 +666,12 @@ install: all
+ 	@install -d $(INSTALLDIR)/usr/lib
+ 	@install -m 755 libshared.so $(INSTALLDIR)/usr/lib
+ 	$(if $(RTCONFIG_DEBUG),,@$(STRIP) $(INSTALLDIR)/usr/lib/libshared.so)
++	@install -d $(INSTALLDIR)/usr/sbin
++	@install -m 755 wlif-exec $(INSTALLDIR)/usr/sbin/wlif-exec
++	$(if $(RTCONFIG_DEBUG),,@$(STRIP) $(INSTALLDIR)/usr/sbin/wlif-exec)
+ 
+ clean:
++	rm -f wlif-exec
+ 	rm -f *.o *.so *.a .*.depend *.prep sysdeps/*.o sysdeps/broadcom/*.o sysdeps/ralink/*.o sysdeps/qtn/*.o
+ 
+ private.o:
+diff --git a/release/src/router/shared/wlif_exec.c b/release/src/router/shared/wlif_exec.c
+new file mode 100644
+index 00000000000..034cbc4987b
+--- /dev/null
++++ b/release/src/router/shared/wlif_exec.c
+@@ -0,0 +1,198 @@
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include "wlif_process.h"
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <poll.h>
++#include <signal.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/syscall.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#ifndef WLIF_CLI_DIRS
++#define WLIF_CLI_DIRS "/sbin", "/bin", "/usr/sbin", "/usr/bin", "/opt/sbin", "/opt/bin"
++#endif
++
++/* This process is the sole waiter for its CLI child. Exited children are
++ * observed without reaping, retaining the PID reservation during capture
++ * and group cleanup. The calling router daemon cannot reap this child. */
++enum child_state { CHILD_RUNNING, CHILD_EXITED_UNREAPED, CHILD_LOST };
++
++static int reset_signals(void)
++{
++	struct sigaction action;
++	sigset_t empty;
++	int signal;
++	memset(&action, 0, sizeof(action));
++	action.sa_handler = SIG_DFL;
++	sigemptyset(&action.sa_mask);
++	for (signal = 1; signal < _NSIG; signal++)
++		sigaction(signal, &action, NULL);
++	sigemptyset(&empty);
++	return sigprocmask(SIG_SETMASK, &empty, NULL);
++}
++
++static int close_extra_fds(void)
++{
++	struct dirent64_local {
++		unsigned long long ino;
++		long long offset;
++		unsigned short reclen;
++		unsigned char type;
++		char name[];
++	};
++	union { long long alignment; char bytes[1024]; } entries;
++	int directory = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
++	int count, offset;
++	if (directory < 0) return -1;
++	while ((count = syscall(SYS_getdents64, directory, entries.bytes, sizeof(entries.bytes))) > 0) {
++		for (offset = 0; offset < count;) {
++			struct dirent64_local *entry = (void *)(entries.bytes + offset);
++			unsigned int fd = 0;
++			char *next = entry->name;
++			if (entry->reclen < sizeof(*entry) || entry->reclen > count - offset) {
++				close(directory); errno = EIO; return -1;
++			}
++			while (*next >= '0' && *next <= '9' && fd <= INT_MAX / 10U)
++				fd = fd * 10 + (*next++ - '0');
++			if (!*next && fd > STDERR_FILENO && fd <= INT_MAX && fd != (unsigned)directory)
++				close((int)fd);
++			offset += entry->reclen;
++		}
++	}
++	close(directory);
++	return count < 0 ? -1 : 0;
++}
++
++static void execute_cli(char *const argv[], int capture_fd)
++{
++	const char *directories[] = { WLIF_CLI_DIRS };
++	char path[128];
++	size_t i, app_len = strlen(argv[0]);
++	if (setsid() < 0 || dup2(capture_fd, STDOUT_FILENO) < 0 ||
++	    fcntl(STDOUT_FILENO, F_SETFD, 0) < 0 || close_extra_fds() < 0)
++		_exit(127);
++	for (i = 0; i < sizeof(directories) / sizeof(directories[0]); i++) {
++		size_t length = strlen(directories[i]);
++		if (length + app_len + 2 > sizeof(path)) continue;
++		memcpy(path, directories[i], length);
++		path[length] = '/';
++		memcpy(path + length + 1, argv[0], app_len + 1);
++		execv(path, argv);
++		if (errno != ENOENT && errno != ENOTDIR && errno != EACCES) break;
++	}
++	_exit(127); /* no execvp ENOEXEC shell fallback */
++}
++
++static struct wlif_process_reply supervise(char *const argv[], char *output, size_t capacity)
++{
++	struct wlif_process_reply result = {WLIF_REPLY_MAGIC, 0, 0, 0};
++	enum child_state state = CHILD_RUNNING;
++	long long now = wl_wlif_milliseconds(), deadline;
++	int pipefd[2], fd, flags;
++	pid_t child;
++	if (now < 0) { result.error = errno; return result; }
++	deadline = now + WLIF_CLI_TIMEOUT_MS;
++	if (pipe2(pipefd, O_CLOEXEC) < 0) { result.error = errno; return result; }
++	child = fork();
++	if (child == 0) execute_cli(argv, pipefd[1]);
++	result.error = child < 0 ? errno : 0;
++	close(pipefd[1]);
++	fd = pipefd[0];
++	if (child < 0) { close(fd); return result; }
++	flags = fcntl(fd, F_GETFL);
++	if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
++		result.error = errno; goto cleanup;
++	}
++	while (state == CHILD_RUNNING || (capacity && fd >= 0)) {
++		struct pollfd event = {fd, POLLIN, 0};
++		siginfo_t info;
++		char bytes[512];
++		ssize_t count;
++		now = wl_wlif_milliseconds();
++		if (now < 0) { result.error = errno; break; }
++		if (now >= deadline) { result.error = ETIMEDOUT; break; }
++		if (poll(&event, fd >= 0 ? 1 : 0,
++		         deadline - now > 25 ? 25 : (int)(deadline - now)) < 0) {
++			if (errno == EINTR) continue;
++			result.error = errno; break;
++		}
++		if (fd >= 0 && (event.revents & (POLLIN | POLLHUP | POLLERR))) {
++			count = read(fd, bytes, sizeof(bytes));
++			if (count > 0 && capacity) {
++				if ((size_t)count >= capacity - result.length) { result.error = EOVERFLOW; break; }
++				memcpy(output + result.length, bytes, (size_t)count);
++				result.length += (uint32_t)count;
++			} else if (!count) {
++				close(fd); fd = -1;
++			} else if (count < 0 && errno != EAGAIN && errno != EINTR) {
++				result.error = errno; break;
++			}
++		}
++		if (state == CHILD_RUNNING) {
++			memset(&info, 0, sizeof(info));
++			if (waitid(P_PID, (id_t)child, &info, WEXITED | WNOHANG | WNOWAIT) < 0) {
++				if (errno == EINTR) continue;
++				/* Impossible with our default SIGCHLD and sole waiter,
++				 * but never signal if the ownership invariant is lost. */
++				result.error = errno; state = CHILD_LOST; break;
++			}
++			if (info.si_pid == child) state = CHILD_EXITED_UNREAPED;
++		}
++	}
++cleanup:
++	if (fd >= 0) close(fd);
++	if (state != CHILD_LOST) {
++		if (result.error) {
++			/* PID is still reserved: nobody has called a reaping wait.
++			 * Group kill handles pipe-holding descendants in that group. */
++			kill(-child, SIGKILL);
++			if (state == CHILD_RUNNING) kill(child, SIGKILL);
++		}
++		while (waitpid(child, &result.status, 0) < 0) {
++			if (errno == EINTR) continue;
++			if (!result.error) result.error = errno;
++			break;
++		}
++	}
++	if (result.error) result.length = 0;
++	return result;
++}
++
++static int write_all(int fd, const void *buffer, size_t length)
++{
++	const char *next = buffer;
++	while (length) {
++		ssize_t count = write(fd, next, length);
++		if (count < 0 && errno == EINTR) continue;
++		if (count <= 0) return -1;
++		next += count; length -= (size_t)count;
++	}
++	return 0;
++}
++
++int main(int argc, char **argv)
++{
++	struct wlif_process_reply result = {WLIF_REPLY_MAGIC, 0, EINVAL, 0};
++	char capture[WLIF_CAPTURE_MAX], *end;
++	unsigned long capacity;
++	if (reset_signals() < 0 || close_extra_fds() < 0) {
++		result.error = errno; goto report;
++	}
++	if (argc < 3 || argc > WLIF_ARG_MAX + 2) goto report;
++	errno = 0;
++	capacity = strtoul(argv[1], &end, 10);
++	if (errno || !argv[1][0] || *end || capacity > sizeof(capture)) goto report;
++	/* These are the only vendor tools used by the validated C call sites. */
++	if (strcmp(argv[2], "hostapd_cli") && strcmp(argv[2], "hostapd_cli-2.7") &&
++	    strcmp(argv[2], "wpa_cli") && strcmp(argv[2], "wpa_cli-2.7")) goto report;
++	result = supervise(argv + 2, capture, capacity);
++report:
++	if (write_all(STDOUT_FILENO, &result, sizeof(result)) == 0 && result.length)
++		write_all(STDOUT_FILENO, capture, result.length);
++	_exit(0);
++}
+diff --git a/release/src/router/shared/wlif_process.c b/release/src/router/shared/wlif_process.c
+new file mode 100644
+index 00000000000..0f2a6f8caad
+--- /dev/null
++++ b/release/src/router/shared/wlif_process.c
+@@ -0,0 +1,142 @@
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include "wlif_process.h"
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <signal.h>
++#include <spawn.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++extern char **environ;
++
++/* glibc's posix_spawn does not invoke caller pthread_atfork callbacks.
++ * The helper also gets its own process group, so caller-group shutdown
++ * cannot remove the CLI's sole supervisor. No shell or PATH search. */
++static int start_helper(char *const args[], int pipefd[2], pid_t *helper)
++{
++	posix_spawn_file_actions_t actions;
++	posix_spawnattr_t attributes;
++	sigset_t defaults, empty;
++	int error = posix_spawn_file_actions_init(&actions);
++	if (error) return error;
++	error = posix_spawnattr_init(&attributes);
++	if (error) { posix_spawn_file_actions_destroy(&actions); return error; }
++	sigfillset(&defaults);
++	sigemptyset(&empty);
++	if (!(error = posix_spawn_file_actions_addclose(&actions, pipefd[0])) &&
++	    !(error = posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO)) &&
++	    !(error = posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDWR, 0)) &&
++	    !(error = posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDERR_FILENO)) &&
++	    !(error = posix_spawnattr_setpgroup(&attributes, 0)) &&
++	    !(error = posix_spawnattr_setsigdefault(&attributes, &defaults)) &&
++	    !(error = posix_spawnattr_setsigmask(&attributes, &empty)) &&
++	    !(error = posix_spawnattr_setflags(&attributes,
++	        POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)))
++		error = posix_spawn(helper, WLIF_HELPER_PATH, &actions, &attributes, args, environ);
++	posix_spawnattr_destroy(&attributes);
++	posix_spawn_file_actions_destroy(&actions);
++	return error;
++}
++
++/* Reads are bounded independently of the helper. A malformed or crashed
++ * helper cannot publish partial output as a successful command response. */
++static int receive_exact(int fd, void *buffer, size_t length, long long deadline)
++{
++	char *next = buffer;
++	while (length) {
++		struct pollfd event = {fd, POLLIN, 0};
++		long long now = wl_wlif_milliseconds();
++		ssize_t count;
++		if (now < 0)
++			return -1;
++		if (now >= deadline) { errno = ETIMEDOUT; return -1; }
++		if (poll(&event, 1, (int)(deadline - now)) < 0) {
++			if (errno == EINTR) continue;
++			return -1;
++		}
++		if (!(event.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) continue;
++		count = read(fd, next, length);
++		if (count < 0) {
++			if (errno == EINTR || errno == EAGAIN) continue;
++			return -1;
++		}
++		if (!count) { errno = EIO; return -1; }
++		next += count;
++		length -= (size_t)count;
++	}
++	return 0;
++}
++
++int wl_wlif_run_argv(char *const argv[], char *output, size_t output_size)
++{
++	char *helper_args[WLIF_ARG_MAX + 3];
++	char limit[16];
++	struct wlif_process_reply reply;
++	long long now, deadline;
++	int pipefd[2], error = 0, status, flags, complete = 0;
++	size_t argc;
++	pid_t helper;
++	if (output && output_size) output[0] = '\0';
++	if (!argv || !argv[0] || strchr(argv[0], '/') ||
++	    (output && (!output_size || output_size > WLIF_CAPTURE_MAX))) {
++		errno = EINVAL; return -1;
++	}
++	for (argc = 0; argc < WLIF_ARG_MAX && argv[argc]; argc++)
++		helper_args[argc + 2] = argv[argc];
++	if (argc == WLIF_ARG_MAX) { errno = E2BIG; return -1; }
++	helper_args[argc + 2] = NULL;
++	snprintf(limit, sizeof(limit), "%u", output ? (unsigned)output_size : 0);
++	helper_args[0] = (char *)WLIF_HELPER_PATH;
++	helper_args[1] = limit;
++	now = wl_wlif_milliseconds();
++	if (now < 0) return -1;
++	deadline = now + WLIF_CLI_TIMEOUT_MS + 1000;
++	if (pipe2(pipefd, O_CLOEXEC) < 0) return -1;
++	/* Target glibc 2.26 leaves CLOEXEC set for spawn dup2(fd, fd).
++	 * Always give its stdout action a distinct source descriptor. */
++	if (pipefd[1] <= STDERR_FILENO) {
++		int duplicate = fcntl(pipefd[1], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
++		if (duplicate < 0) {
++			error = errno; close(pipefd[0]); close(pipefd[1]);
++			errno = error; return -1;
++		}
++		close(pipefd[1]); pipefd[1] = duplicate;
++	}
++	error = start_helper(helper_args, pipefd, &helper);
++	close(pipefd[1]);
++	if (error) { close(pipefd[0]); errno = error; return -1; }
++	flags = fcntl(pipefd[0], F_GETFL);
++	if (flags < 0 || fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK) < 0 ||
++	    receive_exact(pipefd[0], &reply, sizeof(reply), deadline) < 0) {
++		error = errno;
++	} else if (reply.magic != WLIF_REPLY_MAGIC || reply.error < 0 ||
++	           (!reply.error && reply.status < 0) ||
++	           (reply.length && (!output || reply.length >= output_size))) {
++		error = EPROTO;
++	} else if (reply.error) {
++		complete = 1;
++		error = reply.error;
++	} else if (reply.length &&
++	           receive_exact(pipefd[0], output, reply.length, deadline) < 0) {
++		error = errno;
++	} else {
++		complete = 1;
++		if (output) output[reply.length] = '\0';
++	}
++	close(pipefd[0]);
++	/* Never kill a helper by numeric PID. Other threads or SIG_IGN may
++	 * already have reaped it. On a complete reply it only has _exit left;
++	 * on transport failure, do not block beyond the parent's deadline. */
++	while (waitpid(helper, &status, complete ? 0 : WNOHANG) < 0 && errno == EINTR)
++		;
++	if (error) {
++		if (output && output_size) output[0] = '\0';
++		errno = error; return -1;
++	}
++	return reply.status;
++}
+diff --git a/release/src/router/shared/wlif_process.h b/release/src/router/shared/wlif_process.h
+new file mode 100644
+index 00000000000..a6fd0fe8d96
+--- /dev/null
++++ b/release/src/router/shared/wlif_process.h
+@@ -0,0 +1,38 @@
++#ifndef WLIF_PROCESS_H
++#define WLIF_PROCESS_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <time.h>
++
++#ifndef WLIF_CLI_TIMEOUT_MS
++#define WLIF_CLI_TIMEOUT_MS 30000
++#endif
++#ifndef WLIF_HELPER_PATH
++#define WLIF_HELPER_PATH "/usr/sbin/wlif-exec"
++#endif
++#define WLIF_CAPTURE_MAX 4096
++#define WLIF_ARG_MAX 32
++#define WLIF_REPLY_MAGIC UINT32_C(0x574c5031)
++
++/* Local same-ABI pipe protocol, never a network format. CLI stdout cannot
++ * access this pipe; only the supervisor writes the final complete result. */
++struct wlif_process_reply {
++	uint32_t magic;
++	int32_t status;
++	int32_t error;
++	uint32_t length;
++};
++
++static inline long long wl_wlif_milliseconds(void)
++{
++	struct timespec now;
++	if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
++		return -1;
++	return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
++}
++
++/* Fixed argv, raw wait status; -1/errno for transport/supervision failure.
++ * Domain validation stays in wlif-policy. No caller-side PID signaling. */
++int wl_wlif_run_argv(char *const argv[], char *output, size_t output_size);
++#endif
 diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shared/wlif_utils_ax.c
+index 47a8429bb51..74fe3a4c939 100644
 --- a/release/src/router/shared/wlif_utils_ax.c
 +++ b/release/src/router/shared/wlif_utils_ax.c
 @@ -21,6 +21,10 @@
@@ -70,7 +488,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  #include <typedefs.h>
  #include <stdio.h>
  #include <stdlib.h>
-@@ -51,11 +55,247 @@
+@@ -51,11 +55,46 @@
  #include <board.h>
  #endif	/* BCA_HNDROUTER */
  #include <wpsdefs.h>
@@ -112,230 +530,12 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +extern int rust_wlif_supplicant_ctrl_path(char *out, size_t out_len, const char *nvifname);
 +extern int rust_wlif_supplicant_ctrl_dir(char *out, size_t out_len, const char *prefix);
 +
-+#if defined(CONFIG_HOSTAPD) || \
-+	(defined(RTCONFIG_WIFI7) && defined(RTCONFIG_MLO) && defined(RTCONFIG_BRCM_HOSTAPD))
-+#define WLIF_ARGV_EXEC
-+
-+#ifndef WLIF_CLI_TIMEOUT_MS
-+#define WLIF_CLI_TIMEOUT_MS 30000
-+#endif
-+#ifndef WLIF_CLI_DIRS
-+#define WLIF_CLI_DIRS "/sbin", "/bin", "/usr/sbin", "/usr/bin", "/opt/sbin", "/opt/bin"
-+#endif
-+
-+/* Close actual descriptors, not a possibly million-entry RLIMIT range.
-+ * Use getdents64 directly: no allocator or stdio locks after fork(). */
-+static int
-+wl_wlif_close_fds(void)
-+{
-+	struct wlif_dirent64 {
-+		unsigned long long ino;
-+		long long offset;
-+		unsigned short reclen;
-+		unsigned char type;
-+		char name[];
-+	};
-+	union { long long alignment; char bytes[1024]; } entries;
-+	int directory, count, offset;
-+	directory = open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-+	if (directory < 0)
-+		return -1;
-+	while ((count = syscall(SYS_getdents64, directory, entries.bytes, sizeof(entries.bytes))) > 0) {
-+		for (offset = 0; offset < count;) {
-+			struct wlif_dirent64 *entry = (void *)(entries.bytes + offset);
-+			unsigned int fd = 0;
-+			char *p = entry->name;
-+			if (entry->reclen < sizeof(*entry) || entry->reclen > count - offset) {
-+				close(directory);
-+				return -1;
-+			}
-+			while (*p >= '0' && *p <= '9' && fd <= INT_MAX / 10U)
-+				fd = fd * 10 + (*p++ - '0');
-+			if (!*p && fd > STDERR_FILENO && fd <= INT_MAX && fd != (unsigned int)directory)
-+				close((int)fd);
-+			offset += entry->reclen;
-+		}
-+	}
-+	close(directory);
-+	return count < 0 ? -1 : 0;
-+}
-+
-+static long long
-+wl_wlif_milliseconds(void)
-+{
-+	struct timespec now;
-+	if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
-+		return -1;
-+	return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-+}
-+
-+/* Raw system()-style wait status, -1/errno on supervisor failure.
-+ * Capture is bounded and complete before parsing; overflow/timeout clears
-+ * it. A private runner also avoids debug_logeval exposing credentials.
-+ * Search the vendor's fixed PATH without execvp's ENOEXEC shell fallback.
-+ */
-+static int
-+wl_wlif_run_argv(char *const argv[], char *output, size_t output_size)
-+{
-+	int pipefd[2], status = 0, error = 0, done = 0, owned = 1, fd, flags;
-+	pid_t child, waited;
-+	long long deadline, now;
-+	size_t used = 0;
-+	sigset_t blocked, saved;
-+	if (output && output_size)
-+		output[0] = '\0';
-+	if (!argv || !argv[0] || strchr(argv[0], '/') || (output && !output_size)) {
-+		errno = EINVAL;
-+		return -1;
-+	}
-+	if ((now = wl_wlif_milliseconds()) < 0)
-+		return -1;
-+	deadline = now + WLIF_CLI_TIMEOUT_MS;
-+	if (pipe2(pipefd, O_CLOEXEC) < 0)
-+		return -1;
-+	sigemptyset(&blocked);
-+	sigaddset(&blocked, SIGCHLD);
-+	if (sigprocmask(SIG_BLOCK, &blocked, &saved) < 0) {
-+		error = errno;
-+		close(pipefd[0]);
-+		close(pipefd[1]);
-+		errno = error;
-+		return -1;
-+	}
-+	child = fork();
-+	if (child == 0) {
-+		const char *directories[] = { WLIF_CLI_DIRS };
-+		char path[128];
-+		size_t i;
-+		struct sigaction action;
-+		if (setsid() < 0 || dup2(pipefd[1], STDOUT_FILENO) < 0)
-+			_exit(127);
-+		/* dup2 is a no-op when the pipe already is stdout. */
-+		if (fcntl(STDOUT_FILENO, F_SETFD, 0) < 0)
-+			_exit(127);
-+		fd = open("/dev/null", O_RDWR);
-+		if (fd < 0 || dup2(fd, STDIN_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0)
-+			_exit(127);
-+		if (wl_wlif_close_fds() < 0)
-+			_exit(127);
-+		memset(&action, 0, sizeof(action));
-+		action.sa_handler = SIG_DFL;
-+		sigemptyset(&action.sa_mask);
-+		for (fd = 1; fd < _NSIG; fd++)
-+			sigaction(fd, &action, NULL);
-+		sigemptyset(&blocked);
-+		sigprocmask(SIG_SETMASK, &blocked, NULL);
-+		for (i = 0; i < sizeof(directories) / sizeof(directories[0]); i++) {
-+			size_t dir_len = strlen(directories[i]), app_len = strlen(argv[0]);
-+			if (dir_len + app_len + 2 > sizeof(path))
-+				continue;
-+			memcpy(path, directories[i], dir_len);
-+			path[dir_len] = '/';
-+			memcpy(path + dir_len + 1, argv[0], app_len + 1);
-+			execv(path, argv);
-+			if (errno != ENOENT && errno != ENOTDIR && errno != EACCES)
-+				break;
-+		}
-+		_exit(127);
-+	}
-+	error = child < 0 ? errno : 0;
-+	close(pipefd[1]);
-+	fd = pipefd[0];
-+	if (child < 0)
-+		goto finish;
-+	flags = fcntl(fd, F_GETFL);
-+	if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-+		error = errno;
-+		goto stop;
-+	}
-+	while (!done || (output && fd >= 0)) {
-+		struct pollfd pollfd = { fd, POLLIN, 0 };
-+		char buffer[512];
-+		ssize_t count;
-+		if ((now = wl_wlif_milliseconds()) < 0) {
-+			error = errno;
-+			goto stop;
-+		}
-+		if (now >= deadline) {
-+			error = ETIMEDOUT;
-+			goto stop;
-+		}
-+		if (poll(&pollfd, fd >= 0 ? 1 : 0, deadline - now > 50 ? 50 : deadline - now) < 0 && errno != EINTR) {
-+			error = errno;
-+			goto stop;
-+		}
-+		if (fd >= 0 && (pollfd.revents & (POLLIN | POLLHUP | POLLERR))) {
-+			count = read(fd, buffer, sizeof(buffer));
-+			if (count > 0 && output) {
-+				if ((size_t)count >= output_size - used) {
-+					error = EOVERFLOW;
-+					goto stop;
-+				}
-+				memcpy(output + used, buffer, count);
-+				used += count;
-+				output[used] = '\0';
-+			} else if (count == 0) {
-+				close(fd);
-+				fd = -1;
-+			} else if (count < 0 && errno != EAGAIN && errno != EINTR) {
-+				error = errno;
-+				goto stop;
-+			}
-+		}
-+		if (!done) {
-+			waited = waitpid(child, &status, WNOHANG);
-+			if (waited == child) {
-+				done = 1;
-+			} else if (waited < 0 && errno == ECHILD) {
-+				/* Another reaper already collected the child: a
-+				 * SIGCHLD handler in this process, SIG_IGN,
-+				 * SA_NOCLDWAIT, or a reaper thread.  The pid may
-+				 * have been recycled since, so it must never be
-+				 * signalled again.  system() reports the same way.
-+				 */
-+				done = 1;
-+				owned = 0;
-+				error = ECHILD;
-+				goto stop;
-+			} else if (waited < 0 && errno != EINTR) {
-+				error = errno;
-+				goto stop;
-+			}
-+		}
-+	}
-+	goto finish;
-+stop:
-+	/* Never signal a pid this call no longer owns.  Between the wait and
-+	 * the kill it can have been reaped and recycled, and libshared.so is
-+	 * loaded by root processes on a device where pids turn over quickly.
-+	 */
-+	if (owned) {
-+		/* Kill the group too: descendants can hold stdout open. */
-+		kill(-child, SIGKILL);
-+		if (!done) {
-+			kill(child, SIGKILL);
-+			while (waitpid(child, &status, 0) < 0 && errno == EINTR)
-+				;
-+		}
-+	}
-+finish:
-+	if (fd >= 0)
-+		close(fd);
-+	sigprocmask(SIG_SETMASK, &saved, NULL);
-+	if (error) {
-+		if (output && output_size)
-+			output[0] = '\0';
-+		errno = error;
-+		return -1;
-+	}
-+	return status;
-+}
-+#endif	/* WLIF_ARGV_EXEC */
++#include "wlif_process.h"
 +
  #ifdef RTCONFIG_BRCM_HOSTAPD
  #define WPA_CLI_APP "wpa_cli-2.7"
  #else
-@@ -1014,6 +1254,8 @@
+@@ -1014,6 +1053,8 @@ static int wl_wlif_fill_bh_creds_from_nvram(char *nvifname, wlif_bh_creds_hapd_c
  #endif	/* MULTIAP */
  
  static void wl_wlif_wpa_supplicant_update_ap_scan(char *ifname, char *nvifname, int val);
@@ -344,13 +544,11 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  // WPS Status id and code value pairs
  typedef struct wlif_wps_status {
-@@ -1840,19 +2082,39 @@
- wl_wlif_parse_hapd_config(char *ifname, wlif_wps_nw_creds_t *creds)
+@@ -1841,18 +1882,38 @@ wl_wlif_parse_hapd_config(char *ifname, wlif_wps_nw_creds_t *creds)
  {
  	FILE *fp;
--	int sz = 0;
+ 	int sz = 0;
 -	char cmd[WLIF_MIN_BUF], *ptr = NULL, *val = NULL;
-+	int sz = 0;
 +	char output[4096];
 +	char *ptr = NULL, *val = NULL;
 +	char *argv[7];
@@ -389,7 +587,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  		return -1;
  	}
  
-@@ -1871,7 +2133,7 @@
+@@ -1871,7 +1932,7 @@ wl_wlif_parse_hapd_config(char *ifname, wlif_wps_nw_creds_t *creds)
  		}
  	}
  
@@ -398,10 +596,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  	return 0;
  }
-@@ -1948,13 +2210,14 @@
-  * If bh_ifname is non null than the backhaul credentials will be updated with the
-  * settings of bh_ifname.
-  */
+@@ -1951,10 +2012,11 @@ wl_wlif_get_mlo_linkid(char *ifname, bool check_mld_unit)
  int
  wl_wlif_wps_pbc_hdlr(char *wps_ifname, char *bh_ifname)
  {
@@ -415,7 +610,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	int ret = -1;
  
  	if (!wps_ifname) {
-@@ -1962,6 +2225,11 @@
+@@ -1962,6 +2024,11 @@ wl_wlif_wps_pbc_hdlr(char *wps_ifname, char *bh_ifname)
  		goto end;
  	}
  
@@ -427,7 +622,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	if (bh_ifname) {
  		cprintf("Info: shared inside %s wps ifname %s backhaul ifname %s\n",
  			__func__, wps_ifname, bh_ifname);
-@@ -1982,25 +2250,28 @@
+@@ -1982,25 +2049,28 @@ wl_wlif_wps_pbc_hdlr(char *wps_ifname, char *bh_ifname)
  	}
  	snprintf(mode, sizeof(mode), "%s_mode", nvifname);
  	if (nvram_match(mode, "ap")) {
@@ -467,7 +662,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	}
  
  	wl_wlif_update_wps_ui(status_code);
-@@ -2016,9 +2287,10 @@
+@@ -2016,9 +2086,10 @@ wl_wlif_wps_stop_session(char *wps_ifname, bool bUpdateUI)
  wl_wlif_wps_stop_session(char *wps_ifname)
  #endif
  {
@@ -479,7 +674,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	int ret = -1;
  
  	if (!wps_ifname) {
-@@ -2026,6 +2298,11 @@
+@@ -2026,6 +2097,11 @@ wl_wlif_wps_stop_session(char *wps_ifname)
  		goto end;
  	}
  
@@ -491,7 +686,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	_dprintf("%s:: stop wps_if:%s\n", __func__, wps_ifname);
  
  #if defined(RPBE58)
-@@ -2042,20 +2319,23 @@
+@@ -2042,20 +2118,23 @@ wl_wlif_wps_stop_session(char *wps_ifname)
  
  	snprintf(mode, sizeof(mode), "%s_mode", nvifname);
  	if (nvram_match(mode, "ap")) {
@@ -526,7 +721,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	}
  #if defined(RTCONFIG_WIFI6E) || defined(RTCONFIG_HND_ROUTER_AX_6756) || defined(RTCONFIG_HND_ROUTER_BE_4916) || defined(RTCONFIG_BCM_502L07P2)
  	if (bUpdateUI)
-@@ -2067,11 +2347,58 @@
+@@ -2067,11 +2146,58 @@ end:
  	return ret;
  }
  
@@ -586,7 +781,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  	if (val < 0 || val > 2) {
  		cprintf("Err: %s invalid value %d is provided for ap scan parameter\n",
-@@ -2079,14 +2406,8 @@
+@@ -2079,14 +2205,8 @@ wl_wlif_wpa_supplicant_update_ap_scan(char *ifname, char *nvifname, int val)
  		return;
  	}
  
@@ -603,7 +798,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  }
  
  #if defined(RTCONFIG_HND_ROUTER_BE_4916)
-@@ -2126,14 +2447,90 @@
+@@ -2126,15 +2246,91 @@ wl_wlif_get_band_type(char *ifname)
  #endif	/* RTCONFIG_HND_ROUTER_BE_4916 */
  
  #if defined(WIFI7_SDK_20250506) || defined(WIFI8_SDK_20251126)
@@ -691,12 +886,13 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +	char out_buf[WLIF_MIN_BUF] = {0};
 +	char quoted[2*WLIF_BUF_512] = {0};
  	char nvifname[IFNAMSIZ] = {0};
-+	char nid[24] = {0};
 -	bool is_sae = FALSE;
++	char nid[24] = {0};
 +	bool is_sae = FALSE, needs_psk = FALSE;
  	int link_id = WLIFU_MLO_INVALID;
  
-@@ -2143,114 +2540,125 @@
+ 	if (osifname_to_nvifname(ifname, nvifname, sizeof(nvifname))) {
+@@ -2143,114 +2339,125 @@ wl_wlif_apply_creds_to_supplicant(char *ifname, unsigned long int network_id,
  		return;
  	}
  
@@ -772,9 +968,9 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 -		dprintf("Info: rc: %d: %s\n", __LINE__, cmd);
 -		system(cmd);
 +		wl_wlif_supplicant_set_network(ifname, nid, "sae_password", quoted);
- 	}
-+	memset(quoted, 0, sizeof(quoted));
 +	}
++	memset(quoted, 0, sizeof(quoted));
+ 	}
  
  	wpa_supp_key_mgmt_conv_fn(nvifname, "crypto", NULL, out_buf, sizeof(out_buf));
 -	snprintf(cmd, sizeof(cmd), "wpa_cli -i %s set_network %lu pairwise %s",
@@ -885,7 +1081,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  	/* For WPS case, we should set ap_scan to 1 and issue reconnect because during scan we
  	 * called disconnect. Without calling reconnect it will not try to connect.
-@@ -2261,21 +2669,15 @@
+@@ -2261,21 +2468,15 @@ wl_wlif_apply_creds_to_supplicant(char *ifname, unsigned long int network_id,
  	if (connection_type == WPA_CONNECTION_TYPE_WPS &&
  			(link_id == WLIFU_MLO_INVALID || link_id == WLIFU_MLO_MAP_LINKID)) {
  		/* set ap_scan to 1 */
@@ -910,7 +1106,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	}
  }
  
-@@ -3840,7 +4242,8 @@
+@@ -3840,7 +4041,8 @@ wl_wlif_fill_bh_creds_from_nvram(char *nvifname, wlif_bh_creds_hapd_clicmd_data_
  	}
  
  	cprintf("Info: shared inside %s bh_ssid[%s] bh_auth[%s] bh_encr[%s] bh_psk[%s]\n",
@@ -920,7 +1116,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	return 0;
  }
  
-@@ -3852,10 +4255,16 @@
+@@ -3852,10 +4054,16 @@ wl_wlif_update_hapd_bh_creds(char *wps_ifname, char *bh_ifname)
  {
  	wlif_bh_creds_hapd_clicmd_data_t clidata;
  	char nvifname[IFNAMSIZ] = {0};
@@ -938,7 +1134,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	if (osifname_to_nvifname(bh_ifname, nvifname, sizeof(nvifname))) {
  		cprintf("Info: shared %s osifname_to_nvifname failed for %s\n",
  			__func__, bh_ifname);
-@@ -3864,19 +4273,36 @@
+@@ -3864,19 +4072,36 @@ wl_wlif_update_hapd_bh_creds(char *wps_ifname, char *bh_ifname)
  
  	memset(&clidata, 0, sizeof(clidata));
  	if (wl_wlif_fill_bh_creds_from_nvram(nvifname, &clidata) == 0) {
@@ -985,7 +1181,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  		}
  	}
  }
-@@ -4044,29 +4470,16 @@
+@@ -4044,29 +4269,16 @@ wl_wlif_select_bhsta_from_bsslist(wlif_bss_list_t *bss_list, char *bh_ssid,
  		wl_ioctl(bss->ifname, WLC_GET_BAND, &val, sizeof(val));
  
  		while (count++ < WLIF_SCAN_TRY_COUNT) {
@@ -1019,7 +1215,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  
  			if (wl_wlif_scan(bss->ifname, bh_ssid)) {
  				sleep(4);
-@@ -5298,7 +5711,11 @@
+@@ -5298,7 +5510,11 @@ int get_wlx_unit(char *wlx)
  #ifdef RTCONFIG_BRCM_HOSTAPD
  int get_wpacli_status(int unit)
  {
@@ -1032,7 +1228,7 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
  	FILE *pfp = NULL;
  	char tmp[16], prefix[] = "wlXXXXXXXXXX_";
  	char ifname[IFNAMSIZ] = { 0 };
-@@ -5317,25 +5734,50 @@
+@@ -5317,25 +5533,50 @@ int get_wpacli_status(int unit)
  	if ((wl_ioctl(ifname, WLC_GET_BSSID, &bssid, ETHER_ADDR_LEN) != 0) || !memcmp(&bssid, bssid_null, 6))
  		goto exit;
  
@@ -1071,13 +1267,13 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +	 */
 +	if (wl_wlif_run_argv(argv, output, sizeof(output)) != 0)
 +		goto exit;
-+
+ 
+-		pclose(pfp);
 +	pfp = fmemopen(output, strlen(output), "r");
 +	if (pfp == NULL) {
 +		goto exit;
 +	}
- 
--		pclose(pfp);
++
 +	while (fgets(line, sizeof(line), pfp) != NULL) {
 +		line[strcspn(line, "\r\n")] = '\0';
 +		if (strncmp(line, "wpa_state=", strlen("wpa_state=")))

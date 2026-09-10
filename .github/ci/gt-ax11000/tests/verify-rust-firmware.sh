@@ -21,6 +21,7 @@ for tool in "$objdump" "$readelf" "$qemu_arm" file grep mktemp python3; do
 done
 
 artifacts=(
+	"usr/sbin/wlif-exec"
 	"bin/rstats"
 	"usr/sbin/infosvr"
 	"usr/sbin/Notify_Event2NC"
@@ -44,6 +45,13 @@ shared_objects=(
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/gtax-rust-verify.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
+
+# This private boundary helper must never become a set-id executable or link.
+helper="$rootfs/usr/sbin/wlif-exec"
+if [ ! -f "$helper" ] || [ -L "$helper" ] || [ "$(stat -c '%a' "$helper")" != 755 ]; then
+	echo "wlif-exec must be a regular non-symlink installed with mode 0755" >&2
+	exit 1
+fi
 
 for relative in "${artifacts[@]}" "${shared_objects[@]}"; do
 	binary="$rootfs/$relative"

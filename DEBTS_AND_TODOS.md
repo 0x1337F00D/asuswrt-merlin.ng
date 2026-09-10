@@ -3,6 +3,19 @@
 This file tracks known limitations of the GT-AX11000 overlay. A successful
 compile is not sufficient evidence for releasing or flashing a candidate.
 
+## Tier 1 re-review / Tier 2 stable boundaries (2026-09-10, not deployed)
+
+- Re-reviewed Claude's `210da6e7b2e` state and corrected HTTP incomplete
+  transport handling, LLTD receive/admission state, wsdd2 transport separation,
+  XML/identity/budget handling, and the WLAN process-ownership boundary.
+- Use typed Rust request/reply states and a narrow POSIX execution boundary;
+  do not replace these with duplicated C-like control flow.
+- See `TIER2_REVIEW_FIXES.md` for regressions, local validation and explicit
+  remaining lifecycle/hardware gates. The helper makes fourteen fresh
+  artifacts; earlier eleven/thirteen-consumer notes are historical.
+- Full candidate build/link/rootfs verification and protected hardware trial
+  remain open. The installed router image below was not changed.
+
 ## TIER1 independent review follow-up (2026-09-10, not deployed)
 
 - The four additional NTP defects are corrected with injected-clock and

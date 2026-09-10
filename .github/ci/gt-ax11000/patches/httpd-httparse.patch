@@ -75,43 +75,41 @@ diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
 diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
 --- a/release/src/router/httpd/httpd.c
 +++ b/release/src/router/httpd/httpd.c
-@@ -1233,16 +1233,66 @@
+@@ -1233,16 +1233,67 @@
  	return status;
  }
  
++enum request_read_result {
++	REQUEST_READ_COMPLETE,
++	REQUEST_READ_EMPTY,
++	REQUEST_READ_INCOMPLETE,
++	REQUEST_READ_IO_ERROR,
++	REQUEST_READ_TOO_LARGE
++};
++
 +/*
 + * Read the request line and every header line, up to and including the
 + * terminating empty line, and nothing more: the body has to stay in the
 + * stream for handler->input().  Reading byte by byte is what lets an
 + * embedded NUL reach the parser instead of being hidden by fgets().
 + *
-+ * Returns the number of bytes placed in buffer, 0 when the peer closed
-+ * before sending anything (the vendor answered nothing in that case), or
-+ * -1 when the block did not fit.
++ * Only COMPLETE publishes a nonzero length. EOF or an I/O error never
++ * invents a header terminator: incomplete transport input must not reach
++ * the parser or a request handler. EMPTY keeps the vendor's silent close.
 + */
-+static ssize_t
-+read_request_block(FILE *stream, char *buffer, size_t capacity)
++static enum request_read_result
++read_request_block(FILE *stream, char *buffer, size_t capacity, size_t *length)
 +{
 +	size_t used = 0, line_start = 0, end;
 +	int c;
 +
++	*length = 0;
 +	while (used < capacity) {
 +		c = getc(stream);
 +		if (c == EOF) {
-+			if (used == 0)
-+				return 0;
-+			/*
-+			 * The vendor's header fgets() returned NULL here and
-+			 * served the request anyway, so terminate the block
-+			 * and let the parser see the same request.
-+			 */
-+			if (capacity - used < 4)
-+				return -1;
-+			buffer[used++] = '\r';
-+			buffer[used++] = '\n';
-+			buffer[used++] = '\r';
-+			buffer[used++] = '\n';
-+			return (ssize_t) used;
++			if (ferror(stream))
++				return REQUEST_READ_IO_ERROR;
++			return used == 0 ? REQUEST_READ_EMPTY : REQUEST_READ_INCOMPLETE;
 +		}
 +		buffer[used++] = (char) c;
 +		if (c != '\n')
@@ -119,12 +117,14 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
 +		end = used - 1;
 +		if (end > line_start && buffer[end - 1] == '\r')
 +			end--;
-+		if (end == line_start)
-+			return (ssize_t) used;
++		if (end == line_start) {
++			*length = used;
++			return REQUEST_READ_COMPLETE;
++		}
 +		line_start = used;
 +	}
 +
-+	return -1;
++	return REQUEST_READ_TOO_LARGE;
 +}
 +
  static void
@@ -137,7 +137,8 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
 -	char *method, *path, *protocol, *boundary, *alang, *cookies, *referer, *useragent, *range = NULL;
 +	static char request_block[RUST_HTTPD_REQUEST_BLOCK_MAX];
 +	static rust_httpd_request_t request;
-+	ssize_t block_len;
++	size_t block_len;
++	enum request_read_result read_result;
 +	int parse_result;
 +	char *path, *boundary, *alang, *cookies, *referer, *useragent, *range = NULL;
      char *if_none_match = NULL;
@@ -145,7 +146,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  	char *file;
  	int len;
  	struct mime_handler *handler;
-@@ -1264,191 +1314,133 @@
+@@ -1264,191 +1315,133 @@
  	url_do_auth = 0;
  	boundary = cookies = referer = useragent = NULL;
  	host_name[0] = '\0';
@@ -155,8 +156,8 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
 -	if (fgets(line, sizeof(line), conn_fp) == NULL)
 +	/* Read the request line and the headers, then hand the exact bytes to
 +	 * the Rust parser.  None of the body is consumed here. */
-+	block_len = read_request_block(conn_fp, request_block, sizeof(request_block));
-+	if (block_len == 0)
++	read_result = read_request_block(conn_fp, request_block, sizeof(request_block), &block_len);
++	if (read_result == REQUEST_READ_EMPTY)
  		return;
 -
 -	method = path = line;
@@ -170,7 +171,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
 -	cp = protocol;
 -	strsep(&cp, " ");
 -	if ( !method || !path || !protocol ) {
-+	if (block_len < 0) {
++	if (read_result != REQUEST_READ_COMPLETE) {
  		send_error( 400, "Bad Request", (char*) 0, "Can't parse request." );
  		return;
  	}
@@ -178,7 +179,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  
 -#ifdef TRANSLATE_ON_FLY
 -	memset(Accept_Language, 0, sizeof(Accept_Language));
-+	parse_result = rust_httpd_request_parse(request_block, (size_t) block_len,
++	parse_result = rust_httpd_request_parse(request_block, block_len,
 +		&request, sizeof(request));
 +	if (parse_result != RUST_HTTPD_PARSE_OK) {
 +		if (parse_result == RUST_HTTPD_ERR_CONTENT_LENGTH ||
@@ -433,7 +434,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  		send_error( 501, "Not Implemented", (char*) 0, "That method is not implemented." );
  		return;
  	}
-@@ -1471,7 +1463,7 @@
+@@ -1471,7 +1464,7 @@
  	}
  
  //2008.08 magic{
@@ -442,7 +443,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  		if (is_firsttime()
  #ifdef RTCONFIG_FINDASUS
  		    && !isDeviceDiscovery
-@@ -1642,7 +1634,7 @@
+@@ -1642,7 +1635,7 @@
  			if(login_state==3 && !fromapp) { // few pages can be shown even someone else login
  				 if(handler->auth || (!strncmp(file, "Main_Login.asp", 14) && login_error_status != 9) || mime_exception&MIME_EXCEPTION_NOPASS)
  				{
@@ -451,7 +452,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  						while (cl--) (void)fgetc(conn_fp);
  
  					send_login_page(fromapp, NOLOGIN, NULL, NULL, 0, NOLOGINTRY);
-@@ -1681,7 +1673,7 @@
+@@ -1681,7 +1674,7 @@
  					if(do_referer&CHECK_REFERER){
  						referer_result = referer_check(referer, fromapp);
  						if(referer_result != 0){
@@ -460,7 +461,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  								while (cl--) (void)fgetc(conn_fp);
  
  							send_login_page(fromapp, referer_result, NULL, NULL, 0, NOLOGINTRY);
-@@ -1693,7 +1685,7 @@
+@@ -1693,7 +1686,7 @@
  					auth_result = auth_check(url, file, cookies, fromapp, &add_try);
  					if (auth_result != 0)
  					{
@@ -469,7 +470,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  							while (cl--) (void)fgetc(conn_fp);
  
  						send_login_page(fromapp, auth_result, url, file, auth_check_dt, add_try);
-@@ -1722,7 +1714,7 @@
+@@ -1722,7 +1715,7 @@
  				if(do_referer&CHECK_REFERER){
  					referer_result = check_noauth_referrer(referer, fromapp);
  					if(referer_result != 0){
@@ -478,7 +479,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  							while (cl--) (void)fgetc(conn_fp);
  
  						send_login_page(fromapp, referer_result, NULL, NULL, 0, NOLOGINTRY);
-@@ -1737,7 +1729,7 @@
+@@ -1737,7 +1730,7 @@
  				send_login_page(fromapp, ISLOGOUT, NULL, NULL, 0, NOLOGINTRY);
  				return;
  			}
@@ -487,7 +488,7 @@ diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
  				send_error(501, "Not Implemented", NULL, "That method is not implemented.");
  				return;
  			}
-@@ -1821,7 +1813,7 @@
+@@ -1821,7 +1814,7 @@
  			}else if (strncmp(url, "login.cgi", strlen(url)) != 0 && strcmp(file, "login_v2.cgi")) {
  				send_headers(status, title, final_header, handler->mime_type, fromapp);
  			}

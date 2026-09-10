@@ -180,7 +180,7 @@ pub struct Scanner<'a> {
     position: usize,
     depth: usize,
     elements: usize,
-    open: Vec<QName<'a>>,
+    open: Vec<(QName<'a>, &'a [u8])>,
     bindings: Vec<Binding>,
     pending_end: Option<QName<'a>>,
     root_done: bool,
@@ -443,7 +443,7 @@ impl<'a> Scanner<'a> {
             if self.open.len() >= MAX_DEPTH {
                 return Err(XmlError::TooDeep);
             }
-            self.open.push(name);
+            self.open.push((name, raw_name));
         }
         Ok(Event::Start(name))
     }
@@ -457,8 +457,8 @@ impl<'a> Scanner<'a> {
         }
         self.position = self.position.saturating_add(1);
         let name = self.resolve(raw_name)?;
-        let expected = self.open.pop().ok_or(XmlError::Mismatched)?;
-        if expected != name {
+        let (expected, raw_expected) = self.open.pop().ok_or(XmlError::Mismatched)?;
+        if expected != name || raw_expected != raw_name {
             return Err(XmlError::Mismatched);
         }
         self.close_scope();

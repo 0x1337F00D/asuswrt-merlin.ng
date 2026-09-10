@@ -388,10 +388,15 @@ fn fuzz_wsdd2(rng: &mut Rng, input: &[u8]) {
     };
 
     // Raw bytes through every entry point.
-    if let Ok(request) = wsdd_wsd::Request::parse(input) {
-        if let Some(reply) = wsdd2::answer(&request, &context) {
+    if let Ok(request) = wsdd_wsd::DiscoveryRequest::parse(input) {
+        if let Some(reply) = wsdd2::answer_discovery(&request, &context) {
             assert!(reply.len() <= wsdd_wsd::MAX_REPLY);
             assert!(reply.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
+        }
+    }
+    if let Ok(request) = wsdd_wsd::MetadataRequest::parse(input, &identity.endpoint) {
+        if let Some(reply) = wsdd2::answer_metadata(&request, &context) {
+            assert!(reply.len() <= wsdd_wsd::MAX_REPLY);
         }
     }
     if let Ok(query) = wsdd_llmnr::Query::parse(input) {
@@ -430,20 +435,20 @@ fn fuzz_wsdd2(rng: &mut Rng, input: &[u8]) {
             *slot = rng.next_u64() as u8;
         }
     }
-    if let Ok(request) = wsdd_wsd::Request::parse(&mutated) {
-        if let Some(reply) = wsdd2::answer(&request, &context) {
+    if let Ok(request) = wsdd_wsd::DiscoveryRequest::parse(&mutated) {
+        if let Some(reply) = wsdd2::answer_discovery(&request, &context) {
             assert!(reply.len() <= wsdd_wsd::MAX_DATAGRAM_REPLY);
         }
     }
     let cut = (rng.next_u64() as usize) % (seed.len() + 1);
-    let _ = wsdd_wsd::Request::parse(seed.get(..cut).unwrap_or_default());
+    let _ = wsdd_wsd::DiscoveryRequest::parse(seed.get(..cut).unwrap_or_default());
 
     // A refused datagram must never consume the reply budget.
     let mut budget = WsddBudget::default();
-    let now = 1_757_400_000.0_f64;
-    if wsdd_wsd::Request::parse(input)
+    let now = std::time::Duration::from_secs(100);
+    if wsdd_wsd::DiscoveryRequest::parse(input)
         .ok()
-        .and_then(|request| wsdd2::answer(&request, &context))
+        .and_then(|request| wsdd2::answer_discovery(&request, &context))
         .is_some()
     {
         assert!(budget.allow(now));
@@ -1117,7 +1122,7 @@ fn fuzz_lltd(rng: &mut Rng, input: &[u8]) {
         GenerationFilter::new(rng.next_u64() % 4),
     );
     let now = rng.next_u64();
-    match responder.handle(input, now) {
+    match lltd_simulated_send(&mut responder, input, now) {
         Ok(reply) => {
             assert!(reply.len() <= LLTD_MAX_RESPONSE_LEN);
             assert!(reply.len() <= reply_budget(input.len()));
@@ -1144,9 +1149,28 @@ fn fuzz_lltd(rng: &mut Rng, input: &[u8]) {
         .get(..input.len().min(LLTD_MAX_FRAME_LEN - 32))
         .unwrap_or_default();
     frame.extend_from_slice(tail);
-    if let Ok(reply) = responder.handle(&frame, now) {
+    if let Ok(reply) = lltd_simulated_send(&mut responder, &frame, now) {
         assert!(reply.len() <= reply_budget(frame.len()));
         assert!(reply.len() <= LLTD_MAX_RESPONSE_LEN);
+    }
+}
+
+// The fuzz transport captures bytes and acknowledges a successful send; the
+// responder's production API never equates preparation with transmission.
+fn lltd_simulated_send(
+    responder: &mut LltdResponder,
+    input: &[u8],
+    now: u64,
+) -> Result<Vec<u8>, LltdDropped> {
+    let reply = responder.prepare(input, now)?.admit(now)?;
+    let mut captured = Vec::new();
+    let result = reply.transmit(|bytes| {
+        captured.extend_from_slice(bytes);
+        Ok::<_, std::convert::Infallible>(now)
+    });
+    match result {
+        Ok(()) => Ok(captured),
+        Err(never) => match never {},
     }
 }
 

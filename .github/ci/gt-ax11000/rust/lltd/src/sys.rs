@@ -210,47 +210,33 @@ pub fn interface_index(interface: &str) -> io::Result<libc::c_uint> {
     Ok(index)
 }
 
-/// Pins a socket to one network interface with `SO_BINDTODEVICE`.
-fn bind_to_device(socket: &impl AsRawFd, interface: &str) -> io::Result<()> {
-    let name = CString::new(interface)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interface contains NUL"))?;
-    // SAFETY: `name` outlives the call and its pointer addresses exactly
-    // `as_bytes_with_nul().len()` initialised bytes; the descriptor is owned
-    // by the caller for the whole borrow.
-    let result = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_BINDTODEVICE,
-            name.as_ptr().cast(),
-            name.as_bytes_with_nul().len() as libc::socklen_t,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
-}
-
-/// Creates the raw LLTD socket: `AF_PACKET`/`SOCK_RAW` filtered to one
-/// EtherType, pinned to `interface` and only then bound to its index.
-///
-/// The order matters for the same reason it does in the `infosvr` and `ntp`
-/// ports. `SO_BINDTODEVICE` is applied to a socket that is not bound yet, so
-/// the responder is never briefly listening on the WAN, and an interface that
-/// does not exist fails before anything is bound at all. The EtherType is
-/// given twice, to `socket()` and to `bind()`, so the kernel drops every other
-/// protocol before it reaches this process.
+/// Creates an inactive AF_PACKET socket, then enables one EtherType on one
+/// interface in a single bind. A nonzero socket protocol would register a
+/// wildcard packet hook immediately; SO_BINDTODEVICE does not repair that
+/// receive window on the vendor kernel.
 ///
 /// # Errors
-/// Returns the `socket`, `setsockopt` or `bind` error. The descriptor is
+/// Returns the interface lookup, `socket` or `bind` error. The descriptor is
 /// closed on every error path, so a failure leaks nothing.
 pub fn bind_packet_socket(interface: &str, ethertype: u16) -> io::Result<OwnedFd> {
     let index = interface_index(interface)?;
-    // The protocol argument of socket(2) is the EtherType in network byte
-    // order, which is what htons() produces on the host's endianness.
-    let protocol = libc::c_int::from(ethertype.to_be());
+    open_bound_packet_socket(index, ethertype, open_packet_socket, bind_packet_interface)
+}
+
+// Explicit setup seam: tests supply in-memory handles and record operations,
+// while production supplies the two small syscall wrappers below.
+fn open_bound_packet_socket<T>(
+    index: libc::c_uint,
+    ethertype: u16,
+    open: impl FnOnce(libc::c_int) -> io::Result<T>,
+    bind: impl FnOnce(&T, libc::c_uint, u16) -> io::Result<()>,
+) -> io::Result<T> {
+    let socket = open(0)?;
+    bind(&socket, index, ethertype)?;
+    Ok(socket)
+}
+
+fn open_packet_socket(protocol: libc::c_int) -> io::Result<OwnedFd> {
     // SAFETY: socket(2) takes three scalars, reads no pointer and returns an
     // owned descriptor or -1.
     let descriptor = unsafe {
@@ -265,9 +251,10 @@ pub fn bind_packet_socket(interface: &str, ethertype: u16) -> io::Result<OwnedFd
     }
     // SAFETY: `descriptor` was just returned by socket(2) and is owned by
     // nothing else. From here on every early return closes it.
-    let owned = unsafe { OwnedFd::from_raw_fd(descriptor) };
-    bind_to_device(&owned, interface)?;
+    Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
+}
 
+fn bind_packet_interface(socket: &OwnedFd, index: libc::c_uint, ethertype: u16) -> io::Result<()> {
     // SAFETY: `sockaddr_ll` is plain-old-data; an all-zero value is the
     // documented starting point and every field bind(2) reads is set below.
     let mut address: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
@@ -277,10 +264,10 @@ pub fn bind_packet_socket(interface: &str, ethertype: u16) -> io::Result<OwnedFd
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interface index out of range"))?;
     // SAFETY: `address` is a live, fully initialised `sockaddr_ll` owned by
     // this frame and the length passed is exactly its size; the descriptor is
-    // owned by `owned` for the whole call.
+    // owned by `socket` for the whole call.
     let result = unsafe {
         libc::bind(
-            owned.as_raw_fd(),
+            socket.as_raw_fd(),
             std::ptr::addr_of!(address).cast(),
             std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t,
         )
@@ -288,15 +275,45 @@ pub fn bind_packet_socket(interface: &str, ethertype: u16) -> io::Result<OwnedFd
     if result != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(owned)
+    Ok(())
 }
 
-/// Reads one frame into `buffer` and returns how many bytes it holds.
+/// A datagram boundary result, distinct from protocol validity. Truncated
+/// bytes are never exposed to the frame parser.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ReceivedFrame<'a> {
+    Complete(&'a [u8]),
+    Truncated { datagram_len: usize },
+}
+
+impl<'a> ReceivedFrame<'a> {
+    fn from_datagram(buffer: &'a [u8], datagram_len: usize) -> Self {
+        match buffer.get(..datagram_len) {
+            Some(bytes) => Self::Complete(bytes),
+            None => Self::Truncated { datagram_len },
+        }
+    }
+}
+
+/// Receives one datagram. MSG_TRUNC preserves its original length, so an
+/// oversized packet is a typed drop instead of a valid-looking prefix.
 ///
 /// # Errors
 /// Returns the `recv` error, `Interrupted` included so the caller can service
 /// a signal and loop.
-pub fn receive(socket: &impl AsRawFd, buffer: &mut [u8]) -> io::Result<usize> {
+pub fn receive<'a>(socket: &impl AsRawFd, buffer: &'a mut [u8]) -> io::Result<ReceivedFrame<'a>> {
+    receive_from(buffer, |buffer| receive_length(socket, buffer))
+}
+
+fn receive_from(
+    buffer: &mut [u8],
+    read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
+) -> io::Result<ReceivedFrame<'_>> {
+    let received = read(buffer)?;
+    Ok(ReceivedFrame::from_datagram(buffer, received))
+}
+
+fn receive_length(socket: &impl AsRawFd, buffer: &mut [u8]) -> io::Result<usize> {
     let capacity = buffer.len();
     // SAFETY: `buffer` is a live, mutable slice of exactly `capacity` bytes
     // and stays borrowed for the whole call; recv writes at most that many.
@@ -311,13 +328,8 @@ pub fn receive(socket: &impl AsRawFd, buffer: &mut [u8]) -> io::Result<usize> {
     if received < 0 {
         return Err(io::Error::last_os_error());
     }
-    let received = usize::try_from(received)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative receive length"))?;
-    // MSG_TRUNC makes recv report the real frame length even when it did not
-    // fit. Reporting the untruncated length would let a caller read
-    // uninitialised bytes, so an over-long frame is reported at capacity and
-    // the parser then rejects it on length.
-    Ok(received.min(capacity))
+    usize::try_from(received)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative receive length"))
 }
 
 /// Sends one complete Ethernet frame on `interface_index`.
@@ -356,6 +368,12 @@ pub fn send(socket: &impl AsRawFd, interface_index: libc::c_uint, frame: &[u8]) 
     };
     if sent < 0 {
         return Err(io::Error::last_os_error());
+    }
+    if usize::try_from(sent).ok() != Some(length) {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "incomplete Ethernet frame send",
+        ));
     }
     Ok(())
 }
@@ -447,6 +465,100 @@ fn redirect_standard_descriptors() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_valid_prefix_of_an_oversized_datagram_never_reaches_the_parser() {
+        let mut buffer = [0; lltd::MAX_FRAME_LEN];
+        let received = receive_from(&mut buffer, |bytes| {
+            let prefix = lltd::wire::base_header(
+                &lltd::wire::BROADCAST,
+                &[2, 1, 2, 3, 4, 5],
+                lltd::Opcode::Discover,
+                0,
+            );
+            bytes[..prefix.len()].copy_from_slice(&prefix);
+            Ok(2_000)
+        })
+        .expect("successful truncated receive is not a syscall error");
+        assert_eq!(
+            received,
+            ReceivedFrame::Truncated {
+                datagram_len: 2_000
+            }
+        );
+        // A later datagram is still processed; the drop is not a daemon exit.
+        assert!(
+            matches!(receive_from(&mut buffer, |_| Ok(60)), Ok(ReceivedFrame::Complete(bytes)) if bytes.len() == 60)
+        );
+        assert!(
+            matches!(receive_from(&mut buffer, |_| Ok(lltd::MAX_FRAME_LEN)), Ok(ReceivedFrame::Complete(bytes)) if bytes.len() == lltd::MAX_FRAME_LEN)
+        );
+    }
+
+    #[test]
+    fn receive_syscall_errors_remain_distinct_from_datagram_truncation() {
+        let mut buffer = [0; 64];
+        let error = receive_from(&mut buffer, |_| {
+            Err(io::Error::from(io::ErrorKind::Interrupted))
+        })
+        .expect_err("interrupted syscall");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            receive_from(&mut buffer, |_| Ok(0)).expect("empty datagram"),
+            ReceivedFrame::Complete(&[])
+        );
+    }
+
+    #[test]
+    fn the_packet_socket_is_inactive_until_interface_and_protocol_bind_together() {
+        use std::cell::RefCell;
+        #[derive(Debug, Eq, PartialEq)]
+        enum Operation {
+            Open(i32),
+            Bind(u32, u16),
+        }
+        let operations = RefCell::new(Vec::new());
+        open_bound_packet_socket(
+            7,
+            0x88d9,
+            |protocol| {
+                operations.borrow_mut().push(Operation::Open(protocol));
+                Ok(())
+            },
+            |(), index, ethertype| {
+                operations
+                    .borrow_mut()
+                    .push(Operation::Bind(index, ethertype));
+                Ok(())
+            },
+        )
+        .expect("mock setup");
+        assert_eq!(
+            *operations.borrow(),
+            [Operation::Open(0), Operation::Bind(7, 0x88d9)]
+        );
+    }
+
+    #[test]
+    fn a_failed_bind_drops_the_owned_inactive_socket() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct Handle(Rc<Cell<usize>>);
+        impl Drop for Handle {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let drops = Rc::new(Cell::new(0));
+        let outcome = open_bound_packet_socket(
+            7,
+            0x88d9,
+            |_| Ok(Handle(Rc::clone(&drops))),
+            |_, _, _| Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+        );
+        assert!(outcome.is_err());
+        assert_eq!(drops.get(), 1);
+    }
 
     #[test]
     fn an_interface_name_that_cannot_fit_ifnamsiz_is_refused() {

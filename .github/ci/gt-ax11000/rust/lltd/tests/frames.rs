@@ -23,6 +23,7 @@ use lltd::device::Device;
 use lltd::limit::{GenerationFilter, RateLimiter};
 use lltd::responder::{reply_budget, Dropped, Responder, MAX_AMPLIFICATION, MAX_RESPONSE_LEN};
 use lltd::wire::{Malformed, Opcode, MIN_FRAME_LEN};
+include!("support/mod.rs");
 
 const STATION: [u8; 6] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
 const MAPPER: [u8; 6] = [0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE];

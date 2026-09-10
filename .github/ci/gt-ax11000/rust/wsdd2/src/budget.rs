@@ -17,10 +17,12 @@
 /// that could matter to an upstream link.
 pub const REPLIES_PER_SECOND: u32 = 32;
 
+use std::time::Duration;
+
 /// A fixed-size, allocation-free reply budget.
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
-    window_start: f64,
+    window_start: Option<Duration>,
     used: u32,
     limit: u32,
 }
@@ -36,7 +38,7 @@ impl Budget {
     #[must_use]
     pub const fn new(limit: u32) -> Self {
         Self {
-            window_start: f64::NEG_INFINITY,
+            window_start: None,
             used: 0,
             limit,
         }
@@ -44,15 +46,18 @@ impl Budget {
 
     /// Consumes one reply, returning false when the window is exhausted.
     ///
-    /// A clock that moved backwards, or a non-finite reading, restarts the
-    /// window rather than opening it: the failure mode is fewer replies, not
-    /// unlimited ones.
-    pub fn allow(&mut self, now: f64) -> bool {
-        if !now.is_finite() {
-            return false;
-        }
-        if now < self.window_start || now - self.window_start >= 1.0 {
-            self.window_start = now;
+    /// `now` is elapsed monotonic time, independent of protocol wall-clock
+    /// timestamps. An out-of-order reading fails closed without refilling.
+    pub fn allow(&mut self, now: Duration) -> bool {
+        let elapsed = match self.window_start {
+            Some(start) => match now.checked_sub(start) {
+                Some(elapsed) => elapsed,
+                None => return false,
+            },
+            None => Duration::from_secs(1),
+        };
+        if elapsed >= Duration::from_secs(1) {
+            self.window_start = Some(now);
             self.used = 0;
         }
         if self.used >= self.limit {

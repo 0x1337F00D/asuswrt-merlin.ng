@@ -1,10 +1,12 @@
 //! Memory-safe Link Layer Topology Discovery (LLTD) responder library.
 //!
 //! This crate replaces the closed `release/src/router/lltd.arm/lld2d.hnd`
-//! binary that ASUS ships for the GT-AX11000. Everything here is pure: it
-//! turns a received Ethernet frame into either a drop reason or the exact
-//! bytes of one reply. All I/O, all privileges and all `unsafe` live in the
-//! binary's `sys` module.
+//! binary that ASUS ships for the GT-AX11000. Frame preparation and admission
+//! are separate from emission: [`Responder::prepare`] returns a
+//! [`PreparedReply`], admission returns an [`AdmittedReply`], and only a
+//! successful transport callback commits the token and generation. Dropped
+//! permits and failed sends record no reply. All socket I/O, privileges and
+//! `unsafe` live in the binary's `sys` module.
 //!
 //! The wire layout implemented here was established from the shipped blob
 //! (`packetio_recv_handler`, `packetio_tx_hello` and the 24-entry `Tlvs`
@@ -24,5 +26,7 @@ pub mod wire;
 
 pub use device::Device;
 pub use limit::RateLimiter;
-pub use responder::{Dropped, Responder, MAX_AMPLIFICATION, MAX_RESPONSE_LEN};
+pub use responder::{
+    AdmittedReply, Dropped, PreparedReply, Responder, MAX_AMPLIFICATION, MAX_RESPONSE_LEN,
+};
 pub use wire::{Frame, Opcode, ETHERTYPE_LLTD, MAX_FRAME_LEN, MIN_FRAME_LEN};

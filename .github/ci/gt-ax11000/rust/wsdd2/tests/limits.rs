@@ -1,12 +1,13 @@
 //! Reply size, reply budget and HTTP framing limits.
 
+use std::time::Duration;
 use wsdd2::budget::{Budget, REPLIES_PER_SECOND};
 use wsdd2::http::{self, Progress, Status};
 use wsdd2::llmnr::{
     self, Answer, Query, ANSWER_LEN_A, ANSWER_LEN_AAAA, CLASS_IN, HEADER_LEN, TYPE_A,
 };
-use wsdd2::wsd::{self, Identity, Request};
-use wsdd2::{answer, ReplyContext};
+use wsdd2::wsd::{self, DiscoveryRequest as Request, Identity};
+use wsdd2::{answer_discovery as answer, ReplyContext};
 
 const ENDPOINT: &str = "d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44";
 
@@ -138,7 +139,7 @@ fn an_invalid_datagram_never_consumes_the_budget() {
     // budget untouched, so drive the same sequence the daemon does.
     let identity = identity();
     let mut budget = Budget::default();
-    let now = 1_757_400_000.0_f64;
+    let now = Duration::from_secs(100);
 
     let hostile: Vec<Vec<u8>> = vec![
         Vec::new(),
@@ -196,25 +197,25 @@ fn an_invalid_datagram_never_consumes_the_budget() {
 #[test]
 fn the_budget_is_exhausted_and_then_refilled_by_the_window() {
     let mut budget = Budget::default();
-    let now = 1_757_400_000.0_f64;
+    let now = Duration::from_secs(100);
     for index in 0..REPLIES_PER_SECOND {
         assert!(budget.allow(now), "denied reply {index}");
     }
     assert!(!budget.allow(now));
-    assert!(!budget.allow(now + 0.999));
-    assert!(budget.allow(now + 1.0));
+    assert!(!budget.allow(now + Duration::from_millis(999)));
+    assert!(budget.allow(now + Duration::from_secs(1)));
     assert_eq!(budget.used(), 1);
 }
 
 #[test]
 fn a_clock_that_misbehaves_closes_the_budget_rather_than_opening_it() {
-    let mut budget = Budget::default();
-    assert!(!budget.allow(f64::NAN));
-    assert!(!budget.allow(f64::INFINITY));
-    let now = 1_757_400_000.0_f64;
+    let mut budget = Budget::new(1);
+    let now = Duration::from_secs(100);
     assert!(budget.allow(now));
-    // A backwards step restarts the window; it never grants extra replies.
-    assert!(budget.allow(now - 100.0));
+    for milliseconds in [99900, 99800, 99700, 0] {
+        assert!(!budget.allow(Duration::from_millis(milliseconds)));
+    }
+    assert!(!budget.allow(now));
     assert_eq!(budget.used(), 1);
 }
 

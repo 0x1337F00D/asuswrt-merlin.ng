@@ -7,12 +7,89 @@
 
 use wsdd2::wsd::{self, Body, Identity, Refusal, Request};
 use wsdd2::xml::{self, XmlError};
-use wsdd2::{answer, ReplyContext};
+use wsdd2::{answer_discovery, answer_metadata, ReplyContext};
 
 const ENDPOINT: &str = "d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44";
 const SEQUENCE: &str = "0b6a8f52-1a3c-4d5e-8f70-2b9c4d6e8a10";
 const REPLY_ID: &str = "6f2c1b90-5e44-4a1d-b7c2-8f0d9e3a1c56";
 const REQUEST_ID: &str = "urn:uuid:11112222-3333-4444-5555-666677778888";
+
+#[test]
+fn discovery_and_metadata_have_separate_admission_boundaries() {
+    let probe = wsdd2::probe_fixture("wsdp:Device");
+    let own_get = wsdd2::get_fixture(ENDPOINT);
+    let foreign_get = wsdd2::get_fixture("00000000-0000-0000-0000-000000000000");
+    assert!(wsd::DiscoveryRequest::parse(probe.as_bytes()).is_ok());
+    for get in [&own_get, &foreign_get] {
+        assert_eq!(
+            wsd::DiscoveryRequest::parse(get.as_bytes()),
+            Err(Refusal::UnsupportedBody)
+        );
+    }
+    assert!(wsd::MetadataRequest::parse(own_get.as_bytes(), ENDPOINT).is_ok());
+    assert_eq!(
+        wsd::MetadataRequest::parse(foreign_get.as_bytes(), ENDPOINT),
+        Err(Refusal::BadTo)
+    );
+    assert_eq!(
+        wsd::MetadataRequest::parse(probe.as_bytes(), ENDPOINT),
+        Err(Refusal::UnsupportedBody)
+    );
+}
+
+#[test]
+fn empty_duplicates_and_nested_simple_fields_are_refused() {
+    let probe = wsdd2::probe_fixture("wsdp:Device");
+    for field in ["Action", "To", "MessageID"] {
+        for empty_first in [true, false] {
+            let marker = format!("<wsa:{field}>");
+            let duplicate = if empty_first {
+                format!("<wsa:{field}/>{marker}")
+            } else {
+                format!("</wsa:{field}><wsa:{field}/>")
+            };
+            let marker = if empty_first {
+                marker
+            } else {
+                format!("</wsa:{field}>")
+            };
+            assert_eq!(
+                Request::parse(probe.replace(&marker, &duplicate).as_bytes()),
+                Err(Refusal::Duplicate)
+            );
+        }
+        let nested = probe.replace(
+            &format!("</wsa:{field}>"),
+            &format!("<wsd:Probe/></wsa:{field}>"),
+        );
+        assert_eq!(Request::parse(nested.as_bytes()), Err(Refusal::NotAField));
+    }
+    assert_eq!(
+        Request::parse(
+            probe
+                .replace("<wsd:Types>", "<wsd:Types/><wsd:Types>")
+                .as_bytes()
+        ),
+        Err(Refusal::Duplicate)
+    );
+}
+
+#[test]
+fn equivalent_namespace_does_not_legalize_a_mismatched_closing_name() {
+    let probe = wsdd2::probe_fixture("wsdp:Device").replace(
+        "xmlns:soap=",
+        &format!("xmlns:other=\"{}\" xmlns:soap=", xml::SOAP12_NS),
+    );
+    assert!(Request::parse(probe.as_bytes()).is_ok());
+    assert_eq!(
+        Request::parse(
+            probe
+                .replace("</soap:Header>", "</other:Header>")
+                .as_bytes()
+        ),
+        Err(Refusal::Xml(XmlError::Mismatched))
+    );
+}
 
 fn identity() -> Identity {
     Identity {
@@ -35,7 +112,16 @@ fn reply_to(document: &str) -> Option<String> {
         host: "192.168.1.1",
         port: wsd::WSD_PORT,
     };
-    answer(&request, &context)
+    match request.body {
+        Body::Get => answer_metadata(
+            &wsd::MetadataRequest::parse(document.as_bytes(), ENDPOINT).ok()?,
+            &context,
+        ),
+        _ => answer_discovery(
+            &wsd::DiscoveryRequest::parse(document.as_bytes()).ok()?,
+            &context,
+        ),
+    }
 }
 
 /// A Windows-shaped envelope with the prefixes WSDAPI uses.

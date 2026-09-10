@@ -98,6 +98,51 @@ pub struct Responder {
     generations: GenerationFilter,
 }
 
+/// A fully validated, size-bounded reply that has not been admitted or sent.
+/// The exclusive borrow binds it to the responder that prepared it.
+pub struct PreparedReply<'a> {
+    responder: &'a mut Responder,
+    bytes: Vec<u8>,
+    discovery: Option<([u8; 6], u16)>,
+}
+
+/// An emission permit. Holding this value prevents competing admissions;
+/// dropping it, or a failed transmission, consumes no token or generation.
+pub struct AdmittedReply<'a>(PreparedReply<'a>);
+
+impl<'a> PreparedReply<'a> {
+    /// Checks the emission budget without consuming it.
+    ///
+    /// # Errors
+    /// Returns `RateLimited` when no token is available.
+    pub fn admit(self, now_millis: u64) -> Result<AdmittedReply<'a>, Dropped> {
+        if !self.responder.limiter.available(now_millis) {
+            return Err(Dropped::RateLimited);
+        }
+        Ok(AdmittedReply(self))
+    }
+}
+
+impl AdmittedReply<'_> {
+    /// Sends exactly one reply, committing state only on success.
+    /// The transport returns the monotonic timestamp of its successful send,
+    /// so duplicate expiry is measured from emission rather than preparation.
+    ///
+    /// # Errors
+    /// Forwards the transport error without recording any emission.
+    pub fn transmit<E>(self, send: impl FnOnce(&[u8]) -> Result<u64, E>) -> Result<(), E> {
+        let sent_at = send(&self.0.bytes)?;
+        self.0.responder.limiter.record_emission();
+        if let Some((mapper, generation)) = self.0.discovery {
+            self.0
+                .responder
+                .generations
+                .record(mapper, generation, sent_at);
+        }
+        Ok(())
+    }
+}
+
 impl Responder {
     /// Creates a responder for `device` with the default emission policy.
     #[must_use]
@@ -145,40 +190,44 @@ impl Responder {
         self.limiter.tokens()
     }
 
-    /// Turns one received frame into either the exact bytes of one reply or
-    /// the reason nothing is sent.
+    /// Prepares one validated frame for admission, without recording a reply.
     ///
-    /// Nothing is charged against the emission budget until a complete,
-    /// size-checked reply exists. A malformed or unanswered frame therefore
+    /// Nothing is charged against the emission budget until an admitted,
+    /// size-checked reply is successfully transmitted. A malformed or unanswered frame therefore
     /// costs an attacker CPU but never costs the legitimate mapper a token.
     ///
     /// # Errors
     /// Returns the first rule that stopped a reply being produced.
-    pub fn handle(&mut self, bytes: &[u8], now_millis: u64) -> Result<Vec<u8>, Dropped> {
+    pub fn prepare(&mut self, bytes: &[u8], now_millis: u64) -> Result<PreparedReply<'_>, Dropped> {
         let frame = Frame::parse(bytes, &self.device.station)?;
+        let discovery = if frame.opcode == Opcode::Discover {
+            let generation = discover_generation(frame.payload)?;
+            if self
+                .generations
+                .contains(frame.real_source, generation, now_millis)
+            {
+                return Err(Dropped::DuplicateGeneration);
+            }
+            Some((frame.real_source, generation))
+        } else {
+            None
+        };
         let reply = match frame.opcode {
-            Opcode::Discover => self.build_hello(&frame, now_millis)?,
+            Opcode::Discover => self.build_hello(&frame)?,
             Opcode::Query => self.build_query_response(&frame)?,
             Opcode::Reset => return Err(Dropped::Accepted(Opcode::Reset)),
             other => return Err(Dropped::Unanswered(other)),
         };
-        // The last gate before the caller may transmit, and the only place the
-        // budget is spent.
-        if !self.limiter.try_charge(now_millis) {
-            return Err(Dropped::RateLimited);
-        }
-        Ok(reply)
+        Ok(PreparedReply {
+            responder: self,
+            bytes: reply,
+            discovery,
+        })
     }
 
     /// Validates a Discover and renders the Hello it earns.
-    fn build_hello(&mut self, frame: &Frame<'_>, now_millis: u64) -> Result<Vec<u8>, Dropped> {
+    fn build_hello(&self, frame: &Frame<'_>) -> Result<Vec<u8>, Dropped> {
         let generation = discover_generation(frame.payload)?;
-        if !self
-            .generations
-            .accept(frame.real_source, generation, now_millis)
-        {
-            return Err(Dropped::DuplicateGeneration);
-        }
 
         // Hello answers the broadcast address, exactly as packetio_tx_hello
         // does, and carries no sequence number.
@@ -206,7 +255,7 @@ impl Responder {
     /// descriptor list is always empty. Reporting an empty list is what a
     /// station that observed nothing is required to report, and it keeps the
     /// reply strictly smaller than the request.
-    fn build_query_response(&mut self, frame: &Frame<'_>) -> Result<Vec<u8>, Dropped> {
+    fn build_query_response(&self, frame: &Frame<'_>) -> Result<Vec<u8>, Dropped> {
         let mut reply = base_header(
             &frame.real_source,
             &self.device.station,
@@ -264,6 +313,7 @@ mod tests {
     use super::*;
     use crate::limit::GenerationFilter;
     use crate::wire::ETHERTYPE_LLTD;
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/support/mod.rs"));
 
     const STATION: [u8; 6] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
     const MAPPER: [u8; 6] = [0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
@@ -300,6 +350,63 @@ mod tests {
         let mut payload = generation.to_be_bytes().to_vec();
         payload.extend_from_slice(&[0x00, 0x00]);
         request(Opcode::Discover, 0, &payload, 60)
+    }
+
+    #[test]
+    fn abandoned_and_failed_transmissions_leave_no_emission_state() {
+        let mut responder = responder();
+        let initial_tokens = responder.tokens();
+        drop(responder.prepare(&discover(7), 0).expect("prepared"));
+        assert_eq!(responder.tokens(), initial_tokens);
+        drop(
+            responder
+                .prepare(&discover(7), 0)
+                .expect("prepared")
+                .admit(0)
+                .expect("admitted"),
+        );
+        assert_eq!(responder.tokens(), initial_tokens);
+        let failed = responder
+            .prepare(&discover(7), 0)
+            .expect("prepared")
+            .admit(0)
+            .expect("admitted")
+            .transmit(|_| Err::<u64, _>("link down"));
+        assert_eq!(failed, Err("link down"));
+        assert_eq!(responder.tokens(), initial_tokens);
+        assert!(responder.handle(&discover(7), 1).is_ok());
+        assert_eq!(responder.tokens(), initial_tokens - 1);
+    }
+
+    #[test]
+    fn a_rate_refusal_does_not_poison_a_later_retry() {
+        let mut responder = Responder::with_policy(
+            device(),
+            RateLimiter::new(1, 250, 0),
+            GenerationFilter::default(),
+        );
+        assert!(responder.handle(&discover(1), 0).is_ok());
+        assert_eq!(responder.handle(&discover(2), 0), Err(Dropped::RateLimited));
+        assert!(responder.handle(&discover(2), 250).is_ok());
+    }
+
+    #[test]
+    fn duplicate_expiry_is_anchored_to_the_successful_send() {
+        let mut responder = responder();
+        responder
+            .prepare(&discover(8), 0)
+            .expect("prepared")
+            .admit(0)
+            .expect("admitted")
+            .transmit(|_| Ok::<_, std::convert::Infallible>(1_000))
+            .expect("sent");
+        for now in [1_100, 2_000, 3_000, 3_999] {
+            assert_eq!(
+                responder.handle(&discover(8), now),
+                Err(Dropped::DuplicateGeneration)
+            );
+        }
+        assert!(responder.handle(&discover(8), 4_000).is_ok());
     }
 
     #[test]

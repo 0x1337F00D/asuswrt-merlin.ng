@@ -93,6 +93,9 @@ python3 "$SCRIPT_ROOT/test-zlib-consumer-abi.py"
 
 "$FIXTURE_DIR/httpd"
 "$FIXTURE_DIR/httpd-request"
+# Exercise the actual patched FILE reader and actual C ABI together; pure
+# parser fixtures cannot catch fabricated completion on EOF or I/O errors.
+bash "$SCRIPT_ROOT/httpd-request-reader.sh"
 "$FIXTURE_DIR/clientlist" "$FIXTURE_DIR"
 "$FIXTURE_DIR/router-security" "$FIXTURE_DIR"
 "$FIXTURE_DIR/wanduck"

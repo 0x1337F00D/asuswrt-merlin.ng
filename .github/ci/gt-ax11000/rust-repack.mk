@@ -2,7 +2,7 @@
 
 rust-components-relink:
 	# shared-install enters shared's install: all, rebuilding the wlif archive
-	# and libshared before any dependent consumer is refreshed.
+	# and libshared plus its exec helper before any dependent consumer is refreshed.
 	+$(MAKE) -C router shared-install
 	# AUTODICT rewrites the complete compressed Web tree and its dictionaries as
 	# one versioned set.  Generate that set before rebuilding httpd consumers.
@@ -103,8 +103,8 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/etc/codex-web-symlinks.manifest
 	promote_artifact() { \
 		source_file="$$1"; target_file="$$2"; \
+		test ! -L "$$source_file"; test ! -L "$$target_file"; \
 		if [ -f "$$source_file" ]; then \
-			test ! -L "$$source_file"; \
 			source_mode="$$(stat -c '%a' "$$source_file")"; \
 			case "$$source_mode" in ''|*[!0-7]*) exit 1;; esac; \
 			install -D -m "$$source_mode" "$$source_file" "$$target_file"; \
@@ -115,6 +115,8 @@ rust-firmware-repack:
 	}; \
 	promote_artifact $(PROFILE_DIR)/fs.install/shared/usr/lib/libshared.so \
 		$(PROFILE_DIR)/fs.install/usr/lib/libshared.so; \
+	promote_artifact $(PROFILE_DIR)/fs.install/shared/usr/sbin/wlif-exec \
+		$(PROFILE_DIR)/fs.install/usr/sbin/wlif-exec; \
 	promote_artifact $(PROFILE_DIR)/fs.install/infosvr/usr/sbin/infosvr \
 		$(PROFILE_DIR)/fs.install/usr/sbin/infosvr; \
 	promote_artifact $(PROFILE_DIR)/fs.install/rstats/bin/rstats \
@@ -165,6 +167,7 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/rom/rom
 	cd $(PROFILE_DIR)/fs.install; sha256sum \
 		usr/lib/libshared.so \
+		usr/sbin/wlif-exec \
 		usr/sbin/infosvr \
 		bin/rstats \
 		usr/sbin/Notify_Event2NC \

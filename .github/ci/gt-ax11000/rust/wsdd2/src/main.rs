@@ -30,8 +30,8 @@ use wsdd2::cli::{self, Options, Outcome};
 use wsdd2::config;
 use wsdd2::http::{self, Progress, Status};
 use wsdd2::llmnr;
-use wsdd2::wsd::{self, Identity, Request};
-use wsdd2::{answer, ReplyContext, SELF_TEST_MARKER};
+use wsdd2::wsd::{self, DiscoveryRequest, Identity, MetadataRequest};
+use wsdd2::{answer_discovery, answer_metadata, ReplyContext, SELF_TEST_MARKER};
 
 /// Preferred source of the stable endpoint UUID (`wsd.c:128`).
 const MACHINE_ID_PATH: &str = "/etc/machine-id";
@@ -283,6 +283,7 @@ fn serve(
         probe_v6,
         wsd_budget: Budget::default(),
         llmnr_budget: Budget::default(),
+        started: Instant::now(),
     };
 
     for endpoint in &endpoints {
@@ -446,6 +447,7 @@ struct State<'a> {
     probe_v6: Option<UdpSocket>,
     wsd_budget: Budget,
     llmnr_budget: Budget,
+    started: Instant,
 }
 
 impl State<'_> {
@@ -505,7 +507,7 @@ impl State<'_> {
                 );
                 continue;
             }
-            let request = match Request::parse(datagram) {
+            let request = match DiscoveryRequest::parse(datagram) {
                 Ok(request) => request,
                 Err(refusal) => {
                     // No budget is charged: a malformed datagram must not be
@@ -534,24 +536,33 @@ impl State<'_> {
                 host: &host,
                 port: wsd::WSD_PORT,
             };
-            let Some(message) = answer(&request, &context) else {
+            let Some(message) = answer_discovery(&request, &context) else {
                 self.logger
                     .debug(Channel::Wsd, 2, &format!("nothing to say to {}", peer.ip()));
                 continue;
             };
-            if !self.wsd_budget.allow(sys::now_unix()) {
-                self.logger
-                    .debug(Channel::Wsd, 1, "reply budget exhausted; dropping a probe");
-                continue;
+            self.send_discovery_reply(socket, peer, &message);
+        }
+    }
+
+    /// The final datagram boundary independently enforces the size cap;
+    /// a future encoder cannot spend budget or fragment an oversized reply.
+    fn send_discovery_reply(&mut self, socket: &UdpSocket, peer: SocketAddr, message: &str) {
+        if message.len() > wsd::MAX_DATAGRAM_REPLY {
+            return;
+        }
+        if !self.wsd_budget.allow(self.started.elapsed()) {
+            self.logger
+                .debug(Channel::Wsd, 1, "reply budget exhausted; dropping a probe");
+            return;
+        }
+        match socket.send_to(message.as_bytes(), peer) {
+            Ok(_) => {
+                self.counter.advance();
             }
-            match socket.send_to(message.as_bytes(), peer) {
-                Ok(_) => {
-                    self.counter.advance();
-                }
-                Err(error) => self
-                    .logger
-                    .warning(&format!("cannot answer {}: {error}", peer.ip())),
-            }
+            Err(error) => self
+                .logger
+                .warning(&format!("cannot answer {}: {error}", peer.ip())),
         }
     }
 
@@ -603,7 +614,7 @@ impl State<'_> {
             };
             let answer = llmnr::choose_answer(query.qtype, v4_address, v6_address, v6);
             let response = llmnr::build_response(&query, answer);
-            if !self.llmnr_budget.allow(sys::now_unix()) {
+            if !self.llmnr_budget.allow(self.started.elapsed()) {
                 self.logger.debug(
                     Channel::Llmnr,
                     1,
@@ -705,7 +716,7 @@ impl State<'_> {
         let Some(body) = buffer.get(body_offset..total) else {
             return;
         };
-        let request = match Request::parse(body) {
+        let request = match MetadataRequest::parse(body, &self.identity.endpoint) {
             Ok(request) => request,
             Err(refusal) => {
                 self.logger.debug(
@@ -717,12 +728,6 @@ impl State<'_> {
                 return;
             }
         };
-        if request.body != wsd::Body::Get
-            || !wsdd2::endpoint_matches(&request.to, &self.identity.endpoint)
-        {
-            self.refuse_metadata(&mut stream, Status::BadRequest);
-            return;
-        }
         let message_id = self.random.uuid();
         let context = ReplyContext {
             identity: self.identity,
@@ -731,11 +736,11 @@ impl State<'_> {
             host: "",
             port: wsd::WSD_PORT,
         };
-        let Some(message) = answer(&request, &context) else {
+        let Some(message) = answer_metadata(&request, &context) else {
             self.refuse_metadata(&mut stream, Status::BadRequest);
             return;
         };
-        if !self.wsd_budget.allow(sys::now_unix()) {
+        if !self.wsd_budget.allow(self.started.elapsed()) {
             self.logger.debug(
                 Channel::Wsd,
                 1,
@@ -759,7 +764,7 @@ impl State<'_> {
     /// (`wsd.c:1114-1119`).  That is a larger reply to a worse request, so no
     /// fault body is generated here.
     fn refuse_metadata(&mut self, stream: &mut TcpStream, status: Status) {
-        if !self.wsd_budget.allow(sys::now_unix()) {
+        if !self.wsd_budget.allow(self.started.elapsed()) {
             return;
         }
         let header = http::response_header(status, &self.date(), 0);
@@ -882,6 +887,98 @@ impl Random {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_state(check: impl FnOnce(&mut State<'_>)) {
+        let identity = Identity {
+            endpoint: "d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44".into(),
+            sequence: "0b6a8f52-1a3c-4d5e-8f70-2b9c4d6e8a10".into(),
+            instance: 1_757_400_000,
+            netbios_name: "GT-AX11000".into(),
+            workgroup: "WORKGROUP".into(),
+            boot: wsd::BootInfo::default(),
+        };
+        let names = Names {
+            hostname: "GT-AX11000".into(),
+            netbios_name: "GT-AX11000".into(),
+            host_aliases: String::new(),
+            netbios_aliases: String::new(),
+        };
+        let logger = Logger::discard();
+        let mut counter = wsd::MessageCounter::default();
+        let mut random = Random::new();
+        check(&mut State {
+            identity: &identity,
+            names: &names,
+            logger: &logger,
+            counter: &mut counter,
+            random: &mut random,
+            probe_v4: Some(sys::route_probe_socket(false, None).expect("route probe")),
+            probe_v6: None,
+            wsd_budget: Budget::default(),
+            llmnr_budget: Budget::default(),
+            started: Instant::now(),
+        });
+    }
+
+    #[test]
+    fn udp_handler_never_sends_metadata_or_charges_it_to_the_budget() {
+        with_state(|state| {
+            let socket = UdpSocket::bind("127.0.0.1:0").expect("service");
+            socket.set_nonblocking(true).expect("nonblocking");
+            let client = UdpSocket::bind("127.0.0.1:0").expect("client");
+            for endpoint in [
+                &state.identity.endpoint[..],
+                "00000000-0000-0000-0000-000000000000",
+            ] {
+                client
+                    .send_to(
+                        wsdd2::get_fixture(endpoint).as_bytes(),
+                        socket.local_addr().expect("local"),
+                    )
+                    .expect("send");
+                assert_eq!(
+                    sys::poll_readable(&[socket.as_raw_fd()], 1000).expect("poll"),
+                    vec![Readiness::Readable]
+                );
+                state.serve_discovery(&socket, false);
+                assert_eq!(state.counter.peek(), 1);
+                assert_eq!(state.wsd_budget.used(), 0);
+            }
+            // Positive control runs the same receiving/encoding/sending path.
+            client
+                .send_to(
+                    wsdd2::probe_fixture("wsdp:Device").as_bytes(),
+                    socket.local_addr().expect("local"),
+                )
+                .expect("send");
+            assert_eq!(
+                sys::poll_readable(&[socket.as_raw_fd()], 1000).expect("poll"),
+                vec![Readiness::Readable]
+            );
+            state.serve_discovery(&socket, false);
+            assert_eq!(state.counter.peek(), 2);
+            assert_eq!(state.wsd_budget.used(), 1);
+        });
+    }
+
+    #[test]
+    fn final_udp_send_boundary_rejects_oversized_encoder_output() {
+        with_state(|state| {
+            let socket = UdpSocket::bind("127.0.0.1:0").expect("service");
+            let client = UdpSocket::bind("127.0.0.1:0").expect("client");
+            state.send_discovery_reply(
+                &socket,
+                client.local_addr().expect("local"),
+                &"x".repeat(wsd::MAX_DATAGRAM_REPLY + 1),
+            );
+            assert_eq!(state.counter.peek(), 1);
+            assert_eq!(state.wsd_budget.used(), 0);
+            assert_eq!(
+                sys::poll_readable(&[client.as_raw_fd()], 0).expect("poll"),
+                vec![Readiness::Idle]
+            );
+        });
+    }
 
     #[test]
     fn generated_uuids_are_canonical_distinct_and_version_four() {

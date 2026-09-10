@@ -2,6 +2,27 @@
 
 use wsdd2::cli::{self, Outcome};
 use wsdd2::config;
+
+#[test]
+fn persisted_machine_id_normalizes_to_the_same_endpoint_as_boot_id() {
+    let expected = "d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44";
+    assert_eq!(
+        config::parse_endpoint_uuid(b"d1d0f0c86d184c3b9c551d2a0e7b3f44\n").as_deref(),
+        Some(expected)
+    );
+    assert_eq!(
+        config::parse_endpoint_uuid(format!("{expected}\n").as_bytes()).as_deref(),
+        Some(expected)
+    );
+    for bad in [
+        "d1d0f0c86d184c3b9c551d2a0e7b3f4",
+        "d1d0f0c86d184c3b9c551d2a0e7b3f44a",
+        "g1d0f0c86d184c3b9c551d2a0e7b3f44",
+        "D1D0F0C86D184C3B9C551D2A0E7B3F44",
+    ] {
+        assert!(config::parse_endpoint_uuid(bad.as_bytes()).is_none());
+    }
+}
 use wsdd2::wsd::BootInfo;
 
 fn run(arguments: &[&str]) -> Box<wsdd2::cli::Options> {

@@ -1250,6 +1250,7 @@ dict_enum_file=$(find "$SDK_DIR" -type f -path '*/src/image/dictenum.txt' -print
 # reinstalling the shared object is all a rust-fast build has to do.
 rust_relinked_consumers=(
 	usr/lib/libshared.so
+	usr/sbin/wlif-exec
 	usr/sbin/infosvr
 	bin/rstats
 	usr/sbin/Notify_Event2NC

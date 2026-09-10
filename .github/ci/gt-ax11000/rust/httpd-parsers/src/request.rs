@@ -90,8 +90,8 @@ pub enum RequestError {
     EmbeddedNul,
     /// `Content-Length` is duplicated, empty, not plain decimal, or too large.
     ContentLength,
-    /// `Transfer-Encoding` is present: this server never framed a body with
-    /// it, and accepting it next to `Content-Length` is request smuggling.
+    /// `Transfer-Encoding` is present, or bytes follow the header terminator.
+    /// This API accepts exactly one header block, never a body or pipeline.
     Framing,
     /// The request target is empty, over capacity, or not origin-form.
     Target,
@@ -186,7 +186,8 @@ fn bounded(value: &[u8], capacity: usize) -> Result<Option<&[u8]>, RequestError>
 /// Parse one complete request block.
 ///
 /// `block` must contain the request line, every header line and the
-/// terminating empty line, exactly as they arrived on the socket.
+/// terminating empty line, exactly as they arrived on the socket. Body bytes
+/// and subsequent requests belong to the transport, not this parser input.
 pub fn parse_request(block: &[u8]) -> Result<ParsedRequest<'_>, RequestError> {
     if block.is_empty() {
         return Err(RequestError::Incomplete);
@@ -213,7 +214,8 @@ pub fn parse_request(block: &[u8]) -> Result<ParsedRequest<'_>, RequestError> {
     let mut storage = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut request = httparse::Request::new(&mut storage);
     match request.parse(block).map_err(map_httparse_error)? {
-        httparse::Status::Complete(_) => {}
+        httparse::Status::Complete(consumed) if consumed == block.len() => {}
+        httparse::Status::Complete(_) => return Err(RequestError::Framing),
         httparse::Status::Partial => return Err(RequestError::Incomplete),
     }
 
@@ -226,8 +228,7 @@ pub fn parse_request(block: &[u8]) -> Result<ParsedRequest<'_>, RequestError> {
         _ => Method::Other,
     };
     let minor_version = request.version.ok_or(RequestError::RequestLine)?;
-    // `httparse` hands the target back as `&str` without validating UTF-8, so
-    // it is only ever looked at as bytes here.
+    // httparse validates UTF-8; retain its accepted target bytes verbatim.
     let target = request.path.ok_or(RequestError::RequestLine)?.as_bytes();
     if target.is_empty() || target.len() >= TARGET_CAPACITY {
         return Err(RequestError::Target);
@@ -384,13 +385,14 @@ fn store<const N: usize>(
 /// Parse one request block into the fixed C result.
 ///
 /// Returns `PARSE_OK` or one of the `ERR_*` sentinels; on any failure
-/// `output` is left fully zeroed.
+/// a correctly sized, non-null `output` is left fully zeroed. A null output
+/// pointer or mismatched size is rejected without writing.
 ///
 /// # Safety
 ///
 /// `block` must reference exactly `length` readable bytes and `output` must
 /// be writable for one `RustHttpdRequest`, whose size the caller passes in
-/// `output_size`.
+/// `output_size`. The output must be aligned and must not overlap the input.
 #[no_mangle]
 pub unsafe extern "C" fn rust_httpd_request_parse(
     block: *const c_char,
@@ -742,6 +744,34 @@ mod tests {
         );
         assert_eq!(parse(b"GET / HTT").unwrap_err(), RequestError::Incomplete);
         assert_eq!(parse(b"").unwrap_err(), RequestError::Incomplete);
+    }
+
+    #[test]
+    fn a_complete_block_cannot_hide_trailing_bytes() {
+        for tail in [
+            &b"x"[..],
+            &b"\r\n"[..],
+            &b"body"[..],
+            &b"GET /second HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"[..],
+        ] {
+            let mut block = MINIMAL.to_vec();
+            block.extend_from_slice(tail);
+            assert_eq!(parse(&block), Err(RequestError::Framing));
+            let mut output: RustHttpdRequest = unsafe { core::mem::zeroed() };
+            output.present = HAS_COOKIE;
+            output.cookie[0] = b'x' as c_char;
+            let status = unsafe {
+                rust_httpd_request_parse(
+                    block.as_ptr().cast(),
+                    block.len(),
+                    &mut output,
+                    core::mem::size_of::<RustHttpdRequest>(),
+                )
+            };
+            assert_eq!(status, ERR_FRAMING);
+            assert_eq!(output.present, 0);
+            assert_eq!(output.cookie[0], 0);
+        }
     }
 
     #[test]

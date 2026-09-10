@@ -23,7 +23,7 @@ pub mod llmnr;
 pub mod wsd;
 pub mod xml;
 
-use wsd::{Body, Identity, Request};
+use wsd::{DiscoveryBody, DiscoveryRequest, Identity, MetadataRequest, Request};
 
 /// Marker printed by `--self-test`, asserted by the firmware verifier under
 /// QEMU.
@@ -57,9 +57,9 @@ pub struct ReplyContext<'a> {
 ///   `resolve.endpoint` field (`wsd.h:57-59`), never filled it in, and
 ///   answered every `Resolve` with its own address.
 #[must_use]
-pub fn answer(request: &Request, context: &ReplyContext<'_>) -> Option<String> {
+pub fn answer_discovery(request: &DiscoveryRequest, context: &ReplyContext<'_>) -> Option<String> {
     match &request.body {
-        Body::Probe {
+        DiscoveryBody::Probe {
             types_present,
             types_matched,
         } => {
@@ -75,7 +75,7 @@ pub fn answer(request: &Request, context: &ReplyContext<'_>) -> Option<String> {
                 context.port,
             )
         }
-        Body::Resolve { address } => {
+        DiscoveryBody::Resolve { address } => {
             if !endpoint_matches(address, &context.identity.endpoint) {
                 return None;
             }
@@ -88,13 +88,18 @@ pub fn answer(request: &Request, context: &ReplyContext<'_>) -> Option<String> {
                 context.port,
             )
         }
-        Body::Get => wsd::get_response(
-            context.identity,
-            context.message_id,
-            context.number,
-            &request.message_id,
-        ),
     }
+}
+
+/// Encode metadata only for an endpoint-validated HTTP Get.
+#[must_use]
+pub fn answer_metadata(request: &MetadataRequest, context: &ReplyContext<'_>) -> Option<String> {
+    wsd::get_response(
+        context.identity,
+        context.message_id,
+        context.number,
+        &request.message_id,
+    )
 }
 
 /// True when an endpoint reference address names this device.
@@ -131,8 +136,10 @@ pub fn self_test() -> Result<(), String> {
     };
 
     let probe = probe_fixture("wsdp:Device");
-    let request = Request::parse(probe.as_bytes()).map_err(|refusal| refusal.to_string())?;
-    let reply = answer(&request, &context).ok_or("a wsdp:Device probe was not answered")?;
+    let request =
+        DiscoveryRequest::parse(probe.as_bytes()).map_err(|refusal| refusal.to_string())?;
+    let reply =
+        answer_discovery(&request, &context).ok_or("a wsdp:Device probe was not answered")?;
     for expected in [
         wsd::ACT_PROBEMATCHES,
         "<wsd:Types>wsdp:Device pub:Computer</wsd:Types>",
@@ -149,9 +156,9 @@ pub fn self_test() -> Result<(), String> {
 
     // A probe for a printer type must go unanswered.
     let foreign = probe_fixture("wprt:PrintDeviceType");
-    match Request::parse(foreign.as_bytes()) {
+    match DiscoveryRequest::parse(foreign.as_bytes()) {
         Ok(request) => {
-            if answer(&request, &context).is_some() {
+            if answer_discovery(&request, &context).is_some() {
                 return Err(String::from("a foreign-type probe was answered"));
             }
         }
@@ -160,13 +167,15 @@ pub fn self_test() -> Result<(), String> {
 
     // A resolve for someone else's endpoint must go unanswered.
     let other = resolve_fixture("urn:uuid:00000000-0000-0000-0000-000000000000");
-    let request = Request::parse(other.as_bytes()).map_err(|refusal| refusal.to_string())?;
-    if answer(&request, &context).is_some() {
+    let request =
+        DiscoveryRequest::parse(other.as_bytes()).map_err(|refusal| refusal.to_string())?;
+    if answer_discovery(&request, &context).is_some() {
         return Err(String::from("a resolve for another endpoint was answered"));
     }
     let mine = resolve_fixture("urn:uuid:d1d0f0c8-6d18-4c3b-9c55-1d2a0e7b3f44");
-    let request = Request::parse(mine.as_bytes()).map_err(|refusal| refusal.to_string())?;
-    if answer(&request, &context).is_none() {
+    let request =
+        DiscoveryRequest::parse(mine.as_bytes()).map_err(|refusal| refusal.to_string())?;
+    if answer_discovery(&request, &context).is_none() {
         return Err(String::from("a resolve for this endpoint was not answered"));
     }
 

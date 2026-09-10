@@ -30,7 +30,7 @@ pub const MAX_REMEMBERED: usize = 32;
 /// Charging on receipt rather than on emission is what makes a rate limiter
 /// work for the attacker: a flood of malformed frames would exhaust the budget
 /// and silence the responder for the legitimate mapper. Nothing here is
-/// consumed until the caller has a complete reply in hand.
+/// consumed until an admitted reply's transport reports a successful send.
 #[derive(Clone, Copy, Debug)]
 pub struct RateLimiter {
     tokens: u32,
@@ -78,14 +78,24 @@ impl RateLimiter {
     ///
     /// Call this immediately before sending, never before validating.
     pub fn try_charge(&mut self, now_millis: u64) -> bool {
-        self.refill(now_millis);
-        match self.tokens.checked_sub(1) {
-            Some(remaining) => {
-                self.tokens = remaining;
-                true
-            }
-            None => false,
+        if self.available(now_millis) {
+            self.record_emission();
+            true
+        } else {
+            false
         }
+    }
+
+    /// Checks admission without spending a token. The admitted reply holds
+    /// the responder exclusively until transmission completes or is dropped.
+    pub(crate) fn available(&mut self, now_millis: u64) -> bool {
+        self.refill(now_millis);
+        self.tokens > 0
+    }
+
+    /// Called only by an admitted reply after successful transmission.
+    pub(crate) fn record_emission(&mut self) {
+        self.tokens = self.tokens.saturating_sub(1);
     }
 }
 
@@ -122,12 +132,20 @@ impl GenerationFilter {
         }
     }
 
-    /// Records the pair and reports whether it is new.
-    ///
-    /// Returns false when this mapper's generation was already answered inside
-    /// the window; the caller must then drop the frame without replying and
-    /// without charging the rate limiter.
-    pub fn accept(&mut self, mapper: [u8; 6], generation: u16, now_millis: u64) -> bool {
+    /// Looks up a successfully answered generation without refreshing its
+    /// lifetime. Rejected retries cannot extend a successful reply's expiry.
+    #[must_use]
+    pub fn contains(&self, mapper: [u8; 6], generation: u16, now_millis: u64) -> bool {
+        self.entries.iter().flatten().any(|seen| {
+            seen.mapper == mapper
+                && seen.generation == generation
+                && now_millis.saturating_sub(seen.at_millis) < self.window_millis
+        })
+    }
+
+    /// Records a successfully transmitted Hello. Preparation, admission
+    /// refusal and failed sends must never call this method.
+    pub fn record(&mut self, mapper: [u8; 6], generation: u16, now_millis: u64) {
         let mut free = None;
         for (index, slot) in self.entries.iter_mut().enumerate() {
             match slot {
@@ -136,10 +154,6 @@ impl GenerationFilter {
                     if free.is_none() {
                         free = Some(index);
                     }
-                }
-                Some(seen) if seen.mapper == mapper && seen.generation == generation => {
-                    seen.at_millis = now_millis;
-                    return false;
                 }
                 Some(_) => {}
                 None => {
@@ -160,7 +174,6 @@ impl GenerationFilter {
                 at_millis: now_millis,
             });
         }
-        true
     }
 }
 
@@ -229,13 +242,14 @@ mod tests {
     fn a_repeated_generation_is_suppressed_until_the_window_expires() {
         let mut filter = GenerationFilter::new(1_000);
         let mapper = [1, 2, 3, 4, 5, 6];
-        assert!(filter.accept(mapper, 7, 0));
-        assert!(!filter.accept(mapper, 7, 100));
-        assert!(filter.accept(mapper, 8, 100));
-        assert!(filter.accept([9; 6], 7, 100));
-        // The repeat at 100 refreshed the entry, so it expires at 1100.
-        assert!(!filter.accept(mapper, 7, 1_099));
-        assert!(filter.accept(mapper, 7, 2_500));
+        assert!(!filter.contains(mapper, 7, 0));
+        filter.record(mapper, 7, 0);
+        assert!(filter.contains(mapper, 7, 100));
+        assert!(!filter.contains(mapper, 8, 100));
+        assert!(!filter.contains([9; 6], 7, 100));
+        assert!(filter.contains(mapper, 7, 999));
+        // Lookups never refresh the time of the successful reply.
+        assert!(!filter.contains(mapper, 7, 1_000));
     }
 
     #[test]
@@ -243,7 +257,8 @@ mod tests {
         let mut filter = GenerationFilter::new(1_000_000);
         for index in 0..(MAX_REMEMBERED as u32 * 4) {
             let mapper = [2, 0, 0, 0, 0, index as u8];
-            assert!(filter.accept(mapper, index as u16, 0));
+            assert!(!filter.contains(mapper, index as u16, 0));
+            filter.record(mapper, index as u16, 0);
         }
     }
 }

@@ -154,6 +154,9 @@ static void rejections(void)
 	assert(parse("GET http://router/a HTTP/1.1\r\n\r\n")
 	    == RUST_HTTPD_ERR_TARGET);
 	assert(parse("GET /a HTTP/1.1\r\n") == RUST_HTTPD_ERR_INCOMPLETE);
+	assert(parse("GET /a HTTP/1.1\r\n\r\nbody") == RUST_HTTPD_ERR_FRAMING);
+	assert(parse("GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\n")
+	    == RUST_HTTPD_ERR_FRAMING);
 
 	/* An embedded NUL cannot be expressed with strlen(); pass it by hand. */
 	{

@@ -370,8 +370,8 @@ jobs:
       # This state contains the completed vendor userspace, kernel, profile and
       # rootfs trees.  It is exact (no restore prefix), immutable, and saved
       # only after all firmware gates pass. Rust source is deliberately outside
-      # the key because rust-fast relinks the five Rust-built consumers and
-      # hash-verifies all seven manifested ones.
+      # the key because rust-fast rebuilds all boundary consumers and
+      # hash-verifies all fourteen manifested consumers.
       - name: Restore exact successful vendor build
         if: github.event_name != 'schedule' && inputs.force_clean != true
         id: vendor-cache
@@ -589,7 +589,7 @@ jobs:
             # by rust-repack.mk.
             (
               cd "$root"
-              sha256sum usr/lib/libshared.so usr/sbin/infosvr bin/rstats \
+              sha256sum usr/lib/libshared.so usr/sbin/wlif-exec usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
                 usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2
@@ -598,8 +598,8 @@ jobs:
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
             # rust-components-relink reinstalls every manifested consumer,
-            # so all thirteen may legitimately differ when the Rust state does:
-            # libshared.so comes from shared-install (install: all),
+            # so all fourteen may legitimately differ when the Rust state does:
+            # libshared.so and wlif-exec come from shared-install (install: all),
             # /usr/sbin/ntp comes from rc-install alongside sbin/rc,
             # networkmap and its libbwdpi.so provider from networkmap-install,
             # wget and wsdd2 from their package targets, libz.so.1 from
@@ -608,6 +608,7 @@ jobs:
             # build.sh separately fails the build if any of them is stale.
             rootfs_excludes+=(
               usr/lib/libshared.so
+              usr/sbin/wlif-exec
               usr/sbin/infosvr
               bin/rstats
               usr/sbin/Notify_Event2NC
@@ -700,7 +701,7 @@ jobs:
             root=source/release/src-rt-5.02axhnd/targets/94908HND/fs.install
             (
               cd "$root"
-              sha256sum usr/lib/libshared.so usr/sbin/infosvr bin/rstats \
+              sha256sum usr/lib/libshared.so usr/sbin/wlif-exec usr/sbin/infosvr bin/rstats \
                 usr/sbin/Notify_Event2NC usr/sbin/httpd sbin/rc usr/sbin/ntp \
                 usr/sbin/networkmap usr/lib/libbwdpi.so usr/sbin/wget \
                 usr/lib/libz.so.1 usr/sbin/lld2d usr/sbin/wsdd2
@@ -717,9 +718,10 @@ jobs:
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
             # Keep this list identical to the snapshot step: only the
             # reinstalled consumers may differ, and rust-components-relink
-            # reinstalls all thirteen of them.
+            # reinstalls all fourteen of them.
             rootfs_excludes+=(
               usr/lib/libshared.so
+              usr/sbin/wlif-exec
               usr/sbin/infosvr
               bin/rstats
               usr/sbin/Notify_Event2NC

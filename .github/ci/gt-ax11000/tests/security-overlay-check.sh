@@ -48,6 +48,8 @@ ipsec="$router/rc/rc_ipsec.c"
 wireguard="$router/rc/wireguard.c"
 wps="$router/rc/sysdeps/wps-broadcom.c"
 wlif="$router/shared/wlif_utils_ax.c"
+wlif_process="$router/shared/wlif_process.c"
+wlif_exec="$router/shared/wlif_exec.c"
 shared_makefile="$router/shared/Makefile"
 wlif_rust="$router/rust-components/wlif-policy/src/lib.rs"
 openvpn="$router/libovpn/openvpn_options.c"
@@ -457,8 +459,11 @@ reject_text "$wsdd2_rust/llmnr.rs" 'extend_from_slice(datagram)'
 # The reply budget is charged only for a reply that is actually emitted, and
 # one readable wakeup is capped.
 require_text "$wsdd2_rust/main.rs" 'const MAX_DATAGRAMS_PER_WAKEUP: usize = 32;'
-require_text "$wsdd2_rust/main.rs" 'if !self.wsd_budget.allow(sys::now_unix()) {'
-require_text "$wsdd2_rust/main.rs" 'if !self.llmnr_budget.allow(sys::now_unix()) {'
+require_text "$wsdd2_rust/main.rs" 'if !self.wsd_budget.allow(self.started.elapsed()) {'
+require_text "$wsdd2_rust/main.rs" 'if !self.llmnr_budget.allow(self.started.elapsed()) {'
+require_text "$wsdd2_rust/main.rs" 'DiscoveryRequest::parse(datagram)'
+require_text "$wsdd2_rust/main.rs" 'MetadataRequest::parse(body, &self.identity.endpoint)'
+require_text "$wsdd2_rust/main.rs" 'if message.len() > wsd::MAX_DATAGRAM_REPLY {'
 # The metadata endpoint answers a refused request with a status line only.
 # The vendor followed it with a ~700-byte SOAP fault echoing its own error.
 require_text "$wsdd2_rust/http.rs" 'pub fn response_header(status: Status, date: &str, length: usize) -> String'
@@ -600,19 +605,27 @@ require_text "$wlif" '? "<redacted>" : ""'
 # which may extract the result with WEXITSTATUS().  system() reported the raw
 # wait status. Preserve the original wait result, including signal deaths,
 # rather than guessing whether _eval's ambiguous integer was an exit code.
-require_text "$wlif" 'waited = waitpid(child, &status, WNOHANG);'
+require_text "$wlif_exec" 'waitpid(child, &result.status, 0)'
+require_text "$wlif_exec" 'WEXITED | WNOHANG | WNOWAIT'
+require_text "$wlif_exec" 'CHILD_EXITED_UNREAPED'
+require_text "$wlif" '#include "wlif_process.h"'
+reject_text "$wlif_process" 'kill('
+reject_text "$wlif" 'kill(-child'
 require_text "$wlif" 'ret = wl_wlif_run_argv(argv, NULL, 0);'
 reject_text "$wlif" 'wl_wlif_wait_status('
 reject_text "$wlif" '_eval(argv, NULL, 0, NULL)'
 require_text "$wlif" 'argv[argc++] = "hostapd_cli";'
 require_text "$wlif" 'argv[5] = "get_config";'
 require_text "$wlif" 'wl_wlif_run_argv(argv, output, sizeof(output))'
-require_text "$wlif" 'execv(path, argv);'
-require_text "$wlif" 'pipe2(pipefd, O_CLOEXEC)'
-require_text "$wlif" 'error = ETIMEDOUT;'
-require_text "$wlif" 'error = EOVERFLOW;'
-require_text "$wlif" 'kill(-child, SIGKILL);'
-require_text "$wlif" 'SYS_getdents64'
+require_text "$wlif_exec" 'execv(path, argv);'
+require_text "$wlif_process" 'pipe2(pipefd, O_CLOEXEC)'
+require_text "$wlif_exec" 'error = ETIMEDOUT;'
+require_text "$wlif_exec" 'error = EOVERFLOW;'
+require_text "$wlif_exec" 'kill(-child, SIGKILL);'
+require_text "$wlif_exec" 'SYS_getdents64'
+require_text "$shared_makefile" 'OBJS += wlif_process.o'
+require_text "$shared_makefile" 'all: libshared.so libshared.a wlif-exec'
+require_text "$shared_makefile" 'install -m 755 wlif-exec $(INSTALLDIR)/usr/sbin/wlif-exec'
 require_text "$wlif" 'if (needs_psk) {'
 require_text "$wlif" 'rust_wlif_ifname_ok(wps_ifname)'
 require_text "$wlif" 'rust_wlif_supplicant_ctrl_path(ctrl_path, sizeof(ctrl_path), nvifname)'
@@ -683,10 +696,14 @@ require_text "$router_config_base" '# RTCONFIG_ISP_METER is not set'
 # Rust caps, not by strsep()/strncasecmp() over one shared 10,000-byte buffer.
 # httpd.c keeps only the socket read, which stops at the terminating empty
 # line so handler->input() still frames the body itself.
-require_text "$httpd_c" 'read_request_block(FILE *stream, char *buffer, size_t capacity)'
-require_text "$httpd_c" 'block_len = read_request_block(conn_fp, request_block, sizeof(request_block));'
+require_text "$httpd_c" 'read_request_block(FILE *stream, char *buffer, size_t capacity, size_t *length)'
+require_text "$httpd_c" 'read_result = read_request_block(conn_fp, request_block, sizeof(request_block), &block_len);'
+require_text "$httpd_c" 'if (read_result != REQUEST_READ_COMPLETE) {'
+require_text "$httpd_c" 'return used == 0 ? REQUEST_READ_EMPTY : REQUEST_READ_INCOMPLETE;'
+require_text "$httpd_c" 'return REQUEST_READ_IO_ERROR;'
+require_text "$httpd_c" 'if (ferror(stream))'
 require_text "$httpd_c" 'static char request_block[RUST_HTTPD_REQUEST_BLOCK_MAX];'
-require_text "$httpd_c" 'parse_result = rust_httpd_request_parse(request_block, (size_t) block_len,'
+require_text "$httpd_c" 'parse_result = rust_httpd_request_parse(request_block, block_len,'
 require_text "$httpd_c" '&request, sizeof(request));'
 require_text "$httpd_c" 'if (parse_result != RUST_HTTPD_PARSE_OK) {'
 require_text "$httpd_c" 'RUST_HTTPD_ERR_CONTENT_LENGTH ||'
@@ -721,6 +738,7 @@ require_text "$httpd_request_rust" 'pub const MAX_HEADER_VALUE: usize = 8_192;'
 require_text "$httpd_request_rust" 'pub const MAX_CONTENT_LENGTH: u64 = 2_147_483_647;'
 require_text "$httpd_request_rust" 'return Err(RequestError::EmbeddedNul);'
 require_text "$httpd_request_rust" 'return Err(RequestError::Framing);'
+require_text "$httpd_request_rust" 'httparse::Status::Complete(consumed) if consumed == block.len() => {}'
 require_text "$httpd_manifest" 'httparse = { version = "1.10.1", default-features = false }'
 test -d "$router/rust-components/vendor/httparse-1.10.1" || {
 	echo 'httparse must be vendored next to the workspace' >&2
@@ -821,12 +839,13 @@ if [ "$(grep -c 'unsafe {' "$lltd_rust/main.rs")" -ne 0 ]; then
 	echo 'all unsafe in the LLTD responder must live in sys.rs' >&2
 	exit 1
 fi
-# The socket is pinned to the LAN bridge before it is bound, and filtered to
-# one EtherType by both socket() and bind(), so nothing else reaches the
-# parser and the responder is never briefly listening on the WAN.
-require_text "$lltd_rust/sys.rs" 'libc::SO_BINDTODEVICE,'
-require_text "$lltd_rust/sys.rs" 'bind_to_device(&owned, interface)?;'
+# Packet sockets must stay inactive until protocol and interface are bound
+# together. SO_BINDTODEVICE does not constrain their pre-bind receive hook.
+require_text "$lltd_rust/sys.rs" 'let socket = open(0)?;'
+require_text "$lltd_rust/sys.rs" 'bind(&socket, index, ethertype)?;'
 require_text "$lltd_rust/sys.rs" 'address.sll_protocol = ethertype.to_be();'
+require_text "$lltd_rust/main.rs" 'Ok(sys::ReceivedFrame::Truncated { .. }) => continue,'
+reject_text "$lltd_rust/sys.rs" 'Ok(received.min(capacity))'
 require_text "$lltd_rust/main.rs" 'sys::bind_packet_socket(interface, ETHERTYPE_LLTD)?;'
 # The amplifying and injecting halves of the protocol are refused outright.
 # Emit makes the responder transmit frames with attacker-chosen source and
@@ -836,10 +855,11 @@ reject_text "$lltd_rust/responder.rs" 'Opcode::Probe =>'
 reject_text "$lltd_rust/responder.rs" 'Opcode::Train =>'
 reject_text "$lltd_rust/responder.rs" 'Opcode::Charge =>'
 require_text "$lltd_rust/responder.rs" 'other => return Err(Dropped::Unanswered(other)),'
-# The emission budget is charged after the reply exists, never on receipt:
-# charging first lets a flood of malformed frames silence the responder for
-# the real mapper.
-require_text "$lltd_rust/responder.rs" 'if !self.limiter.try_charge(now_millis) {'
+# Preparation/admission spend nothing: commit emission state only after the
+# transport succeeds, so rate refusals and link failures cannot poison retries.
+require_text "$lltd_rust/responder.rs" 'if !self.responder.limiter.available(now_millis) {'
+require_text "$lltd_rust/responder.rs" 'let sent_at = send(&self.0.bytes)?;'
+require_text "$lltd_rust/responder.rs" 'self.0.responder.limiter.record_emission();'
 require_text "$lltd_rust/responder.rs" 'return Err(Dropped::RateLimited);'
 require_text "$lltd_rust/responder.rs" 'return Err(Dropped::WouldAmplify);'
 require_text "$lltd_rust/responder.rs" 'pub const MAX_RESPONSE_LEN: usize = 300;'
