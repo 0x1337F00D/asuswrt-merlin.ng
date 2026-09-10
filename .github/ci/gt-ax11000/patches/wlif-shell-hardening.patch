@@ -119,8 +119,14 @@ diff --git a/release/src/router/shared/wlif_utils_ax.c b/release/src/router/shar
 +#ifndef WLIF_CLI_TIMEOUT_MS
 +#define WLIF_CLI_TIMEOUT_MS 30000
 +#endif
++/* System directories only.  /opt is `ln -sf tmp/opt opt` (others/rootprep.sh)
++ * and rc/usb.c mounts removable media under it without nosuid or noexec, with
++ * umask 0000 on vfat.  Both CLIs this runner needs install to /usr/sbin, so a
++ * /opt entry could only ever be reached when the real tool is missing or has
++ * lost its executable bit - and would then run an attacker's binary as root.
++ */
 +#ifndef WLIF_CLI_DIRS
-+#define WLIF_CLI_DIRS "/sbin", "/bin", "/usr/sbin", "/usr/bin", "/opt/sbin", "/opt/bin"
++#define WLIF_CLI_DIRS "/sbin", "/bin", "/usr/sbin", "/usr/bin"
 +#endif
 +
 +/* Close actual descriptors, not a possibly million-entry RLIMIT range.

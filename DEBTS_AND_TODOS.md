@@ -1826,3 +1826,69 @@ image-boot blocker.
   commit was issued. A read-only half-hourly follow-up is scheduled until
   2026-09-11 02:00 CEST, with alerts only on actionable changes. This initial
   soak is not a guarantee of future crash freedom or automatic power recovery.
+
+### 2026-09-10 independent review of the Tier 1 follow-up
+
+Two subagents re-derived the NTP and WLAN claims of `TIER1_REVIEW_FIXES.md`
+against the code rather than the prose, with mutation testing. Three defects
+they found are fixed in `210da6e7b2e`; a fourth, the removable-media entries in
+the command search list, is fixed alongside them. What they found and this
+merge did **not** fix is recorded here.
+
+- [ ] `wl_wlif_run_argv` keeps the caller's `SIGCHLD` blocked for up to thirty
+  seconds. Standard signals do not queue, so a daemon whose handler reaps one
+  child per delivery can lose zombies for its *other* children across that
+  window. `system()` had the same shape, but bounded by the command rather than
+  by a fixed ceiling.
+- [ ] The runner uses `sigprocmask` in processes that may be multithreaded.
+  `rc/prebuild/GT-AX11000/wps_pbcd.o` references `pthread_create`, `sigwait`
+  and `sigprocmask`, so this is formally undefined behaviour; glibc treats it
+  as `pthread_sigmask` for the calling thread. `-lpthread` is already a
+  `DT_NEEDED` of `libshared.so`, so switching is cheap and should be done.
+- [ ] A rejected credential leaves `wl_wlif_apply_creds_to_supplicant` half
+  applied: the function returns before `save_config` and `enable_network`,
+  where the vendor ignored every result and always finished. "Misconfigured
+  but complete" became "partially configured". Dead on this profile: the whole
+  function is inside `#if WIFI7_SDK_20250506 || WIFI8_SDK_20251126`.
+- [ ] `wl_wlif_parse_hapd_config` now returns `-1` when `hostapd_cli` exits
+  non-zero, where the `popen`/`pclose` original always returned `0`, and
+  `get_wpacli_status` reports "not connected" on output overflow or a non-zero
+  exit where `grep | cut` still reported the state. Neither is covered by a
+  test. The second one matters more than it first looks: its only caller,
+  `rc/wlcmon.c:311`, counts a zero as a failed uplink and calls
+  `choose_next_profile_idx()` once `wlcmon_retry_max` is reached, so a
+  truncated `wpa_cli` reply would make a repeater abandon a working profile.
+  Not reachable on GT-AX11000 - `rc/Makefile:716` builds `wlcmon.o` only when
+  both `RTCONFIG_BCMWL6` and `RTCONFIG_WISP` are set, and `config_base` has
+  neither - but the 4096-byte cap is a live hazard for any profile that does.
+- [ ] `wlif-policy::ssid_ok` requires valid UTF-8 although `config_base` says
+  `# RTCONFIG_UTF8_SSID is not set`, so it refuses SSIDs 802.11 permits. The
+  misleading comment is corrected; the rule itself must be revisited before
+  any caller becomes live, since all of them are compiled out today.
+- [ ] PSK/SAE detection in the credential path is a `strstr` over the derived
+  key_mgmt string rather than the vendor's AKM bitmask (`psk_required`,
+  `wlif_utils_ax.c:3549-3558`). The two agree for every token the current
+  builder emits, and diverge silently if a spelling changes. Dead code today.
+- [ ] `ntp`'s `refresh_root_variables` runs after the clock action, so it mixes
+  timebases: `apply_step` has already rebased `peer.filter.received_at` while
+  the caller's `now` has not moved. Measured 1.5 s of excess root dispersion
+  for a 100,000 s step. Not published, because the step path clamps
+  synchronisation off until a later successful slew recomputes it.
+- [ ] The NTP holdover allowance scales with the poll interval, reaching about
+  six days at `MAX_POLL_EXP`. Combined with the recorded debt that root
+  dispersion does not grow between updates, a router whose resolver dies after
+  a week keeps advertising a confident stratum from a six-day-old sample.
+- [ ] Failing closed on entropy means that on a cold boot the daemon sends no
+  query at all until the kernel pool initialises. On a headless router with no
+  hardware RNG that window is unmeasured, and the clock is not set during it.
+- [ ] `resolve_pending` was left in the poll-timeout branch of the main loop
+  while its two siblings moved out. Harmless, because `send_query` re-resolves
+  address-less peers itself, but it contradicts the stated rationale.
+- [ ] Three NTP behaviours have no covering test: the `unsync` hook, the
+  `refresh_root_variables` success path, and `-q`'s failure handling. Deleting
+  any of them leaves the suite green. `the_jitter_generator_is_predictable_and_
+  must_never_supply_nonces` does not test what its name claims: restoring the
+  xorshift nonce fallback leaves it passing.
+- [ ] `-q` no longer terminates on a persistent clock-write failure. That is
+  the right direction, it used to exit 0 falsely, but anything invoking
+  `ntp -q` synchronously now waits indefinitely. Untested.

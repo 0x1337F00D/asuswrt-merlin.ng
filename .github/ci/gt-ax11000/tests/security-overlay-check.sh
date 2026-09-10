@@ -594,6 +594,11 @@ reject_text "$wlif" 'wps_mapbh_config "'
 reject_text "$wlif" 'set_network %lu'
 # The backhaul PSK must not be printed to the console either.
 reject_text "$wlif" 'cmd->encr, cmd->key);'
+# The runner must never look for a WLAN CLI on removable media: /opt is a
+# symlink into /tmp, where rc/usb.c mounts USB storage without noexec.
+require_text "$wlif" '#define WLIF_CLI_DIRS "/sbin", "/bin", "/usr/sbin", "/usr/bin"'
+reject_text "$wlif" '"/opt/sbin"'
+reject_text "$wlif" '"/opt/bin"'
 require_text "$wlif" '? "<redacted>" : ""'
 
 # The two WPS entry points are called only by the prebuilt wps_pbcd object,
