@@ -1,0 +1,20 @@
+[package]
+name = "lltd"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-2.0-only"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# The binary is installed as /usr/sbin/lld2d because rc/services.c start_lltd()
+# runs eval("lld2d", "br0") after chdir("/usr/sbin") and stop_lltd() matches the
+# process by the name "lld2d" through killall_tk().
+[[bin]]
+name = "lld2d"
+path = "src/main.rs"
+
+[dependencies]
+libc = { version = "0.2.189", default-features = false }

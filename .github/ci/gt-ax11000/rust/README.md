@@ -240,6 +240,92 @@ call in `src/sys.rs`.
   field; an unusable one is a logged skip while another peer remains;
 - the daemon touches no NVRAM, exactly as the busybox applet did not.
 
+The thirteenth component is `lltd`, the Link Layer Topology Discovery
+responder installed as `/usr/sbin/lld2d`. It replaces a prebuilt binary, not
+open C: `release/src/router/lltd.arm` contains no `.c` file at all, only
+`lld2d`, `lld2d.hnd` and `lld2d.6755axhnd`. The shipped `lld2d.hnd` is an
+unstripped build of the Microsoft LLTD responder sample, "RELEASE 1.2",
+compiled from `packetio.c`, `state.c`, `sessionmgr.c`, `mapping.c`,
+`enumeration.c`, `band.c`, `seeslist.c`, `tlv.c`, `qospktio.c` and
+`osl-linux.c`, none of which is in this tree. It answers raw EtherType 0x88D9
+frames from any device on the LAN bridge, as root, before any
+authentication. Nothing in `rc` changes: `start_lltd()` still runs
+`eval("lld2d", "br0")` after `chdir("/usr/sbin")` and `stop_lltd()` still
+matches the process by the name `lld2d` through `killall_tk()`. The library
+half forbids unsafe Rust and holds the demultiplex header, the property
+encoder, the emission budget and the responder itself; the daemon half keeps
+every system call in `src/sys.rs`.
+
+`lltd` implements a deliberately reduced subset. `Discover` is answered with a
+broadcast `Hello` carrying eleven small inline properties, `Query` with an
+empty `QueryResp`, and `Reset` is accepted without a reply. `Emit`, `Train`,
+`Probe`, `Ack`, `Charge`, `Flat` and the two large-TLV opcodes are refused, as
+is the QoS diagnostics service the blob routes to `qosrcvpkt`. `Emit` is
+refused on purpose rather than left for later: it asks the responder to
+transmit frames carrying attacker-chosen source and destination addresses,
+once per descriptor in the request, which is both an unauthenticated
+layer-2 injection primitive and the only real amplifier in the protocol. The
+cost of refusing it is that a Windows network map can find and name the
+router but cannot infer its position in the layer-2 topology from these
+replies; `DEBTS_AND_TODOS.md` records that, and that no Windows interop test
+has been run on hardware.
+
+The advertised properties and their constants were read out of the blob's own
+24-entry `Tlvs` table and its getters rather than guessed: Host ID (0x01),
+Characteristics (0x02, the constant `30 00 00 00`), Physical Medium (0x03,
+IANA ifType 6), IPv4 Address (0x07), Performance Counter Frequency (0x0A,
+1,000,000), the `get_pause_granule` property (0x0B), Machine Name (0x0F),
+Friendly Name (0x11), QoS Characteristics (0x14, zero), the `get_uptime`
+property (0x17) and Sees-List Working Set (0x19, 4). Names are little-endian
+UCS-2 with a two-byte terminator, which is what the blob's
+`util_copy_ascii_to_ucs2` produces. Three properties the blob advertises are
+deliberately not: the icon and jumbo icon, because on this model they cannot
+work at all (`lltd.arm/Makefile` replaces `/usr/sbin/icon.ico` with a symlink
+to `/tmp/icon.ico`, and `write_lltd_conf()` populates that path by copying
+`/usr/sbin/icon_default.ico`, which the GT-AX11000 branch of the same
+Makefile never installs), and Link Speed, because the blob obtains it from a
+`wl_ioctl(WLC_GET_RATE)` on a wireless interface, which is not a meaningful
+number for the bridge the responder is bound to.
+
+`lltd` security boundary:
+
+- the socket is `AF_PACKET`/`SOCK_RAW` filtered to EtherType 0x88D9 by both
+  `socket()` and `bind()`, and `SO_BINDTODEVICE` is applied *before* the bind,
+  so the responder is never briefly listening on another interface and a
+  missing interface fails before anything is bound;
+- the parser accepts one exact frame shape. Below 32 bytes, above 1514 bytes,
+  a foreign EtherType, a version other than 1, a Type of Service other than 0,
+  a non-zero reserved byte, a function byte above 12, a real destination that
+  is neither this station nor broadcast, a source that claims to be this
+  station, a group source address, or a sequence number that contradicts the
+  opcode are all silent drops. Nothing is ever answered with an error;
+- there is no unbounded allocation and no indexing on any path a frame can
+  reach: the receive buffer is a fixed 1514 bytes, the duplicate-suppression
+  table is a fixed 32-entry array, the TLV count is capped at 16 and a TLV
+  value at 255 bytes. The workspace builds with `panic = "abort"`, so this is
+  the difference between a dropped frame and a remotely triggered crash;
+- a reply is bounded twice, by a 300-byte hard cap and by four times the
+  request length, and properties that do not fit are dropped rather than the
+  reply being split or truncated. `QueryResp` is held to the strict rule that
+  it may never exceed the request at all. A byte-for-byte version of that rule
+  cannot be applied to `Hello`: the shortest conforming `Discover` is one
+  60-byte Ethernet minimum-length frame and the 46-byte Hello header leaves 13
+  bytes, which is not enough for a name, so the ratio plus the budget below is
+  what bounds it;
+- the emission budget, eight replies refilling one per 250 ms, is charged only
+  once a complete, size-checked reply exists. Charging on receipt is what lets
+  a flood of malformed frames spend the budget and silence the responder for
+  the real mapper. A mapper's (address, generation number) pair is also
+  remembered for three seconds, so a repeated Discover sweep produces one
+  Hello rather than one per copy;
+- the daemon touches no NVRAM. The blob reads `lld2d_hostname`, defaulting it
+  to `ASUS_ROUTER`, and unconditionally *writes* the NVRAM variable
+  `friendly_name` with the fixed string "802.11 Broadcom Reference" from
+  inside its packet handler; this port takes the kernel hostname instead and
+  writes nothing;
+- with no interface argument the daemon refuses to start. The blob assumed
+  `eth1`.
+
 `infosvr` security boundary:
 
 - the packet parser requires an exact 512-byte PDU and accepts only the four
@@ -349,19 +435,26 @@ not emulate. A CPU flag alone cannot repair instructions in Rust's precompiled
 standard library. The ARMv7 soft-float target matches the Broadcom C toolchain
 and uses architectural `dmb` barriers instead.
 
-After the firmware build, `tests/verify-rust-firmware.sh` inspects the four
+After the firmware build, `tests/verify-rust-firmware.sh` inspects the five
 standalone Rust programs and the `httpd`/`rc` consumers. It rejects obsolete
 CP15 barriers, hard-float or non-ARMv7 output, and then executes safe startup
-paths for `infosvr`, `Notify_Event2NC`, `rstats` and `ntp` under `qemu-arm`
-using the generated firmware root filesystem. `ntp --self-test` runs the
-packet, discipline and refusal paths without opening a socket or writing the
-clock; `ntp` with no arguments must refuse to start.
+paths for `infosvr`, `Notify_Event2NC`, `rstats`, `ntp` and `lld2d` under
+`qemu-arm` using the generated firmware root filesystem. `ntp --self-test`
+runs the packet, discipline and refusal paths without opening a socket or
+writing the clock; `ntp` with no arguments must refuse to start.
+`lld2d --self-test` runs the frame parser, the property encoder and the
+emission budget without opening a socket, because a raw `AF_PACKET` socket
+needs `CAP_NET_RAW` that the runner does not have; `lld2d` with no arguments
+must refuse to start. The same step proves the installed `/usr/sbin/lld2d`
+carries none of the prebuilt responder's marker strings.
 
 The firmware Makefiles cross-compile with the existing Broadcom
 `arm-buildroot-linux-gnueabi` linker and install the results as
-`/usr/sbin/infosvr`, `/bin/rstats` and `/usr/sbin/ntp`. The time daemon is
-owned by `rc/Makefile` because `rc` is its only consumer, so it is staged and
-promoted on the `rust-fast` relink path together with `sbin/rc`.
+`/usr/sbin/infosvr`, `/bin/rstats`, `/usr/sbin/ntp` and `/usr/sbin/lld2d`. The
+time daemon is owned by `rc/Makefile` because `rc` is its only consumer, so it
+is staged and promoted on the `rust-fast` relink path together with `sbin/rc`.
+The LLTD responder keeps its own package Makefile, `lltd.arm/Makefile`, so it
+is relinked on `rust-fast` in its own right rather than carried.
 
 Rust sources are not added to `release/src/router` in the fork. The build
 script copies this directory to the ephemeral build tree and

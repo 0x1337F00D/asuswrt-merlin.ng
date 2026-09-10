@@ -29,6 +29,7 @@ artifacts=(
 	"sbin/rc"
 	"usr/sbin/ntp"
 	"usr/sbin/wget"
+	"usr/sbin/lld2d"
 	"usr/sbin/hostapd"
 	"usr/sbin/wpa_supplicant-2.7"
 )
@@ -261,6 +262,15 @@ run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/ntp"
 grep -q 'no -p PEER was given' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wget" --no-config --version
 grep -q '^GNU Wget 1\.24\.5' "$temporary/qemu.stdout"
+# The LLTD responder exercises its frame parser, its property encoder and its
+# emission budget without a socket, then exits 0.  A raw AF_PACKET socket needs
+# CAP_NET_RAW, which the runner does not have, so the deterministic path must
+# not open one.  With no arguments it must refuse rather than guess an
+# interface, which is what the vendor binary did.
+run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/lld2d" --self-test
+grep -q '^lltd-rs: runtime self-test passed$' "$temporary/qemu.stdout"
+run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/lld2d"
+grep -q 'no INTERFACE argument' "$temporary/qemu.stderr"
 # hostapd deliberately exits 1 after printing its version; the baseline and
 # rebuilt consumer were both checked. Neither invocation starts a radio.
 run_expected_exit 1 "${qemu[@]}" "$rootfs/usr/sbin/hostapd" -v
@@ -268,4 +278,25 @@ grep -q '^hostapd v2\.9' "$temporary/qemu.stderr"
 run_expected_exit 0 "${qemu[@]}" "$rootfs/usr/sbin/wpa_supplicant-2.7" -v
 grep -q '^wpa_supplicant v2\.9' "$temporary/qemu.stdout"
 
-echo "verified $((${#artifacts[@]} + ${#shared_objects[@]})) ARMv7 soft-float consumers, the zlib-rs libz.so.1 and the QEMU runtime checks"
+# /usr/sbin/lld2d must be the Rust responder, not one of the three prebuilt
+# LLTD binaries release/src/router/lltd.arm still carries.  Those blobs are
+# builds of the Microsoft reference responder and are recognisable by their
+# own symbol and version strings; the replacement carries none of them.
+lld2d="$rootfs/usr/sbin/lld2d"
+if [ ! -f "$lld2d" ] || [ -L "$lld2d" ]; then
+	echo "missing or symlinked executable: usr/sbin/lld2d" >&2
+	exit 1
+fi
+for marker in packetio_recv_handler packetio_tx_hello osl_interface_open \
+	'RELEASE 1.2' '802.11 Broadcom Reference'; do
+	if grep -aqF -- "$marker" "$lld2d"; then
+		echo "usr/sbin/lld2d is still the prebuilt blob: found $marker" >&2
+		exit 1
+	fi
+done
+if ! grep -aqF 'lltd-rs:' "$lld2d"; then
+	echo "usr/sbin/lld2d is not the Rust responder" >&2
+	exit 1
+fi
+
+echo "verified $((${#artifacts[@]} + ${#shared_objects[@]})) ARMv7 soft-float consumers, the zlib-rs libz.so.1 and 8 QEMU runtime paths"

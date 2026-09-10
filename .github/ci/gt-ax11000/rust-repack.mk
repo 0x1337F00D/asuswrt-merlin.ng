@@ -9,6 +9,9 @@ rust-components-relink:
 	+$(MAKE) -C router www-install
 	+$(MAKE) -C router \
 		infosvr-install rstats-install nt_center-install httpd-rust-install rc-install networkmap-install
+	# The LLTD responder is a standalone package with its own Makefile, so it
+	# is relinked on rust-fast exactly like infosvr rather than being carried.
+	+$(MAKE) -C router lltd.arm-install
 	# libz.so.1 is the one Rust artifact nothing has to be relinked against:
 	# every consumer resolves it by SONAME at run time, so reinstalling the
 	# shared object alone makes a zlib-rs change effective for the whole
@@ -126,7 +129,9 @@ rust-firmware-repack:
 	promote_artifact $(PROFILE_DIR)/fs.install/wget/usr/sbin/wget \
 		$(PROFILE_DIR)/fs.install/usr/sbin/wget; \
 	promote_artifact $(PROFILE_DIR)/fs.install/zlib/usr/lib/libz.so.1 \
-		$(PROFILE_DIR)/fs.install/usr/lib/libz.so.1
+		$(PROFILE_DIR)/fs.install/usr/lib/libz.so.1; \
+	promote_artifact $(PROFILE_DIR)/fs.install/lltd.arm/usr/sbin/lld2d \
+		$(PROFILE_DIR)/fs.install/usr/sbin/lld2d
 	# Package install targets stage their complete payload below a package-named
 	# directory. The selected artifacts have now been promoted into the
 	# flat firmware tree, so remove only those known duplicate staging roots.
@@ -139,7 +144,8 @@ rust-firmware-repack:
 		$(PROFILE_DIR)/fs.install/rc \
 		$(PROFILE_DIR)/fs.install/networkmap \
 		$(PROFILE_DIR)/fs.install/wget \
-		$(PROFILE_DIR)/fs.install/zlib
+		$(PROFILE_DIR)/fs.install/zlib \
+		$(PROFILE_DIR)/fs.install/lltd.arm
 	# fsbuild creates these legacy containers for optional external payloads.
 	# On GT-AX11000 they are empty; leaving them behind only on a repeated
 	# build makes rust-fast rootfs topology differ from the clean reference.
@@ -160,7 +166,8 @@ rust-firmware-repack:
 		usr/sbin/networkmap \
 		usr/lib/libbwdpi.so \
 		usr/sbin/wget \
-		usr/lib/libz.so.1 > $(RUST_CONSUMER_MANIFEST)
+		usr/lib/libz.so.1 \
+		usr/sbin/lld2d > $(RUST_CONSUMER_MANIFEST)
 	cd $(TARGETS_DIR); ./buildFS
 	cd $(TARGETS_DIR); ./buildFS2
 	+$(MAKE) buildimage_final

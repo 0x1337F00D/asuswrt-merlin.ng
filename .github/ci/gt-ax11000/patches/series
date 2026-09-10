@@ -31,3 +31,4 @@ zlib-rs-libz.patch
 wlif-shell-hardening.patch
 ntp-rust.patch
 httpd-httparse.patch
+lltd-rust.patch

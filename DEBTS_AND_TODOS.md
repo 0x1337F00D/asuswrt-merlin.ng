@@ -954,6 +954,117 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   discard-highest-jitter clustering loop is not, because it only takes effect
   above three peers and `rc` configures at most two.
 
+### Prebuilt binary replacements (LLTD responder first)
+
+- [x] Replace the prebuilt Link Layer Topology Discovery responder with a
+  memory-safe Rust one. `release/src/router/lltd.arm` is selected at
+  `release/src/router/Makefile:1694` under `CONFIG_BCMWL5=y` and
+  `RTCONFIG_BCMARM=y`, both of which the GT-AX11000 build sets
+  (`release/src-rt/Makefile:294` exports `CONFIG_BCMWL5=y` for every
+  `HND_ROUTER` tree, and `ARM=y` in the GT-AX11000 target expands to
+  `RTCONFIG_BCMARM=y`). The package contains **no `.c` file at all**: only
+  `lld2d`, `lld2d.hnd` and `lld2d.6755axhnd` plus 200 icons. The HND branch of
+  its Makefile installs `lld2d.hnd` as `/usr/sbin/lld2d`, and
+  `rc/services.c start_lltd()` runs it as `eval("lld2d", "br0")` after
+  `chdir("/usr/sbin")`, so it parses raw EtherType 0x88D9 frames from every
+  device on the LAN bridge, as root, before any authentication.
+- What the blob is, established from the shipped `lld2d.hnd` itself (it is not
+  stripped): an ARM EABI5 glibc build of the Microsoft LLTD responder sample,
+  version string "RELEASE 1.2", from `packetio.c`, `state.c`, `sessionmgr.c`,
+  `mapping.c`, `enumeration.c`, `band.c`, `seeslist.c`, `tlv.c`, `qospktio.c`,
+  `event.c`, `util.c`, `main.c` and `osl-linux.c`. None of those sources is in
+  this tree, so it remains unauditable here. `packetio_recv_handler` requires
+  at least 14 then 32 bytes, EtherType 0x88D9 at offset 12, version 1 at 14,
+  a function byte at 17 no higher than 12, a real destination at 18 equal to
+  this station or broadcast, and per-opcode sequencing rules; Type of Service
+  2 is routed to `qosrcvpkt` and 0 and 1 both to the topology path.
+  `packetio_tx_hello` builds the reply at a fixed buffer, writes the property
+  block at offset 46 and sends it to `ff:ff:ff:ff:ff:ff`.
+- What could **not** be determined from the blob: the semantic meaning of the
+  individual Characteristics bits (only the constant `30 00 00 00` is
+  observable), the unit of the `get_pause_granule` property (0x0B, constant
+  big-endian 100,000), the public specification names of TLV types 0x0B and
+  0x17, and why the vendor build routes Type of Service 1 into the topology
+  path. Those constants are reproduced byte for byte rather than reinterpreted.
+- A vendor defect found while reading it, not introduced by this port: on
+  GT-AX11000 the icon properties cannot work today. `lltd.arm/Makefile`
+  installs `icon.gtax11000.ico` as `/usr/sbin/icon.ico` and then, because
+  `GT-AX11000` is in the `RT-AC68U RT-AX82U RT-AX88U GT-AX11000` filter,
+  replaces it with a symlink to `/tmp/icon.ico`; but `write_lltd_conf()` in
+  `rc/services.c` populates `/tmp/icon.ico` by copying
+  `/usr/sbin/icon_gd.ico` or `/usr/sbin/icon_default.ico`, neither of which
+  the GT-AX11000 branch of that Makefile ever installs. The symlink is
+  therefore dangling and the blob's `get_icon_image` already fails. Omitting
+  the icon properties costs this model nothing.
+- Another blob behaviour worth recording: `get_friendly_name` calls
+  `nvram_set("friendly_name", "802.11 Broadcom Reference")` unconditionally,
+  from inside the property fetch that a received Discover triggers. An
+  unauthenticated LAN frame therefore causes an NVRAM write in the shipped
+  firmware. The Rust port touches no NVRAM.
+- What is **not** implemented, and the consequence. `Emit` (2), `Train` (3),
+  `Probe` (4) and `Ack` (5) are refused. `Emit` is the mechanism by which a
+  mapper asks the responder to transmit frames carrying mapper-chosen source
+  and destination addresses, one per descriptor; reproducing it would give
+  every LAN device an unauthenticated layer-2 injection primitive and the only
+  real amplifier in the protocol, so it is refused on purpose rather than
+  deferred. `Charge` (9), `Flat` (10), `QueryLargeTlv` (11) and
+  `QueryLargeTlvResp` (12) are refused with it, as is the whole QoS
+  diagnostics service (Type of Service 2) that `qosrcvpkt` implements, and
+  Type of Service 1. The consequence is that Windows can still **discover and
+  name** the router through `Discover`/`Hello`, but cannot infer its position
+  in the layer-2 topology from these replies, so the Network Map will place it
+  without its true links; the qWave/QoS diagnostics extensions are gone
+  entirely. Five properties the blob advertises are also not sent: Icon Image
+  (0x0E) and Detailed Icon Image (0x18) for the reason above, Support
+  Information (0x10) and Hardware ID (0x13) because the blob's own getters
+  return failure and it never sends them either, and Link Speed (0x0C),
+  because the blob obtains it from `wl_ioctl(WLC_GET_RATE)` on a wireless
+  interface, which is not meaningful for the bridge the responder binds.
+  Windows will show no custom device icon and no link speed for the router.
+- Anti-amplification, stated honestly. `QueryResp` is held to the strict rule
+  that a reply may never exceed the request. `Hello` cannot be: the shortest
+  conforming Discover is one 60-byte Ethernet minimum-length frame, and the
+  46-byte Hello header plus the terminator leaves 13 bytes, which is not
+  enough for a name, so a byte-for-byte rule would make the responder useless.
+  `Hello` is instead bounded by a 300-byte hard cap **and** by four times the
+  request length, with properties dropped rather than the reply truncated, on
+  top of an eight-token budget refilling one per 250 ms that is charged only
+  once a complete, size-checked reply exists, and a three-second
+  (mapper, generation) duplicate filter that collapses a Discover sweep to one
+  Hello. The gain per frame is therefore at most 4x and the sustained rate is
+  the bucket, not the ratio. This is a deliberate deviation from a strict
+  "never larger than the request" rule and is the one place where it is not
+  met.
+- Evidence on 2026-09-10, **host only**: 65 crate tests including byte-level
+  fixtures with commented field offsets for Discover/Hello, Query/QueryResp
+  and Reset, and drops for truncated (every length 0..31), oversized, wrong
+  EtherType, wrong version, every unsupported Type of Service, non-zero
+  reserved byte, all 243 unknown function bytes, both self-addressed shapes, a
+  group source address, both sequencing rules, an inconsistent station list
+  and a station list at the cap; a rate-limit test proving 5,000 invalid
+  frames consume none of the budget; reply-size tests over every request
+  length from 32 to 1514; `cargo fmt`, Clippy with warnings denied, the armv7
+  workspace check, an armv7 release binary inspected with the Broadcom
+  `readelf`/`objdump` (ARMv7, soft-float ABI, `/lib/ld-linux.so.3`, no
+  `Tag_ABI_VFP_args`, no CP15 barriers), the fuzz smoke extended with the
+  parser and responder at three fixed seeds, a GNU `make -n` rendering of the
+  patched package Makefile in both overlay-present and overlay-absent modes,
+  a full replay of the 31-patch series, re-locked to
+  `90a8b5ddd4a7f20d657e1c53850d355c649a81cb2c120a18eaac2c124a2f8d7f`, and the
+  three overlay checks.
+- Still owed. **No Windows network-map interop test has been run on
+  hardware.** Nothing here has been exercised by a firmware build, a hosted
+  build, QEMU or a router: `qemu-arm` is not installed on this host, so the
+  `--self-test` and no-argument expectations added to
+  `verify-rust-firmware.sh` have only been run against the host binary. No
+  real LLTD frame from a Windows mapper has ever been fed to this parser; the
+  fixtures are derived from the blob's own code and from the published
+  protocol description, not captured from a wire. Until a Windows machine on
+  the LAN is confirmed to show the router in its Network Map with the right
+  name, the functional claim in this entry is unverified. The binary is also
+  325 KB stripped against the blob's 63 KB, which is a real rootfs cost that
+  has not been measured against the free space on a built image.
+
 ## Local client view and QoS debt
 
 - [x] Disable the GT-AX11000 `BWDPI`/Trend Micro feature set at profile and

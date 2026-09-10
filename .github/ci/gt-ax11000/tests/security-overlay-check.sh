@@ -76,6 +76,8 @@ router_makefile="$router/Makefile"
 cargo_config="$router/.cargo/config.toml"
 rc_makefile="$router/rc/Makefile"
 ntp_rust="$router/rust-components/ntp/src"
+lltd_makefile="$router/lltd.arm/Makefile"
+lltd_rust="$router/rust-components/lltd/src"
 zlib_static="$router/rust-components/zlib-static/src/lib.rs"
 zlib_static_manifest="$router/rust-components/zlib-static/Cargo.toml"
 zlib_shared="$router/rust-components/zlib-shared/src/lib.rs"
@@ -95,6 +97,9 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$networkmap_makefile" "$bwdpi_compat" \
 	"$router_makefile" "$cargo_config" "$zlib_static" "$zlib_static_manifest" \
 	"$zlib_shared" "$zlib_shared_manifest" "$zlib_version_script" \
+	"$lltd_makefile" "$lltd_rust/lib.rs" "$lltd_rust/wire.rs" \
+	"$lltd_rust/tlv.rs" "$lltd_rust/device.rs" "$lltd_rust/limit.rs" \
+	"$lltd_rust/responder.rs" "$lltd_rust/main.rs" "$lltd_rust/sys.rs" \
 	"$rc_makefile" "$ntp_rust/lib.rs" "$ntp_rust/packet.rs" "$ntp_rust/client.rs" \
 	"$ntp_rust/server.rs" "$ntp_rust/clock.rs" "$ntp_rust/cli.rs" \
 	"$ntp_rust/script.rs" "$ntp_rust/main.rs" "$ntp_rust/sys.rs" \
@@ -628,6 +633,128 @@ for wifi_tree in hostapd wpa_supplicant; do
 	require_text "$wifi_base/$wifi_tree/src/radius/radius.c" 'attr->length != sizeof(*attr) + MD5_MAC_LEN'
 	require_text "$wifi_base/$wifi_tree/src/rsn_supp/wpa.c" 'sm->network_ctx, sm->key_mgmt'
 done
+
+# The LLTD responder is the Rust /usr/sbin/lld2d, not one of the three
+# prebuilt binaries release/src/router/lltd.arm ships.  That package contains
+# no .c file at all, so the blob answers raw EtherType 0x88D9 frames from any
+# LAN device as root with code nobody in this tree can read.
+require_text "$lltd_makefile" 'RUST_LLTD_MANIFEST := $(RUST_COMPONENTS_DIR)/lltd/Cargo.toml'
+require_text "$lltd_makefile" 'ifneq ($(wildcard $(RUST_LLTD_MANIFEST)),)'
+require_text "$lltd_makefile" '--bin lld2d --release --target "$(RUST_TARGET)"'
+require_text "$lltd_makefile" 'install -D $(RUST_LLTD_BINARY) $(INSTALLDIR)/usr/sbin/lld2d'
+require_text "$lltd_makefile" 'all: $(RUST_LLTD_BINARY)'
+# The vendor fallback has to survive for an upstream tree without the overlay,
+# so every blob install must sit behind the else of the manifest test.
+require_text "$lltd_makefile" 'ifneq ($(RUST_LLTD_BINARY),)'
+lltd_blob_lines=$(grep -cE 'install lld2d(\.hnd|\.6755axhnd)? ' "$lltd_makefile")
+if [ "$lltd_blob_lines" -ne 3 ]; then
+	echo "expected the three vendor lld2d installs to remain as the fallback" >&2
+	exit 1
+fi
+# With the overlay present the blob branch is unreachable: prove it by
+# rendering the Makefile's own conditionals with GNU make rather than by
+# reading them.  Both modes are checked, because a fallback that no longer
+# installs anything would ship an image with no responder at all.
+lltd_harness=$(mktemp -d "${TMPDIR:-/tmp}/gtax-lltd-make.XXXXXX")
+mkdir -p "$lltd_harness/router/lltd.arm" "$lltd_harness/router/rust-components/lltd"
+cp "$lltd_makefile" "$lltd_harness/router/lltd.arm/Makefile"
+: > "$lltd_harness/.config"
+: > "$lltd_harness/router/rust-components/lltd/Cargo.toml"
+cat > "$lltd_harness/router/common.mak" <<'LLTD_HARNESS'
+TOP := $(CURDIR)/..
+SRCBASE := $(CURDIR)/../..
+STRIP := arm-strip
+CC := arm-gcc
+BUILD_NAME := GT-AX11000
+HND_ROUTER := y
+RTCONFIG_BCMARM := y
+INSTALLDIR := /nonexistent/fs.install/lltd.arm
+LLTD_HARNESS
+lltd_with=$(make -C "$lltd_harness/router/lltd.arm" -n install 2>/dev/null || true)
+rm -rf "$lltd_harness/router/rust-components"
+lltd_without=$(make -C "$lltd_harness/router/lltd.arm" -n install 2>/dev/null || true)
+rm -rf -- "$lltd_harness"
+case "$lltd_with" in
+*"release/lld2d /nonexistent/fs.install/lltd.arm/usr/sbin/lld2d"*) ;;
+*) echo "the overlay build does not install the Rust lld2d" >&2; exit 1 ;;
+esac
+case "$lltd_with" in
+*"install lld2d.hnd"*|*"install lld2d "*)
+	echo "the overlay build still installs a prebuilt lld2d" >&2; exit 1 ;;
+esac
+case "$lltd_without" in
+*"install lld2d.hnd /nonexistent/fs.install/lltd.arm/usr/sbin/lld2d"*) ;;
+*) echo "the vendor fallback no longer installs lld2d.hnd" >&2; exit 1 ;;
+esac
+
+# Exactly one package Makefile that this profile builds may produce the path.
+# rc/services.c start_lltd() execs "lld2d" and stop_lltd() matches the process
+# by that name, so a second producer would be a race over which responder owns
+# EtherType 0x88D9.  release/src/router/lldt is the other producer in the tree;
+# release/src/router/Makefile selects it only in the else of CONFIG_BCMWL5,
+# which this profile sets to y, so the two can never both be built.
+# release/src/router/lldt is the only other producer in the upstream tree and
+# may or may not be present in a sparse verification checkout, so it is
+# subtracted by name rather than assumed absent; everything that remains must
+# be this one Makefile.
+lltd_producers=$(grep -rlE 'usr/sbin/lld2d([^a-zA-Z0-9_]|$)' "$root" --include=Makefile \
+	| grep -vFx "$router/lldt/Makefile" | LC_ALL=C sort | tr '\n' ' ')
+if [ "$lltd_producers" != "$lltd_makefile " ]; then
+	echo "/usr/sbin/lld2d producers changed: $lltd_producers" >&2
+	exit 1
+fi
+require_text "$router_makefile" 'obj-y += lltd.arm'
+require_text "$router_makefile" 'obj-y += lldt'
+# RTCONFIG_BCMARM is off in config_base and turned on per profile by ARM=y,
+# which the GT-AX11000 target sets, so lltd.arm is the selected package and
+# lldt sits in the unreachable else of CONFIG_BCMWL5.
+require_text "$src_rt_makefile" 'echo "RTCONFIG_BCMARM=y" >>$(1);'
+
+# The responder keeps every system call in one module and forbids unsafe Rust
+# in the half that touches a received frame.
+require_text "$lltd_rust/lib.rs" '#![forbid(unsafe_code)]'
+require_text "$lltd_rust/main.rs" '#![forbid(unsafe_op_in_unsafe_fn)]'
+for module in wire.rs tlv.rs device.rs limit.rs responder.rs; do
+	reject_text "$lltd_rust/$module" 'unsafe'
+done
+if [ "$(grep -c 'unsafe {' "$lltd_rust/main.rs")" -ne 0 ]; then
+	echo 'all unsafe in the LLTD responder must live in sys.rs' >&2
+	exit 1
+fi
+# The socket is pinned to the LAN bridge before it is bound, and filtered to
+# one EtherType by both socket() and bind(), so nothing else reaches the
+# parser and the responder is never briefly listening on the WAN.
+require_text "$lltd_rust/sys.rs" 'libc::SO_BINDTODEVICE,'
+require_text "$lltd_rust/sys.rs" 'bind_to_device(&owned, interface)?;'
+require_text "$lltd_rust/sys.rs" 'address.sll_protocol = ethertype.to_be();'
+require_text "$lltd_rust/main.rs" 'sys::bind_packet_socket(interface, ETHERTYPE_LLTD)?;'
+# The amplifying and injecting halves of the protocol are refused outright.
+# Emit makes the responder transmit frames with attacker-chosen source and
+# destination addresses, once per descriptor in the request.
+reject_text "$lltd_rust/responder.rs" 'Opcode::Emit =>'
+reject_text "$lltd_rust/responder.rs" 'Opcode::Probe =>'
+reject_text "$lltd_rust/responder.rs" 'Opcode::Train =>'
+reject_text "$lltd_rust/responder.rs" 'Opcode::Charge =>'
+require_text "$lltd_rust/responder.rs" 'other => return Err(Dropped::Unanswered(other)),'
+# The emission budget is charged after the reply exists, never on receipt:
+# charging first lets a flood of malformed frames silence the responder for
+# the real mapper.
+require_text "$lltd_rust/responder.rs" 'if !self.limiter.try_charge(now_millis) {'
+require_text "$lltd_rust/responder.rs" 'return Err(Dropped::RateLimited);'
+require_text "$lltd_rust/responder.rs" 'return Err(Dropped::WouldAmplify);'
+require_text "$lltd_rust/responder.rs" 'pub const MAX_RESPONSE_LEN: usize = 300;'
+require_text "$lltd_rust/responder.rs" 'pub const MAX_AMPLIFICATION: usize = 4;'
+# The parser refuses anything but topology discovery version 1, and refuses a
+# frame that claims to come from this station.
+require_text "$lltd_rust/wire.rs" 'pub const ETHERTYPE_LLTD: u16 = 0x88D9;'
+require_text "$lltd_rust/wire.rs" 'return Err(Malformed::WrongVersion);'
+require_text "$lltd_rust/wire.rs" 'return Err(Malformed::UnsupportedService);'
+require_text "$lltd_rust/wire.rs" 'return Err(Malformed::SelfAddressed);'
+require_text "$lltd_rust/wire.rs" 'return Err(Malformed::Oversized);'
+# The blob wrote the NVRAM variable friendly_name from inside its packet
+# handler.  This port touches no NVRAM at all.
+reject_text "$lltd_rust/main.rs" 'nvram_set'
+reject_text "$lltd_rust/main.rs" 'nvram_get'
 
 # Exercise the shared-producer race that a successful warm build can hide.
 python3 "$(dirname "$0")/test_wifi_openssl_inputs.py" "$root"

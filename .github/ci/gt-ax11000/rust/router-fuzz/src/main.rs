@@ -24,6 +24,13 @@ use httpd_parsers::{
     query_is_valid, url_decode_in_place,
 };
 use infosvr::{build_response, parse_request, DeviceState, PDU_LEN};
+use lltd::device::Device as LltdDevice;
+use lltd::limit::{GenerationFilter, RateLimiter};
+use lltd::responder::{reply_budget, Dropped as LltdDropped, Responder as LltdResponder};
+use lltd::responder::{
+    MAX_AMPLIFICATION as LLTD_MAX_AMPLIFICATION, MAX_RESPONSE_LEN as LLTD_MAX_RESPONSE_LEN,
+};
+use lltd::wire::{Frame as LltdFrame, MAX_FRAME_LEN as LLTD_MAX_FRAME_LEN};
 use ntp::client::{evaluate_reply, Query as NtpQuery};
 use ntp::clock::{
     is_fit as ntp_is_fit, select_peer as ntp_select_peer, Candidate as NtpCandidate,
@@ -942,6 +949,85 @@ fn regression_edges() {
         packet[2..4].copy_from_slice(&opcode.to_le_bytes());
         fuzz_infosvr(&packet);
     }
+
+    // The LLTD boundaries: nothing, a bare demultiplex header, one byte past
+    // the frame cap, and a Discover whose station list claims the maximum.
+    let mut lltd_rng = Rng(DEFAULT_SEED ^ 0x0d4b_0000_0001_88d9);
+    for length in [
+        0,
+        1,
+        31,
+        32,
+        33,
+        59,
+        60,
+        LLTD_MAX_FRAME_LEN,
+        LLTD_MAX_FRAME_LEN + 1,
+    ] {
+        fuzz_lltd(&mut lltd_rng, &vec![0xFF; length]);
+    }
+}
+
+/// The LLTD station the fuzz responder answers for.
+const LLTD_STATION: [u8; 6] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55];
+
+fn fuzz_lltd(rng: &mut Rng, input: &[u8]) {
+    // The parser must reach a decision for any byte string of any length,
+    // never panic, and never hand back a frame whose fields disagree with the
+    // bytes it was given.
+    if let Ok(frame) = LltdFrame::parse(input, &LLTD_STATION) {
+        assert!(frame.received_len == input.len());
+        assert!(frame.received_len <= LLTD_MAX_FRAME_LEN);
+        assert!(frame.payload.len() + 32 == frame.received_len);
+        assert!(frame.real_source != LLTD_STATION);
+    }
+
+    // Drive the responder with a bounded, never-limiting policy so the size
+    // invariants are exercised rather than short-circuited by the budget.
+    let device = LltdDevice::new(
+        LLTD_STATION,
+        Some([192, 168, 50, 1]),
+        &ascii_projection(input.get(..8).unwrap_or_default()),
+        &ascii_projection(input.get(8..24).unwrap_or_default()),
+        rng.next_u64(),
+    );
+    let mut responder = LltdResponder::with_policy(
+        device,
+        RateLimiter::new(u32::MAX, 1, 0),
+        GenerationFilter::new(rng.next_u64() % 4),
+    );
+    let now = rng.next_u64();
+    match responder.handle(input, now) {
+        Ok(reply) => {
+            assert!(reply.len() <= LLTD_MAX_RESPONSE_LEN);
+            assert!(reply.len() <= reply_budget(input.len()));
+            assert!(reply.len() <= input.len().saturating_mul(LLTD_MAX_AMPLIFICATION));
+            assert_eq!(reply.get(12..14), Some(&[0x88, 0xD9][..]));
+            assert_eq!(reply.get(14), Some(&1));
+            assert_eq!(reply.get(15), Some(&0));
+            assert_eq!(reply.get(24..30), Some(&LLTD_STATION[..]));
+        }
+        Err(LltdDropped::RateLimited) => unreachable!("the policy never limits"),
+        Err(_) => {}
+    }
+
+    // A well-formed shell with fuzzed contents reaches the opcode handlers far
+    // more often than random bytes do.
+    let mut frame = vec![
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x88, 0xD9, 0x01,
+        0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
+        0x00, 0x00,
+    ];
+    frame[17] = (rng.next_u64() % 14) as u8;
+    frame[30] = (rng.next_u64() % 3) as u8;
+    let tail = input
+        .get(..input.len().min(LLTD_MAX_FRAME_LEN - 32))
+        .unwrap_or_default();
+    frame.extend_from_slice(tail);
+    if let Ok(reply) = responder.handle(&frame, now) {
+        assert!(reply.len() <= reply_budget(frame.len()));
+        assert!(reply.len() <= LLTD_MAX_RESPONSE_LEN);
+    }
 }
 
 fn run(iterations: u64, seed: u64) {
@@ -949,7 +1035,7 @@ fn run(iterations: u64, seed: u64) {
     let mut rng = Rng(seed.max(1));
     for index in 0..iterations {
         let input = rng.bytes();
-        match index % 11 {
+        match index % 12 {
             0 => fuzz_http(&input),
             1 => fuzz_policy(&input),
             2 => fuzz_infosvr(&input),
@@ -960,7 +1046,8 @@ fn run(iterations: u64, seed: u64) {
             7 => fuzz_ntp(&mut rng, &input),
             8 => fuzz_ntp_discipline(&mut rng),
             9 => fuzz_wanduck(&mut rng),
-            _ => fuzz_http_request(&mut rng, &input),
+            10 => fuzz_http_request(&mut rng, &input),
+            _ => fuzz_lltd(&mut rng, &input),
         }
     }
 }

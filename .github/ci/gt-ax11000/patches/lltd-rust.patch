@@ -1,0 +1,62 @@
+diff --git a/release/src/router/lltd.arm/Makefile b/release/src/router/lltd.arm/Makefile
+--- a/release/src/router/lltd.arm/Makefile
++++ b/release/src/router/lltd.arm/Makefile
+@@ -5,10 +5,49 @@
+ model = $(subst -,,$(subst +,P,$(BUILD_NAME)))
+ modelstr = $(shell echo $(model) | tr '[:upper:]' '[:lower:]')
+ 
+-all:
++# Memory-safe replacement for the prebuilt Link Layer Topology Discovery
++# responder.  This package ships no source at all: lld2d, lld2d.hnd and
++# lld2d.6755axhnd are closed binaries that answer raw EtherType 0x88D9 frames
++# from any LAN device as root.  When the Rust overlay is present its lld2d is
++# installed instead and none of the blobs reaches the rootfs; without the
++# overlay the vendor binaries are installed exactly as before.
++#
++# rc/services.c start_lltd() runs eval("lld2d", "br0") after chdir to
++# /usr/sbin and stop_lltd() calls killall_tk("lld2d"), so the installed name
++# and the single interface argument are part of the contract.
++RUST_COMPONENTS_DIR ?= $(TOP)/rust-components
++RUST_LLTD_MANIFEST := $(RUST_COMPONENTS_DIR)/lltd/Cargo.toml
++RUST_TOOLCHAIN ?= 1.85.1
++RUST_TARGET ?= armv7-unknown-linux-gnueabi
++RUST_TARGET_DIR ?= $(RUST_COMPONENTS_DIR)/target
++RUST_CPU_FLAGS ?= -Ctarget-cpu=cortex-a9
++
++ifneq ($(wildcard $(RUST_LLTD_MANIFEST)),)
++RUST_LLTD_BINARY := $(RUST_TARGET_DIR)/$(RUST_TARGET)/release/lld2d
++
++.DEFAULT_GOAL := all
++
++.PHONY: rust-lltd
++
++rust-lltd:
++	CARGO_TARGET_DIR="$(RUST_TARGET_DIR)" \
++	CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABI_LINKER="$(CC)" \
++	RUSTFLAGS="$(RUSTFLAGS) $(RUST_CPU_FLAGS)" \
++		cargo +$(RUST_TOOLCHAIN) build --manifest-path "$(RUST_LLTD_MANIFEST)" \
++			-p lltd --bin lld2d --release --target "$(RUST_TARGET)" \
++			--locked --offline
++
++$(RUST_LLTD_BINARY): rust-lltd
++endif
++
++all: $(RUST_LLTD_BINARY)
+ 
+ install: all
+ 	install -d $(INSTALLDIR)/usr/sbin
++ifneq ($(RUST_LLTD_BINARY),)
++	install -D $(RUST_LLTD_BINARY) $(INSTALLDIR)/usr/sbin/lld2d
++	$(if $(RTCONFIG_DEBUG),,$(STRIP) $(INSTALLDIR)/usr/sbin/lld2d)
++else
+ ifneq ($(HND_ROUTER),y)
+ 	install lld2d $(INSTALLDIR)/usr/sbin
+ else
+@@ -20,6 +59,7 @@
+ 	install lld2d.hnd $(INSTALLDIR)/usr/sbin/lld2d
+ endif
+ endif
++endif
+ ifeq ($(BUILD_NAME),RT-AC3200)
+ 	install icon.rtac3200.ico $(INSTALLDIR)/usr/sbin/icon.ico
+ 	install icon.large.rtac3200.ico $(INSTALLDIR)/usr/sbin/icon.large.ico

@@ -4,6 +4,7 @@ members = [
     "clientlist",
     "httpd-parsers",
     "infosvr",
+    "lltd",
     "nt-event",
     "ntp",
     "router-policy",
