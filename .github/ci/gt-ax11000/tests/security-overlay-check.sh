@@ -58,6 +58,10 @@ target_mak="$root/release/src-rt/target.mak"
 src_rt_makefile="$root/release/src-rt/Makefile"
 local_traffic="$router/httpd/local_traffic.c"
 httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
+httpd_c="$router/httpd/httpd.c"
+httpd_h="$router/httpd/httpd.h"
+httpd_request_rust="$router/rust-components/httpd-parsers/src/request.rs"
+httpd_manifest="$router/rust-components/httpd-parsers/Cargo.toml"
 clientlist_rust="$router/rust-components/clientlist/src"
 security_rust="$router/rust-components/router-security/src/lib.rs"
 policy_rust="$router/rust-components/router-policy/src/vpn.rs"
@@ -87,6 +91,7 @@ for file in "$httpd_stubs" "$web" "$rc_stubs" "$firewall" "$lan" "$init" \
 	"$policy_rust" "$wireless_ui" "$clientlist_ui" "$clientlist_shipped" "$openvpn_setup" \
 	"$rstats_makefile" "$router_config_base" "$target_mak" "$src_rt_makefile" \
 	"$local_traffic" "$qos_policy_rust" "$qos_ui" "$www_makefile" \
+	"$httpd_c" "$httpd_h" "$httpd_request_rust" "$httpd_manifest" \
 	"$networkmap_makefile" "$bwdpi_compat" \
 	"$router_makefile" "$cargo_config" "$zlib_static" "$zlib_static_manifest" \
 	"$zlib_shared" "$zlib_shared_manifest" "$zlib_version_script" \
@@ -568,6 +573,54 @@ reject_text "$openvpn_setup" 'data-ciphers-fallback AES-128-CBC'
 require_text "$rstats_makefile" 'ifeq ($(RTCONFIG_ISP_METER),y)'
 require_text "$rstats_makefile" 'RUST_RSTAT_FEATURES := --features isp-meter'
 require_text "$router_config_base" '# RTCONFIG_ISP_METER is not set'
+
+# The HTTP request line and header block are parsed by httparse behind the
+# Rust caps, not by strsep()/strncasecmp() over one shared 10,000-byte buffer.
+# httpd.c keeps only the socket read, which stops at the terminating empty
+# line so handler->input() still frames the body itself.
+require_text "$httpd_c" 'read_request_block(FILE *stream, char *buffer, size_t capacity)'
+require_text "$httpd_c" 'block_len = read_request_block(conn_fp, request_block, sizeof(request_block));'
+require_text "$httpd_c" 'static char request_block[RUST_HTTPD_REQUEST_BLOCK_MAX];'
+require_text "$httpd_c" 'parse_result = rust_httpd_request_parse(request_block, (size_t) block_len,'
+require_text "$httpd_c" '&request, sizeof(request));'
+require_text "$httpd_c" 'if (parse_result != RUST_HTTPD_PARSE_OK) {'
+require_text "$httpd_c" 'RUST_HTTPD_ERR_CONTENT_LENGTH ||'
+require_text "$httpd_c" 'request.method == RUST_HTTPD_METHOD_OTHER'
+require_text "$httpd_c" 'request.method == RUST_HTTPD_METHOD_POST && handler->input'
+require_text "$httpd_c" 'request.method != RUST_HTTPD_METHOD_HEAD && handler->output'
+require_text "$httpd_c" 'request.query_offset >= request.target_len'
+# The vendor request-line split, the shared line buffer, the strncasecmp()
+# header chain, the base-0 Content-Length and the boundary= scan are gone.
+reject_text "$httpd_c" 'char line[10000], *cur;'
+reject_text "$httpd_c" 'strsep(&protocol, " ");'
+reject_text "$httpd_c" 'cur = protocol + strlen(protocol) + 1;'
+reject_text "$httpd_c" 'fgets( cur, line + sizeof(line) - cur, conn_fp )'
+reject_text "$httpd_c" 'strncasecmp( cur, "Content-Length:", 15 )'
+reject_text "$httpd_c" 'strncasecmp( cur, "Transfer-Encoding:", 18 )'
+reject_text "$httpd_c" 'strncasecmp( cur, "Cookie:", 7 )'
+reject_text "$httpd_c" 'strncasecmp( cur, "Host:", 5 )'
+reject_text "$httpd_c" 'strstr( cur, "boundary=" )'
+reject_text "$httpd_c" 'cl = strtoul( cp, NULL, 0 );'
+reject_text "$httpd_c" 'strcasecmp( method, "get" )'
+reject_text "$httpd_c" 'strcasecmp(method, "post")'
+reject_text "$httpd_c" 'strcasecmp(method, "head")'
+require_text "$httpd_h" 'typedef struct rust_httpd_request {'
+require_text "$httpd_h" '#define RUST_HTTPD_REQUEST_BLOCK_MAX		32768'
+require_text "$httpd_h" 'extern int rust_httpd_request_parse(const char *block, size_t length,'
+require_text "$httpd_h" 'extern size_t rust_httpd_request_struct_size(void);'
+require_text "$httpd_request_rust" 'pub unsafe extern "C" fn rust_httpd_request_parse('
+require_text "$httpd_request_rust" 'httparse::Request::new(&mut storage)'
+require_text "$httpd_request_rust" 'pub const MAX_REQUEST_BLOCK: usize = 32_768;'
+require_text "$httpd_request_rust" 'pub const MAX_HEADERS: usize = 128;'
+require_text "$httpd_request_rust" 'pub const MAX_HEADER_VALUE: usize = 8_192;'
+require_text "$httpd_request_rust" 'pub const MAX_CONTENT_LENGTH: u64 = 2_147_483_647;'
+require_text "$httpd_request_rust" 'return Err(RequestError::EmbeddedNul);'
+require_text "$httpd_request_rust" 'return Err(RequestError::Framing);'
+require_text "$httpd_manifest" 'httparse = { version = "1.10.1", default-features = false }'
+test -d "$router/rust-components/vendor/httparse-1.10.1" || {
+	echo 'httparse must be vendored next to the workspace' >&2
+	exit 1
+}
 
 # Security fixes are backported into both duplicate vendor trees.
 for wifi_tree in hostapd wpa_supplicant; do

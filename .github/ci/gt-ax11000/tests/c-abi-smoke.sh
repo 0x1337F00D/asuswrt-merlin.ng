@@ -36,6 +36,12 @@ libraries=(-ldl -lpthread -lm -lrt -lutil)
 cc "${common[@]}" "$SCRIPT_ROOT/c-abi/httpd.c" \
 	"$TARGET_DIR/release/libhttpd_parsers.a" "${libraries[@]}" \
 	-o "$FIXTURE_DIR/httpd"
+# The request line and header block httpd.c hands over once per connection;
+# the fixture carries the same struct httpd.h declares, so an ABI drift fails
+# here instead of on the wire.
+cc "${common[@]}" "$SCRIPT_ROOT/c-abi/httpd-request.c" \
+	"$TARGET_DIR/release/libhttpd_parsers.a" "${libraries[@]}" \
+	-o "$FIXTURE_DIR/httpd-request"
 # The client list is exported by the same archive httpd links; the fixture
 # creates a private SysV segment and needs a writable directory for the
 # vendor-style lock and cache files.
@@ -86,6 +92,7 @@ bash "$SCRIPT_ROOT/zlib-header-abi.sh" cc "$FIXTURE_DIR" "$FIXTURE_DIR"
 python3 "$SCRIPT_ROOT/test-zlib-consumer-abi.py"
 
 "$FIXTURE_DIR/httpd"
+"$FIXTURE_DIR/httpd-request"
 "$FIXTURE_DIR/clientlist" "$FIXTURE_DIR"
 "$FIXTURE_DIR/router-security" "$FIXTURE_DIR"
 "$FIXTURE_DIR/wanduck"

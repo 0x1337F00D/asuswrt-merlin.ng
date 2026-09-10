@@ -722,8 +722,56 @@ compile is not sufficient evidence for releasing or flashing a candidate.
   (`FLAG_EXIST` filter), the VLAN/captive-portal segments and the
   `RTCONFIG_DISABLE_NETWORKMAP` gate are not modelled because the GT-AX11000
   profile does not compile them.
-- [ ] Then `httparse` for the HTTP request line/header boundary and
-  `rustls-ffi` for HTTPS; the latter needs a crypto-backend decision (the
+- [x] Replace the hand-written HTTP request-line and header parsing with
+  `httparse`. `httpd-parsers/src/request.rs` adds `httparse 1.10.1`
+  (`default-features = false`; MIT is taken of its `MIT OR Apache-2.0`, so it
+  is GPL-2.0 compatible; MSRV 1.47; no runtime dependencies) as the fork's
+  second and last crates.io addition, and `httpd-httparse.patch` rewrites
+  `handle_request()` to call one entry point, `rust_httpd_request_parse()`.
+  `httpd.c` keeps only `read_request_block()`, a byte-at-a-time reader that
+  stops at the terminating empty line so the body stays in `conn_fp` for
+  `handler->input()`; the vendor `char line[10000]`, the `strsep()` request
+  line split, the `strncasecmp()` header chain, `strtoul(cp, NULL, 0)` and
+  the `strstr(cur, "boundary=")` scan are gone. Caps are explicit: 32,768
+  bytes per block, 8,192 bytes of request line, 128 headers, 8,192 bytes per
+  header value, a 4,096-byte target, and a plain-decimal `Content-Length` in
+  0..=2,147,483,647. Newly refused: any `Transfer-Encoding`, a duplicate
+  `Content-Length` or `Host`, a non-decimal or out-of-range `Content-Length`,
+  an embedded NUL, a bare CR, a header without a colon, obs-fold
+  continuations, a version other than HTTP/1.0 or 1.1, extra spaces in the
+  request line, control bytes or tabs in the method or target, a target that
+  is not origin-form, and a block over the caps. Verified on 2026-09-10, host
+  only: 55 `httpd-parsers` unit tests over byte-level fixtures (36 of them
+  new), a C11 ABI fixture `tests/c-abi/httpd-request.c` that carries the same
+  struct `httpd.h` declares and checks `rust_httpd_request_struct_size()`,
+  the fuzz smoke extended with a request-block generator and invariant checks
+  at three fixed seeds, `cargo fmt`, Clippy with warnings denied, the armv7
+  workspace check, `cargo vendor --locked` matching `rust/vendor`, the
+  rewritten `handle_request()` and `read_request_block()` extracted into a
+  stub translation unit and compiled `-fsyntax-only -std=gnu99 -Wall -Wextra`
+  under host gcc 15 and the Broadcom gcc 5.5 with five macro combinations
+  (identical diagnostics to the vendor code in every one), an armv7
+  `libhttpd_parsers.a` linked into the fixture with the Broadcom gcc 5.5
+  toolchain (link only, no local qemu), a full 31-patch replay on
+  `6be5bc84b50` re-locked to
+  `95ab75ead2f5c5b0f6b3827e2817cf13b30753e17c7a9e1320cbcd95f70fe094`, and the
+  three overlay checks. Size cost on armv7, measured by linking
+  `tests/c-abi/httpd.c` against the archive with and without the new module
+  and stripping: +12,288 bytes (`.text` +11,708, `.data` +128); `httpd` also
+  gains 50,456 bytes of `.bss` for the static 32,768-byte request block and
+  the 17,688-byte result struct, and loses the 10,000-byte stack buffer. No
+  firmware build, hosted run, QEMU run or hardware test has exercised the new
+  parser.
+- [ ] Prove the httparse request parser on a hosted build and on hardware.
+  `httpd` must compile and link the rewritten `handle_request()` against the
+  archive; then a real browser login, a firmware upload (multipart
+  `boundary=`, ~60 MB `Content-Length`), a `Range:` download, an
+  `If-None-Match:` revalidation, an ASUS app request (`applyapp.cgi`, long
+  `Cookie`) and an `Accept-Language:` switch have to be exercised, together
+  with the 400 answers for the newly refused shapes above. The 32,768-byte
+  block cap and the byte-at-a-time `getc()` reader also need a latency
+  measurement against the previous `fgets()` path on the router's CPU.
+- [ ] Then `rustls-ffi` for HTTPS; it needs a crypto-backend decision (the
   default is `aws-lc-rs`) and ARM build, ABI and consumer tests before use.
 
 ### BusyBox applet replacements (ntpd first)

@@ -13,6 +13,12 @@ use clientlist::render::{
 };
 use clientlist::snapshot::builder::SegmentBuilder;
 use clientlist::snapshot::Snapshot;
+use httpd_parsers::request::{
+    parse_request as parse_http_request, RequestError, ACCEPT_LANGUAGE_CAPACITY, BOUNDARY_CAPACITY,
+    COOKIE_CAPACITY, HOST_CAPACITY, IF_NONE_MATCH_CAPACITY, MAX_CONTENT_LENGTH, MAX_HEADERS,
+    MAX_HEADER_VALUE, MAX_REQUEST_BLOCK, MAX_REQUEST_LINE, RANGE_CAPACITY, REFERER_CAPACITY,
+    TARGET_CAPACITY, USER_AGENT_CAPACITY,
+};
 use httpd_parsers::{
     asus_wlan_security_is_valid, is_readonly_wireless_identity_key, multipart_filename_is_safe,
     query_is_valid, url_decode_in_place,
@@ -94,6 +100,160 @@ fn fuzz_http(input: &[u8]) {
             Err(_) => assert_eq!(decoded, original),
         }
     }
+}
+
+/// Everything an accepted request must satisfy.  A panic here is a remote
+/// crash: the workspace builds with `panic = "abort"`.
+fn request_invariants(block: &[u8]) {
+    let Ok(request) = parse_http_request(block) else {
+        return;
+    };
+    assert!(!block.is_empty() && block.len() <= MAX_REQUEST_BLOCK);
+    assert!(!block.contains(&0));
+    assert!(block[0] != b'\r' && block[0] != b'\n');
+    let line_feed = block
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .expect("a complete block ends its request line");
+    assert!(line_feed < MAX_REQUEST_LINE);
+
+    assert!(!request.target.is_empty());
+    assert_eq!(request.target[0], b'/');
+    assert!(request.target.len() < TARGET_CAPACITY);
+    assert!(request
+        .target
+        .iter()
+        .all(|byte| (0x21..=0x7e).contains(byte) || *byte >= 0x80));
+    assert!(request.query_offset <= request.target.len());
+    if request.query_offset < request.target.len() {
+        assert_eq!(request.target[request.query_offset], b'?');
+        assert!(!request.target[..request.query_offset].contains(&b'?'));
+    } else {
+        assert!(!request.target.contains(&b'?'));
+    }
+
+    assert!(request.minor_version <= 1);
+    if let Some(length) = request.content_length {
+        assert!(length <= MAX_CONTENT_LENGTH);
+    }
+
+    for (value, capacity) in [
+        (request.host, HOST_CAPACITY),
+        (request.user_agent, USER_AGENT_CAPACITY),
+        (request.cookie, COOKIE_CAPACITY),
+        (request.referer, REFERER_CAPACITY),
+        (request.range, RANGE_CAPACITY),
+        (request.if_none_match, IF_NONE_MATCH_CAPACITY),
+        (request.boundary, BOUNDARY_CAPACITY),
+        (request.accept_language, ACCEPT_LANGUAGE_CAPACITY),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        assert!(value.len() < capacity);
+        assert!(value.len() <= MAX_HEADER_VALUE);
+        assert!(!value.contains(&0));
+        assert!(value
+            .iter()
+            .all(|byte| *byte == b'\t' || (0x20..=0x7e).contains(byte) || *byte >= 0x80));
+    }
+    // Everything but the multipart boundary, which is a suffix of its own
+    // header value, comes back with the surrounding whitespace removed.
+    for value in [
+        request.host,
+        request.user_agent,
+        request.cookie,
+        request.referer,
+        request.range,
+        request.if_none_match,
+        request.accept_language,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        assert!(!value.starts_with(b" ") && !value.starts_with(b"\t"));
+        assert!(!value.ends_with(b" ") && !value.ends_with(b"\t"));
+    }
+}
+
+fn pick<'a>(rng: &mut Rng, items: &'a [&'a [u8]]) -> &'a [u8] {
+    items[(rng.next_u64() % items.len() as u64) as usize]
+}
+
+/// Assemble request blocks out of the random bytes so the parser sees
+/// structurally plausible traffic as well as arbitrary noise.
+fn synthesize_request(rng: &mut Rng, input: &[u8]) -> Vec<u8> {
+    const METHODS: [&[u8]; 7] = [
+        b"GET",
+        b"POST",
+        b"HEAD",
+        b"get",
+        b"OPTIONS",
+        b"",
+        b"P\x01OST",
+    ];
+    const TARGETS: [&[u8]; 7] = [
+        b"/",
+        b"/apply.cgi?x=1",
+        b"//",
+        b"index.asp",
+        b"http://router/a",
+        b"/a b",
+        b"*",
+    ];
+    const VERSIONS: [&[u8]; 6] = [
+        b"HTTP/1.1",
+        b"HTTP/1.0",
+        b"HTTP/2.0",
+        b"HTTP/1.9",
+        b"HTTP/1.",
+        b"",
+    ];
+    const NAMES: [&[u8]; 13] = [
+        b"Host",
+        b"Cookie",
+        b"User-Agent",
+        b"Referer",
+        b"Range",
+        b"If-None-Match",
+        b"Content-Length",
+        b"Transfer-Encoding",
+        b"Accept-Language",
+        b"Content-Type",
+        b"X-Pad",
+        b"Host-Forwarded",
+        b"",
+    ];
+    const SEPARATORS: [&[u8]; 5] = [b": ", b":", b":\t", b" : ", b" "];
+    const ENDINGS: [&[u8]; 5] = [b"\r\n", b"\n", b"\r", b"\r\n ", b"\r\n\t"];
+
+    let mut block = Vec::with_capacity(512);
+    block.extend_from_slice(pick(rng, &METHODS));
+    block.push(b' ');
+    block.extend_from_slice(pick(rng, &TARGETS));
+    block.push(b' ');
+    block.extend_from_slice(pick(rng, &VERSIONS));
+    block.extend_from_slice(b"\r\n");
+
+    let headers = (rng.next_u64() % 6) as usize;
+    let mut cursor = 0usize;
+    for _ in 0..headers {
+        block.extend_from_slice(pick(rng, &NAMES));
+        block.extend_from_slice(pick(rng, &SEPARATORS));
+        let take = (rng.next_u64() % 24) as usize;
+        let end = cursor.saturating_add(take).min(input.len());
+        block.extend_from_slice(&input[cursor.min(input.len())..end]);
+        cursor = end;
+        block.extend_from_slice(pick(rng, &ENDINGS));
+    }
+    block.extend_from_slice(b"\r\n");
+    block
+}
+
+fn fuzz_http_request(rng: &mut Rng, input: &[u8]) {
+    request_invariants(input);
+    let synthesized = synthesize_request(rng, input);
+    request_invariants(&synthesized);
 }
 
 fn fuzz_policy(input: &[u8]) {
@@ -598,6 +758,86 @@ fn regression_edges() {
     assert!(multipart_filename_is_safe(&[b'a'; 63]));
     assert!(!multipart_filename_is_safe(&[b'a'; 64]));
 
+    // Request-line and header boundaries, and every documented rejection.
+    assert!(parse_http_request(b"GET / HTTP/1.1\r\n\r\n").is_ok());
+    assert!(parse_http_request(b"GET / HTTP/1.0\n\n").is_ok());
+    for (block, expected) in [
+        (&b"GET / HTTP/1.1\r\n"[..], RequestError::Incomplete),
+        (&b"\r\n"[..], RequestError::RequestLine),
+        (&b"GET / HTTP/2.0\r\n\r\n"[..], RequestError::RequestLine),
+        (&b"GET  / HTTP/1.1\r\n\r\n"[..], RequestError::RequestLine),
+        (
+            &b"GET /a\tb HTTP/1.1\r\n\r\n"[..],
+            RequestError::RequestLine,
+        ),
+        (&b"GET a HTTP/1.1\r\n\r\n"[..], RequestError::Target),
+        (
+            &b"GET / HTTP/1.1\r\nHost a\r\n\r\n"[..],
+            RequestError::Header,
+        ),
+        (
+            &b"GET / HTTP/1.1\r\nA: 1\r\n b\r\n\r\n"[..],
+            RequestError::Header,
+        ),
+        (
+            &b"GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n"[..],
+            RequestError::Header,
+        ),
+        (&b"GET /\0 HTTP/1.1\r\n\r\n"[..], RequestError::EmbeddedNul),
+        (
+            &b"POST / HTTP/1.1\r\nContent-Length: 0x10\r\n\r\n"[..],
+            RequestError::ContentLength,
+        ),
+        (
+            &b"POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\n"[..],
+            RequestError::ContentLength,
+        ),
+        (
+            &b"POST / HTTP/1.1\r\nContent-Length: 1\r\nTransfer-Encoding: identity\r\n\r\n"[..],
+            RequestError::Framing,
+        ),
+        (
+            &b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n"[..],
+            RequestError::Framing,
+        ),
+    ] {
+        assert_eq!(parse_http_request(block).unwrap_err(), expected);
+    }
+    for count in [MAX_HEADERS, MAX_HEADERS + 1] {
+        let mut block = Vec::from(&b"GET / HTTP/1.1\r\n"[..]);
+        for index in 0..count {
+            block.extend_from_slice(format!("X-{index}: v\r\n").as_bytes());
+        }
+        block.extend_from_slice(b"\r\n");
+        assert_eq!(parse_http_request(&block).is_ok(), count == MAX_HEADERS);
+    }
+    for length in [MAX_HEADER_VALUE, MAX_HEADER_VALUE + 1] {
+        let mut block = Vec::from(&b"GET / HTTP/1.1\r\nX-Pad: "[..]);
+        block.resize(block.len() + length, b'a');
+        block.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(
+            parse_http_request(&block).is_ok(),
+            length == MAX_HEADER_VALUE
+        );
+    }
+    for length in [TARGET_CAPACITY - 1, TARGET_CAPACITY] {
+        let mut block = Vec::from(&b"GET "[..]);
+        block.push(b'/');
+        block.resize(b"GET ".len() + length, b'a');
+        block.extend_from_slice(b" HTTP/1.1\r\n\r\n");
+        assert_eq!(
+            parse_http_request(&block).is_ok(),
+            length == TARGET_CAPACITY - 1
+        );
+    }
+    for value in [MAX_CONTENT_LENGTH, MAX_CONTENT_LENGTH + 1] {
+        let block = format!("POST / HTTP/1.1\r\nContent-Length: {value}\r\n\r\n");
+        assert_eq!(
+            parse_http_request(block.as_bytes()).is_ok(),
+            value == MAX_CONTENT_LENGTH
+        );
+    }
+
     assert!(!openvpn_custom_config_allowed(&"a".repeat(8 * 1_024 + 1)));
     let _ = decode_history(&vec![0; rstats::HISTORY_V1_LEN]);
     let _ = decode_speeds(&vec![0; rstats::SPEED_RECORD_LEN]);
@@ -709,7 +949,7 @@ fn run(iterations: u64, seed: u64) {
     let mut rng = Rng(seed.max(1));
     for index in 0..iterations {
         let input = rng.bytes();
-        match index % 10 {
+        match index % 11 {
             0 => fuzz_http(&input),
             1 => fuzz_policy(&input),
             2 => fuzz_infosvr(&input),
@@ -719,7 +959,8 @@ fn run(iterations: u64, seed: u64) {
             6 => fuzz_wlif(&input),
             7 => fuzz_ntp(&mut rng, &input),
             8 => fuzz_ntp_discipline(&mut rng),
-            _ => fuzz_wanduck(&mut rng),
+            9 => fuzz_wanduck(&mut rng),
+            _ => fuzz_http_request(&mut rng, &input),
         }
     }
 }

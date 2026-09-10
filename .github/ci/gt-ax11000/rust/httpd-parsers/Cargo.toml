@@ -11,4 +11,5 @@ crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 clientlist = { path = "../clientlist" }
+httparse = { version = "1.10.1", default-features = false }
 router-policy = { path = "../router-policy" }

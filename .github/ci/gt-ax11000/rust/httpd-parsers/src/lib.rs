@@ -5,6 +5,13 @@ use core::{ptr, slice};
 use router_policy::testlab::{TestlabRequest, TESTLAB_CONFIRMATION};
 use router_policy::wlan::{Authentication, Cipher, ProtectedManagementFrames, WlanSecurityTuple};
 
+pub mod request;
+
+pub use request::{
+    parse_request, Method, ParsedRequest, RequestError, RustHttpdRequest, MAX_CONTENT_LENGTH,
+    MAX_HEADERS, MAX_HEADER_VALUE, MAX_REQUEST_BLOCK, MAX_REQUEST_LINE,
+};
+
 /// The client-list C ABI (`rust_httpd_clientlist_*`) lives in the
 /// `clientlist` crate; re-exporting it here keeps every `#[no_mangle]` entry
 /// point of the `httpd` consumer inside this single Rust archive.

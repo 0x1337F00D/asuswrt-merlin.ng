@@ -1,0 +1,498 @@
+diff --git a/release/src/router/httpd/httpd.h b/release/src/router/httpd/httpd.h
+--- a/release/src/router/httpd/httpd.h
++++ b/release/src/router/httpd/httpd.h
+@@ -414,6 +414,70 @@
+ extern size_t rust_httpd_query_capacity(const char *query, size_t length);
+ extern int rust_httpd_query_next(char *query, size_t length, size_t *cursor,
+ 	char **name_out, char **value_out);
++
++/* httpd.c: request line and header parsing (httpd-parsers/src/request.rs).
++ * The reader in httpd.c hands over the raw request block up to and including
++ * the terminating empty line; every value below is copied out bounded, and
++ * the body stays in the stream for handler->input(). */
++#define RUST_HTTPD_REQUEST_BLOCK_MAX		32768
++#define RUST_HTTPD_TARGET_CAPACITY		4096
++#define RUST_HTTPD_HOST_CAPACITY		512
++#define RUST_HTTPD_USER_AGENT_CAPACITY		2048
++#define RUST_HTTPD_COOKIE_CAPACITY		8192
++#define RUST_HTTPD_REFERER_CAPACITY		1024
++#define RUST_HTTPD_RANGE_CAPACITY		256
++#define RUST_HTTPD_IF_NONE_MATCH_CAPACITY	512
++#define RUST_HTTPD_BOUNDARY_CAPACITY		512
++#define RUST_HTTPD_ACCEPT_LANGUAGE_CAPACITY	512
++
++#define RUST_HTTPD_METHOD_GET			0
++#define RUST_HTTPD_METHOD_POST			1
++#define RUST_HTTPD_METHOD_HEAD			2
++#define RUST_HTTPD_METHOD_OTHER			3
++
++#define RUST_HTTPD_HAS_HOST			(1u << 0)
++#define RUST_HTTPD_HAS_USER_AGENT		(1u << 1)
++#define RUST_HTTPD_HAS_COOKIE			(1u << 2)
++#define RUST_HTTPD_HAS_REFERER			(1u << 3)
++#define RUST_HTTPD_HAS_RANGE			(1u << 4)
++#define RUST_HTTPD_HAS_IF_NONE_MATCH		(1u << 5)
++#define RUST_HTTPD_HAS_BOUNDARY			(1u << 6)
++#define RUST_HTTPD_HAS_ACCEPT_LANGUAGE		(1u << 7)
++#define RUST_HTTPD_HAS_CONTENT_LENGTH		(1u << 8)
++
++#define RUST_HTTPD_PARSE_OK			0
++#define RUST_HTTPD_ERR_INVALID_INPUT		-1
++#define RUST_HTTPD_ERR_INCOMPLETE		-2
++#define RUST_HTTPD_ERR_REQUEST_LINE		-3
++#define RUST_HTTPD_ERR_HEADER			-4
++#define RUST_HTTPD_ERR_TOO_LONG			-5
++#define RUST_HTTPD_ERR_TOO_MANY_HEADERS		-6
++#define RUST_HTTPD_ERR_EMBEDDED_NUL		-7
++#define RUST_HTTPD_ERR_CONTENT_LENGTH		-8
++#define RUST_HTTPD_ERR_FRAMING			-9
++#define RUST_HTTPD_ERR_TARGET			-10
++
++typedef struct rust_httpd_request {
++	int method;
++	int minor_version;
++	unsigned int present;
++	long content_length;
++	size_t target_len;
++	size_t query_offset;
++	char target[RUST_HTTPD_TARGET_CAPACITY];
++	char host[RUST_HTTPD_HOST_CAPACITY];
++	char user_agent[RUST_HTTPD_USER_AGENT_CAPACITY];
++	char cookie[RUST_HTTPD_COOKIE_CAPACITY];
++	char referer[RUST_HTTPD_REFERER_CAPACITY];
++	char range[RUST_HTTPD_RANGE_CAPACITY];
++	char if_none_match[RUST_HTTPD_IF_NONE_MATCH_CAPACITY];
++	char boundary[RUST_HTTPD_BOUNDARY_CAPACITY];
++	char accept_language[RUST_HTTPD_ACCEPT_LANGUAGE_CAPACITY];
++} rust_httpd_request_t;
++
++extern int rust_httpd_request_parse(const char *block, size_t length,
++	rust_httpd_request_t *output, size_t output_size);
++extern size_t rust_httpd_request_struct_size(void);
+ extern char *get_cgi(char *name);
+ extern void set_cgi(char *name, char *value);
+ extern void init_cgi(char *query);
+diff --git a/release/src/router/httpd/httpd.c b/release/src/router/httpd/httpd.c
+--- a/release/src/router/httpd/httpd.c
++++ b/release/src/router/httpd/httpd.c
+@@ -1233,16 +1233,66 @@
+ 	return status;
+ }
+ 
++/*
++ * Read the request line and every header line, up to and including the
++ * terminating empty line, and nothing more: the body has to stay in the
++ * stream for handler->input().  Reading byte by byte is what lets an
++ * embedded NUL reach the parser instead of being hidden by fgets().
++ *
++ * Returns the number of bytes placed in buffer, 0 when the peer closed
++ * before sending anything (the vendor answered nothing in that case), or
++ * -1 when the block did not fit.
++ */
++static ssize_t
++read_request_block(FILE *stream, char *buffer, size_t capacity)
++{
++	size_t used = 0, line_start = 0, end;
++	int c;
++
++	while (used < capacity) {
++		c = getc(stream);
++		if (c == EOF) {
++			if (used == 0)
++				return 0;
++			/*
++			 * The vendor's header fgets() returned NULL here and
++			 * served the request anyway, so terminate the block
++			 * and let the parser see the same request.
++			 */
++			if (capacity - used < 4)
++				return -1;
++			buffer[used++] = '\r';
++			buffer[used++] = '\n';
++			buffer[used++] = '\r';
++			buffer[used++] = '\n';
++			return (ssize_t) used;
++		}
++		buffer[used++] = (char) c;
++		if (c != '\n')
++			continue;
++		end = used - 1;
++		if (end > line_start && buffer[end - 1] == '\r')
++			end--;
++		if (end == line_start)
++			return (ssize_t) used;
++		line_start = used;
++	}
++
++	return -1;
++}
++
+ static void
+ handle_request(void)
+ {
+ #if !defined(RTCONFIG_HND_ROUTER)
+ 	static long flush_cache_t1 = 0;
+ #endif
+-	char line[10000], *cur;
+-	char *method, *path, *protocol, *boundary, *alang, *cookies, *referer, *useragent, *range = NULL;
++	static char request_block[RUST_HTTPD_REQUEST_BLOCK_MAX];
++	static rust_httpd_request_t request;
++	ssize_t block_len;
++	int parse_result;
++	char *path, *boundary, *alang, *cookies, *referer, *useragent, *range = NULL;
+     char *if_none_match = NULL;
+-	char *cp;
+ 	char *file;
+ 	int len;
+ 	struct mime_handler *handler;
+@@ -1264,191 +1314,133 @@
+ 	url_do_auth = 0;
+ 	boundary = cookies = referer = useragent = NULL;
+ 	host_name[0] = '\0';
+-	bzero( line, sizeof line );
+ 
+-	/* Parse the first line of the request. */
+-	if (fgets(line, sizeof(line), conn_fp) == NULL)
++	/* Read the request line and the headers, then hand the exact bytes to
++	 * the Rust parser.  None of the body is consumed here. */
++	block_len = read_request_block(conn_fp, request_block, sizeof(request_block));
++	if (block_len == 0)
+ 		return;
+-
+-	method = path = line;
+-	strsep(&path, " ");
+-	//while (*path == ' ') path++;
+-	while (path && *path == ' ') path++;	// oleg patch
+-	protocol = path;
+-	strsep(&protocol, " ");
+-	//while (*protocol == ' ') protocol++;
+-	while (protocol && *protocol == ' ') protocol++;    // oleg pat
+-	cp = protocol;
+-	strsep(&cp, " ");
+-	if ( !method || !path || !protocol ) {
++	if (block_len < 0) {
+ 		send_error( 400, "Bad Request", (char*) 0, "Can't parse request." );
+ 		return;
+ 	}
+-	cur = protocol + strlen(protocol) + 1;
+ 
+-#ifdef TRANSLATE_ON_FLY
+-	memset(Accept_Language, 0, sizeof(Accept_Language));
++	parse_result = rust_httpd_request_parse(request_block, (size_t) block_len,
++		&request, sizeof(request));
++	if (parse_result != RUST_HTTPD_PARSE_OK) {
++		if (parse_result == RUST_HTTPD_ERR_CONTENT_LENGTH ||
++		    parse_result == RUST_HTTPD_ERR_FRAMING)
++			send_error( 400, "Bad Request", (char*) 0, "Illegal HTTP Format." );
++		else
++			send_error( 400, "Bad Request", (char*) 0, "Can't parse request." );
++		return;
++	}
++
++	path = request.target;
++	if (request.present & RUST_HTTPD_HAS_CONTENT_LENGTH)
++		cl = (int) request.content_length;
++	if (request.present & RUST_HTTPD_HAS_USER_AGENT)
++		useragent = request.user_agent;
++	if (request.present & RUST_HTTPD_HAS_COOKIE) {
++		cookies = request.cookie;
++		strlcpy(cookies_buf, cookies, sizeof(cookies_buf));
++	}
++	if (request.present & RUST_HTTPD_HAS_REFERER) {
++		referer = request.referer;
++		strlcpy(referer_url, referer, sizeof(referer_url));
++	}
++	if (request.present & RUST_HTTPD_HAS_RANGE)
++		range = request.range;
++	if (request.present & RUST_HTTPD_HAS_IF_NONE_MATCH)
++		if_none_match = request.if_none_match;
++	if (request.present & RUST_HTTPD_HAS_BOUNDARY)
++		boundary = request.boundary;
++	if (request.present & RUST_HTTPD_HAS_HOST) {
++		sethost(request.host);
++#ifdef RTCONFIG_FINDASUS
++		snprintf(prouduct_id, sizeof(prouduct_id), "%s",get_productid());
++		for(i = 0 ; i < strlen(prouduct_id) ; i++ ){
++			prouduct_id[i] = tolower(prouduct_id[i]) ;
++		}
++		snprintf(id_local, sizeof(id_local), "%s.local",prouduct_id);
++		if(!strncmp(request.host, "findasus", 8) || !strncmp(request.host, id_local,strlen(id_local)))
++			isDeviceDiscovery = 1;
++		else
++			isDeviceDiscovery = 0;
+ #endif
++	}
+ 
+-	/* Parse the rest of the request headers. */
+-	while ( fgets( cur, line + sizeof(line) - cur, conn_fp ) != (char*) 0 )
+-	{
+-		//_dprintf("handle_request:cur = %s\n",cur);
+-		if ( *cur == '\0' || strcmp( cur, "\n" ) == 0 || strcmp( cur, "\r\n" ) == 0 ) {
+-			break;
+-		}
+ #ifdef TRANSLATE_ON_FLY
+-		else if ( strncasecmp( cur, "Accept-Language:", 16) == 0 ) {
+-			if (change_preferred_lang(0)) {
+-				struct language_table *pLang;
+-				char lang_buf[256], *p, *saveptr;
++	memset(Accept_Language, 0, sizeof(Accept_Language));
++
++	if (request.present & RUST_HTTPD_HAS_ACCEPT_LANGUAGE) {
++		if (change_preferred_lang(0)) {
++			struct language_table *pLang;
++			char lang_buf[256], *p, *saveptr;
+ 
+-				alang = cur + 16;
+-				strlcpy(lang_buf, alang, sizeof(lang_buf));
++			alang = request.accept_language;
++			strlcpy(lang_buf, alang, sizeof(lang_buf));
+ 
+-				p = lang_buf, strsep(&p, "\r\n");
+-				for (p = strtok_r(lang_buf, " ,;", &saveptr); p; p = strtok_r(NULL, " ,;", &saveptr))
++			p = lang_buf, strsep(&p, "\r\n");
++			for (p = strtok_r(lang_buf, " ,;", &saveptr); p; p = strtok_r(NULL, " ,;", &saveptr))
++			{
++				for (pLang = language_tables; pLang->Lang != NULL; pLang++)
+ 				{
+-					for (pLang = language_tables; pLang->Lang != NULL; pLang++)
++					if (strcasecmp(p, pLang->Lang) == 0)
+ 					{
+-						if (strcasecmp(p, pLang->Lang) == 0)
+-						{
+-							char dictname[32];
+-							_dprintf("handle_request: pLang->Lang = %s\n", pLang->Lang);
+-							if (!check_lang_support(pLang->Target_Lang))
+-								break;
+-
+-							snprintf(dictname, sizeof(dictname), "%s.dict", pLang->Target_Lang);
+-							if (!check_if_file_exist(dictname))
+-								break;
++						char dictname[32];
++						_dprintf("handle_request: pLang->Lang = %s\n", pLang->Lang);
++						if (!check_lang_support(pLang->Target_Lang))
++							break;
+ 
+-							snprintf(Accept_Language, sizeof(Accept_Language), "%s", pLang->Target_Lang);
++						snprintf(dictname, sizeof(dictname), "%s.dict", pLang->Target_Lang);
++						if (!check_if_file_exist(dictname))
+ 							break;
+-						}
+-					}
+ 
+-					if (*Accept_Language) {
+-						nvram_set("preferred_lang", Accept_Language);
++						snprintf(Accept_Language, sizeof(Accept_Language), "%s", pLang->Target_Lang);
+ 						break;
+ 					}
+ 				}
+ 
+-				change_preferred_lang(1);
+-			}
+-
+-			#ifdef RTCONFIG_DSL_TCLINUX
+-			if(is_firsttime()){
+-				if(nvram_match("preferred_lang", "CZ") || nvram_match("preferred_lang", "DE")) {
+-					int do_restart = 0;
+-					if( nvram_match("dslx_annex", "4")
+-						&& nvram_match("dsltmp_adslsyncsts", "down")
+-					){
+-						_dprintf("DSL: auto switch to annex b/j\n");
+-						nvram_set("dslx_annex", "6");
+-						do_restart = 1;
+-					}
+-					if(nvram_match("preferred_lang", "DE")
+-						&& nvram_match("dslx_vdsl_profile", "0")) {
+-						_dprintf("DSL: auto switch to 17a multi mode\n");
+-						nvram_set("dslx_vdsl_profile", "1");
+-						do_restart = 1;
+-					}
+-					if (do_restart)
+-						notify_rc("restart_dsl_setting");
++				if (*Accept_Language) {
++					nvram_set("preferred_lang", Accept_Language);
++					break;
+ 				}
+ 			}
+-			#endif
+-		}
+-#endif
+-		else if ( strncasecmp( cur, "User-Agent:", 11 ) == 0 )
+-		{
+-			cp = &cur[11];
+-			cp += strspn( cp, " \t" );
+-			useragent = cp;
+-			cur = cp + strlen(cp) + 1;
+-		}
+-		else if ( strncasecmp( cur, "Cookie:", 7 ) == 0 )
+-		{
+-			cp = &cur[7];
+-			cp += strspn( cp, " \t" );
+-			cookies = cp;
+-			strlcpy(cookies_buf, cookies, sizeof(cookies_buf));
+-			cur = cp + strlen(cp) + 1;
+-		}
+-		else if ( strncasecmp( cur, "Referer:", 8 ) == 0 )
+-		{
+-			cp = &cur[8];
+-			cp += strspn( cp, " \t" );
+-			referer = cp;
+-			if(referer)
+-				strlcpy(referer_url, referer, sizeof(referer_url));
+-			else
+-				memset(referer_url, 0, sizeof(referer_url));
+-			cur = cp + strlen(cp) + 1;
+-			//_dprintf("httpd referer = %s\n", referer);
+-		}
+-		else if ( strncasecmp( cur, "Host:", 5 ) == 0 )
+-		{
+-			cp = &cur[5];
+-			cp += strspn( cp, " \t" );
+-			sethost(cp);
+-			cur = cp + strlen(cp) + 1;
+-#ifdef RTCONFIG_FINDASUS
+-			snprintf(prouduct_id, sizeof(prouduct_id), "%s",get_productid());
+-			for(i = 0 ; i < strlen(prouduct_id) ; i++ ){
+-				prouduct_id[i] = tolower(prouduct_id[i]) ;
+-			}
+-			snprintf(id_local, sizeof(id_local), "%s.local",prouduct_id);
+-			if(!strncmp(cp, "findasus", 8) || !strncmp(cp, id_local,strlen(id_local)))
+-				isDeviceDiscovery = 1;
+-			else
+-				isDeviceDiscovery = 0;
+-#endif
+-		}
+-		else if (strncasecmp( cur, "Content-Length:", 15 ) == 0) {
+-			cp = &cur[15];
+-			cp += strspn( cp, " \t" );
+-			cl = strtoul( cp, NULL, 0 );
+-			if(cl < 0){
+-				send_error( 400, "Bad Request", (char*) 0, "Illegal HTTP Format." );
+-				return;
+-			}
++
++			change_preferred_lang(1);
+ 		}
+-		else if (strncasecmp( cur, "Transfer-Encoding:", 18 ) == 0) {
+-			cp = &cur[18];
+-			cp += strspn( cp, " \t" );
+-			if(strstr( cp, "chunked" )){
+-				send_error( 400, "Bad Request", (char*) 0, "Illegal HTTP Format." );
+-				return;
++
++		#ifdef RTCONFIG_DSL_TCLINUX
++		if(is_firsttime()){
++			if(nvram_match("preferred_lang", "CZ") || nvram_match("preferred_lang", "DE")) {
++				int do_restart = 0;
++				if( nvram_match("dslx_annex", "4")
++					&& nvram_match("dsltmp_adslsyncsts", "down")
++				){
++					_dprintf("DSL: auto switch to annex b/j\n");
++					nvram_set("dslx_annex", "6");
++					do_restart = 1;
++				}
++				if(nvram_match("preferred_lang", "DE")
++					&& nvram_match("dslx_vdsl_profile", "0")) {
++					_dprintf("DSL: auto switch to 17a multi mode\n");
++					nvram_set("dslx_vdsl_profile", "1");
++					do_restart = 1;
++				}
++				if (do_restart)
++					notify_rc("restart_dsl_setting");
+ 			}
+ 		}
+-		else if ((cp = strstr( cur, "boundary=" ))) {
+-			boundary = &cp[9];
+-			for ( cp = cp + 9; *cp && *cp != '\r' && *cp != '\n'; cp++ );
+-			*cp = '\0';
+-			cur = ++cp;
+-		}
+-		else if ( strncasecmp( cur, "Range:", 6 ) == 0 )
+-		{
+-			cp = &cur[6];
+-			cp += strspn( cp, " \t" );
+-			range = cp;
+-			cur = cp + strlen(cp) + 1;
+-		}
+-        else if ( strncasecmp( cur, "If-None-Match:", 14 ) == 0 )
+-        {
+-            cp = &cur[14];
+-            cp += strspn( cp, " \t" );
+-            if_none_match = cp;
+-            cur = cp + strlen(cp) + 1;
+-        }
++		#endif
+ 	}
++#endif
+ 
+ 	slowloris_check();
+ 
+ 	temp_ip_str = safe_uaddr_ntop(&login_uip_tmp, uip_tmp, sizeof(uip_tmp));
+ 
+-	if ( strcasecmp( method, "get" ) != 0 && strcasecmp(method, "post") != 0 && strcasecmp(method, "head") != 0 ) {
++	if ( request.method == RUST_HTTPD_METHOD_OTHER ) {
+ 		send_error( 501, "Not Implemented", (char*) 0, "That method is not implemented." );
+ 		return;
+ 	}
+@@ -1471,7 +1463,7 @@
+ 	}
+ 
+ //2008.08 magic{
+-	if (file[0] == '\0' || (index(file, '?') == NULL && file[len-1] == '/')){
++	if (file[0] == '\0' || (request.query_offset >= request.target_len && file[len-1] == '/')){
+ 		if (is_firsttime()
+ #ifdef RTCONFIG_FINDASUS
+ 		    && !isDeviceDiscovery
+@@ -1642,7 +1634,7 @@
+ 			if(login_state==3 && !fromapp) { // few pages can be shown even someone else login
+ 				 if(handler->auth || (!strncmp(file, "Main_Login.asp", 14) && login_error_status != 9) || mime_exception&MIME_EXCEPTION_NOPASS)
+ 				{
+-					if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
++					if(request.method == RUST_HTTPD_METHOD_POST && handler->input)	//response post request
+ 						while (cl--) (void)fgetc(conn_fp);
+ 
+ 					send_login_page(fromapp, NOLOGIN, NULL, NULL, 0, NOLOGINTRY);
+@@ -1681,7 +1673,7 @@
+ 					if(do_referer&CHECK_REFERER){
+ 						referer_result = referer_check(referer, fromapp);
+ 						if(referer_result != 0){
+-							if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
++							if(request.method == RUST_HTTPD_METHOD_POST && handler->input)	//response post request
+ 								while (cl--) (void)fgetc(conn_fp);
+ 
+ 							send_login_page(fromapp, referer_result, NULL, NULL, 0, NOLOGINTRY);
+@@ -1693,7 +1685,7 @@
+ 					auth_result = auth_check(url, file, cookies, fromapp, &add_try);
+ 					if (auth_result != 0)
+ 					{
+-						if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
++						if(request.method == RUST_HTTPD_METHOD_POST && handler->input)	//response post request
+ 							while (cl--) (void)fgetc(conn_fp);
+ 
+ 						send_login_page(fromapp, auth_result, url, file, auth_check_dt, add_try);
+@@ -1722,7 +1714,7 @@
+ 				if(do_referer&CHECK_REFERER){
+ 					referer_result = check_noauth_referrer(referer, fromapp);
+ 					if(referer_result != 0){
+-						if(strcasecmp(method, "post") == 0 && handler->input)	//response post request
++						if(request.method == RUST_HTTPD_METHOD_POST && handler->input)	//response post request
+ 							while (cl--) (void)fgetc(conn_fp);
+ 
+ 						send_login_page(fromapp, referer_result, NULL, NULL, 0, NOLOGINTRY);
+@@ -1737,7 +1729,7 @@
+ 				send_login_page(fromapp, ISLOGOUT, NULL, NULL, 0, NOLOGINTRY);
+ 				return;
+ 			}
+-			if (strcasecmp(method, "post") == 0 && !handler->input) {
++			if (request.method == RUST_HTTPD_METHOD_POST && !handler->input) {
+ 				send_error(501, "Not Implemented", NULL, "That method is not implemented.");
+ 				return;
+ 			}
+@@ -1821,7 +1813,7 @@
+ 			}else if (strncmp(url, "login.cgi", strlen(url)) != 0 && strcmp(file, "login_v2.cgi")) {
+ 				send_headers(status, title, final_header, handler->mime_type, fromapp);
+ 			}
+-			if (strcasecmp(method, "head") != 0 && handler->output) {
++			if (request.method != RUST_HTTPD_METHOD_HEAD && handler->output) {
+ 				handler->output(file, conn_fp);
+ 			}
+ 			break;

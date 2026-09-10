@@ -19,6 +19,28 @@ raw calibration keys, authorizes only a country-profile test-lab request, and
 validates complete WLAN authentication/cipher/PMF/WPS tuples. The HTTP state
 machine, CGI hash table and request handlers remain in C.
 
+`httpd-parsers` also owns the HTTP request line and header block. The vendor
+`handle_request()` split the request line with `strsep()` and matched headers
+with `strncasecmp()` prefixes inside one shared 10,000-byte `char line[]`,
+advancing a cursor only for the headers it kept, so there was no bound on the
+number or size of headers, `Content-Length` was read with
+`strtoul(cp, NULL, 0)` into an `int` (making `0x10` and `010` hexadecimal and
+octal), and an embedded NUL could never be seen because `fgets()` hides it.
+`src/request.rs` replaces that with `httparse 1.10.1`
+(`default-features = false`, so no `std` and no SIMD) behind explicit caps:
+32,768 bytes per request block, 8,192 bytes of request line, 128 header
+fields, 8,192 bytes per header value, a 4,096-byte request target, and a
+`Content-Length` that has to be plain decimal in 0..=2,147,483,647. Only the
+headers `httpd.c` actually consumes come back - `Host`, `User-Agent`,
+`Cookie`, `Referer`, `Accept-Language`, `Range`, `If-None-Match`,
+`Content-Length`, `Transfer-Encoding` and the `boundary=` parameter - each
+copied into a fixed field of one `#[repr(C)]` result whose `sizeof` the caller
+must pass in. `httpd.c` keeps the socket read, which stops at the terminating
+empty line so `handler->input()` still frames the body itself; the request
+target, the CGI dispatch, the `.asp`/`.htm` no-cache and CSRF paths and the
+authentication flow are unchanged. Every failure is a distinct negative
+sentinel and leaves the result fully zeroed.
+
 The fourth component is `wanduck-transition`. It owns the pure, duplicated
 dual-WAN failover/failback transition logic while PHY probes, NVRAM access,
 restart actions and logging stay in the existing C daemon. Its typed state
