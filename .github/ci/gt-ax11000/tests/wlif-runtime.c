@@ -3,6 +3,16 @@
 #include <sys/stat.h>
 #include <sys/prctl.h>
 
+/* -Dkill=wlif_test_kill: count every signal the runner sends, so a test can
+ * prove that a path sends none.  <signal.h> supplies the declaration.
+ */
+int wlif_test_kills;
+int wlif_test_kill(pid_t pid, int sig)
+{
+	wlif_test_kills++;
+	return (int)syscall(SYS_kill, (long)pid, (long)sig);
+}
+
 static void check_reaped(void)
 {
 	int status;
@@ -48,6 +58,15 @@ int main(int argc, char **argv)
 					pause();
 			return 0;
 		}
+		if (!strcmp(argv[1], "fdshort")) {
+			/* Holds stdout past the deadline, then exits by itself. */
+			if (fork() == 0) {
+				struct timespec nap = { 0, 400000000 };
+				nanosleep(&nap, NULL);
+				_exit(0);
+			}
+			return 5;
+		}
 		return 97;
 	}
 	/* Adopt/reap the deliberate pipe-holding grandchild in this fixture. */
@@ -80,6 +99,35 @@ int main(int argc, char **argv)
 	assert(waitpid(-1, &status, 0) > 0);
 	assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
 	check_reaped();
+	/* A descendant holding stdout must not stall a caller that captures
+	 * nothing.  wl_wlif_wps_pbc_hdlr and wl_wlif_wps_stop_session pass
+	 * output == NULL, where the vendor used system() and opened no pipe;
+	 * waiting for pipe EOF there turned a WPS button press into a full
+	 * WLIF_CLI_TIMEOUT_MS freeze and discarded the child's real status.
+	 */
+	command[1] = "fdshort";
+	started = wl_wlif_milliseconds();
+	status = wl_wlif_run_argv(command, NULL, 0);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 5);
+	assert(wl_wlif_milliseconds() - started < 150);
+	/* The grandchild outlives the call and must not have been signalled. */
+	assert(waitpid(-1, &status, 0) > 0);
+	assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	check_reaped();
+	/* A caller that ignores SIGCHLD has its children reaped by the kernel.
+	 * The runner must report that the way system() does and must never
+	 * signal a pid it no longer owns: it can already have been recycled,
+	 * and libshared.so is loaded by roughly sixty root processes.
+	 */
+	inherited = wlif_test_kills;
+	assert(signal(SIGCHLD, SIG_IGN) != SIG_ERR);
+	command[1] = "exit7";
+	errno = 0;
+	status = wl_wlif_run_argv(command, NULL, 0);
+	assert(status == -1 && errno == ECHILD);
+	assert(wlif_test_kills == inherited);
+	assert(signal(SIGCHLD, SIG_DFL) != SIG_ERR);
+	check_reaped();
 	inherited = open("/dev/null", O_RDONLY);
 	assert(inherited >= 0);
 	/* Sparse high descriptor catches both leaks and million-entry scans. */
@@ -107,6 +155,6 @@ int main(int argc, char **argv)
 	status = wl_wlif_run_argv(command, NULL, 0);
 	assert(WIFEXITED(status) && WEXITSTATUS(status) == 127);
 	check_reaped();
-	puts("wlif runtime: raw status, argv, timeout, overflow, reaping, FD closure, ENOEXEC passed");
+	puts("wlif runtime: raw status, argv, timeout, overflow, reaping, FD closure,\n             detached descendant, foreign reaper, ENOEXEC passed");
 	return 0;
 }

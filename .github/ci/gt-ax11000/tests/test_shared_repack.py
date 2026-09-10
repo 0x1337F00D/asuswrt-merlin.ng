@@ -25,7 +25,7 @@ class SharedRepack(unittest.TestCase):
         build = (ROOT / "build.sh").read_text()
         actual = set(build.split("rust_relinked_consumers=(", 1)[1].split(")", 1)[0].split())
         self.assertEqual(expected, actual)
-        self.assertEqual(len(expected), 11)
+        self.assertEqual(len(expected), 13)
         workflow = (ROOT.parents[1] / "workflows/build-gt-ax11000.yml").read_text()
         exclusions = re.findall(r"rootfs_excludes\+=\((.*?)\)", workflow, re.S)
         self.assertEqual(len(exclusions), 2)
@@ -38,7 +38,7 @@ class SharedRepack(unittest.TestCase):
         end = recipe.index("\n\t# Package install", start)
         commands = recipe[start:end].replace("$$", "$")
         pairs = re.findall(r"promote_artifact \$\(PROFILE_DIR\)/fs.install/(\S+) \\\n\s*\$\(PROFILE_DIR\)/fs.install/(\S+)", commands)
-        self.assertEqual(len(pairs), 11)
+        self.assertEqual(len(pairs), 13)
         with tempfile.TemporaryDirectory(prefix="shared-repack-", dir=os.environ.get("TMPDIR", "/tmp")) as tmp:
             stage = Path(tmp) / "fs.install"
             for source, dest in pairs:

@@ -33,7 +33,7 @@ grep -Fq '$(MAKE) -C router networkmap-install' "$repack_make"
 # rust-fast build only has to replace the shared object itself.
 grep -Fq '$(MAKE) -C router zlib-install' "$repack_make"
 grep -Fq '$(PROFILE_DIR)/fs.install/zlib/usr/lib/libz.so.1' "$repack_make"
-grep -Fq 'usr/sbin/lld2d > $(RUST_CONSUMER_MANIFEST)' "$repack_make"
+grep -Eq '^[[:space:]]+usr/sbin/lld2d([[:space:]]|$)' "$repack_make"
 # The LLTD responder is a standalone package, so rust-fast relinks it the
 # same way it relinks infosvr rather than carrying the previous binary.
 grep -Fq '$(MAKE) -C router lltd.arm-install' "$repack_make"
@@ -45,7 +45,9 @@ grep -Fq 'usr/lib/libz.so.1 \' "$repack_make"
 grep -Fq '$(MAKE) -C router wsdd2' "$repack_make"
 grep -Fq '$(MAKE) -C router wsdd2-install' "$repack_make"
 grep -Fq '$(PROFILE_DIR)/fs.install/wsdd2/usr/sbin/wsdd2' "$repack_make"
-grep -Fq 'usr/sbin/wsdd2 > $(RUST_CONSUMER_MANIFEST)' "$repack_make"
+grep -Eq '^[[:space:]]+usr/sbin/wsdd2([[:space:]]|$)' "$repack_make"
+# Exactly one manifest entry may terminate the list.
+test "$(grep -c '> $(RUST_CONSUMER_MANIFEST)' "$repack_make")" -eq 1
 grep -Fq 'zlib-install: $(RUST_ZLIB_SHARED_DEPS)' "$router_make"
 grep -Fq 'source_mode="$$(stat -c '\''%a'\'' "$$source_file")"' "$repack_make"
 grep -Fq 'install -D -m "$$source_mode" "$$source_file" "$$target_file"' "$repack_make"

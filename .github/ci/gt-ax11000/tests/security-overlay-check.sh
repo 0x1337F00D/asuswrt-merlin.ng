@@ -341,6 +341,19 @@ reject_text "$ntp_rust/main.rs" 'UdpSocket::bind((Ipv4Addr::UNSPECIFIED, NTP_POR
 # client has.  It comes from the kernel entropy pool, one draw per query, and
 # never from the xorshift generator that also produces the poll jitter: that
 # jitter is observable from the LAN, and xorshift64 is invertible.
+# Periodic housekeeping must sit directly in the main loop body, not inside
+# the poll-timeout branch: a busy LAN would otherwise starve the unsync check
+# and the eleven-minute hook indefinitely.  Unit tests call housekeeping()
+# directly and cannot see where the loop calls it, so pin the placement by
+# indentation: twelve spaces is the loop body, deeper is a conditional.
+if [ "$(grep -c '^            self.housekeeping(now);$' "$ntp_rust/main.rs")" -ne 1 ]; then
+	echo "ntp housekeeping is not called once directly from the main loop body" >&2
+	exit 1
+fi
+if grep -q '^ \{13,\}self\.housekeeping(' "$ntp_rust/main.rs"; then
+	echo "ntp housekeeping is nested inside a conditional in the main loop" >&2
+	exit 1
+fi
 require_text "$ntp_rust/main.rs" 'read: sys::secure_random_bytes,'
 require_text "$ntp_rust/sys.rs" 'libc::SYS_getrandom,'
 require_text "$ntp_rust/sys.rs" 'libc::GRND_NONBLOCK,'

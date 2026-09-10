@@ -206,6 +206,10 @@ struct Daemon {
     root_dispersion: f64,
     kernel_freq_ppm: i64,
     last_script_run: f64,
+    /// Which action word the last hook ran with. A timestamp alone cannot
+    /// tell a test that the *right* hook ran, only that some hook did.
+    #[cfg(test)]
+    last_script_action: Option<ScriptAction>,
     burst_remaining: u32,
     script: Option<PathBuf>,
 }
@@ -281,6 +285,8 @@ fn run(options: Options) -> std::io::Result<()> {
         root_dispersion: 0.0,
         kernel_freq_ppm: sys::kernel_freq_ppm(),
         last_script_run: now,
+        #[cfg(test)]
+        last_script_action: None,
         burst_remaining,
         script,
     };
@@ -857,7 +863,17 @@ impl Daemon {
             // Keep the old sample epoch so a denied forward step cannot
             // reject all later samples as stale. Stop publishing sync even
             // if we had been synchronised before this failure.
+            let was_synchronised = self.discipline.is_synchronised();
             self.discipline.clamp_poll_and_unsync();
+            if was_synchronised {
+                // check_unsync() returns early once synchronisation is gone,
+                // so it can never report this afterwards. Without a hook here
+                // the daemon silently stops serving the LAN and nothing on
+                // the system is told that it did.
+                self.logger
+                    .warning("clock write failed while synchronised; clock is unsynchronised");
+                self.run_script_at(ScriptAction::Unsync, 0.0, now);
+            }
             return Err(());
         }
         self.discipline = next_discipline;
@@ -998,6 +1014,10 @@ impl Daemon {
 
     fn run_script_at(&mut self, action: ScriptAction, offset: f64, now: f64) {
         self.last_script_run = now;
+        #[cfg(test)]
+        {
+            self.last_script_action = Some(action);
+        }
         let Some(script) = self.script.clone() else {
             return;
         };
@@ -1538,7 +1558,11 @@ mod tests {
             Err(())
         );
         assert!(!daemon.server_state().is_synchronised());
-        assert_eq!(daemon.last_script_run, hook_time);
+        // A failed write must not claim success, but losing synchronisation
+        // has to be reported: check_unsync() bails out once it is gone, so
+        // nothing else would ever say so.
+        assert_ne!(daemon.last_script_run, hook_time);
+        assert_eq!(daemon.last_script_action, Some(ScriptAction::Unsync));
         assert_eq!(daemon.kernel_freq_ppm, 0);
         clock.deny_slew = false;
         assert_eq!(
@@ -1690,6 +1714,7 @@ mod tests {
                 root_dispersion: 0.0,
                 kernel_freq_ppm: 0,
                 last_script_run: NOW,
+                last_script_action: None,
                 burst_remaining: 0,
                 script: None,
             }

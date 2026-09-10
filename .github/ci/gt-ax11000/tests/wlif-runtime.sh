@@ -17,7 +17,8 @@ perl -0777 -e '
 ' "$root/../patches/wlif-shell-hardening.patch" "$root/wlif-runtime.c" |
   "${WLIF_RUNTIME_CC:-cc}" -std=gnu11 -Wall -Wextra -Werror -O2 \
     -DWLIF_CLI_TIMEOUT_MS=200 -DWLIF_CLI_DIRS="\"$fixture_dir\"" \
-    -DWLIF_TEST_DIR="\"$fixture_dir\"" -x c - -o "$fixture_dir/wlif-runtime"
+    -DWLIF_TEST_DIR="\"$fixture_dir\"" -Dkill=wlif_test_kill \
+    -x c - -o "$fixture_dir/wlif-runtime"
 if [ "${WLIF_RUNTIME_COMPILE_ONLY:-0}" != 1 ]; then
   "$fixture_dir/wlif-runtime"
 fi

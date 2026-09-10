@@ -178,9 +178,13 @@ jobs:
             sed -n -e 's#^--- a/##p' -e 's#^+++ b/##p' \
               "$patch_root/$patch_name"
           done < "$patch_root/series" > "$patched_paths"
-          # config_base is deliberately inspected by the hardening gate even
-          # though no overlay patch modifies it.
-          printf '%s\n' release/src/router/config_base >> "$patched_paths"
+          # These files are deliberately inspected by the gates even though no
+          # overlay patch modifies them.  config_base is read by the hardening
+          # gate; rc/usb.c is the unpatched vendor call site whose argv and
+          # process-name contract the Rust wsdd2 replacement has to keep.
+          printf '%s\n' \
+            release/src/router/config_base \
+            release/src/router/rc/usb.c >> "$patched_paths"
           LC_ALL=C sort -u -o "$patched_paths" "$patched_paths"
           test "$(wc -l < "$patched_paths")" -ge 60
           while IFS= read -r patched_path; do
@@ -594,7 +598,7 @@ jobs:
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
             # rust-components-relink reinstalls every manifested consumer,
-            # so all eleven may legitimately differ when the Rust state does:
+            # so all thirteen may legitimately differ when the Rust state does:
             # libshared.so comes from shared-install (install: all),
             # /usr/sbin/ntp comes from rc-install alongside sbin/rc,
             # networkmap and its libbwdpi.so provider from networkmap-install,
@@ -713,7 +717,7 @@ jobs:
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
             # Keep this list identical to the snapshot step: only the
             # reinstalled consumers may differ, and rust-components-relink
-            # reinstalls all eleven of them.
+            # reinstalls all thirteen of them.
             rootfs_excludes+=(
               usr/lib/libshared.so
               usr/sbin/infosvr
