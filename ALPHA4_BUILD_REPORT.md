@@ -32,7 +32,7 @@ Independent agent review was not requested for this iteration; self-review.
 - Fuzz smoke: 250000 iterations for each of three seeds (750000 total).
 - 35 fake-transport trial/backup/controller tests. No router calls.
 - Source overlay, network hardening, private firewall capture, relink/repack,
-  version/input-lock/copy/gate checks; 18 workflow tests after trigger fix.
+  version/input-lock/copy/gate checks; 19 workflow tests after CI setup fixes.
 - Executed extracted httpd start_ssl with synthetic C stubs in four lifecycle
   cases; the alpha3 function fails the credential-preservation negative control.
 
@@ -98,7 +98,29 @@ SHA-256: `6b6fea55551fbcc1eb30e146ad5abdfbb49f8fa8c5998016242126de4d7f80df`.
 Provenance: [Debian qemu-user package](https://packages.debian.org/trixie/amd64/qemu-user/download).
 Original failure logs and successful retests are retained as evidence.
 
-Post-push GitHub CI is pending; local results are not GitHub run evidence.
+Initial [GitHub run 34589762716](https://github.com/0x1337F00D/asuswrt-merlin.ng/actions/runs/34589762716)
+passed security overlay, trial, native Rust/clippy and all new namespace
+tests, then failed ring's cross-check: --no-install-recommends omitted ARM
+libc headers, which the workflow installed only in a later step. CI-only
+commit `abbd5a0a1c4` installs libc6-dev-armel-cross early and preprocesses
+stdint.h before Cargo. A new workflow regression fails against the previous
+setup and passes after correction. Firmware Rust and patches are unchanged.
+The [replacement run 34590030069](https://github.com/0x1337F00D/asuswrt-merlin.ng/actions/runs/34590030069)
+at `abbd5a0a1c42e3ffe261a8615029b24aef41659a` PASSED all three jobs:
+Security overlay, Rust (including ARM security C ABI execution), Trial
+controller. The firmware job was intentionally skipped: the full image was
+built locally, not on GitHub. Subsequent report-only commits do not change
+the tested firmware source or workflow.
+
+One extra attempt to reuse the native infosvr network fixture directly with
+the extracted ARM executable timed out on its LAN positive control. This
+fixture configures INFOSVR_* environment variables, which only the native
+Config implementation reads. ARM intentionally reads the vendor nvram_get
+API instead; no router NVRAM exists in this emulation. Therefore this attempt
+is NOT a passing extracted-infosvr networking test and does not establish a
+firmware regression. Native positive/negative tests and their GitHub repeat
+pass; actual ARM infosvr configuration/response needs the evening hardware
+test (or a separately explicit vendor-NVRAM fixture). Failure log retained.
 
 The Tier-3 branch was absent from the workflow's push triggers, explaining
 why its previous push had no runs. The branch trigger is now included and
