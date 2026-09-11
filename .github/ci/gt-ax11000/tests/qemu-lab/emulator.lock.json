@@ -1,0 +1,7 @@
+{
+  "package": "qemu-user_11.1.1+ds-1_amd64.deb",
+  "url": "https://deb.debian.org/debian/pool/main/q/qemu/qemu-user_11.1.1+ds-1_amd64.deb",
+  "sha256": "24659b853102d7f00ea28c30d266fbb28a231d0d3795112e52080c5a7b52bc49",
+  "bytes": 72461700,
+  "provenance": "https://packages.debian.org/sid/amd64/qemu-user/download"
+}

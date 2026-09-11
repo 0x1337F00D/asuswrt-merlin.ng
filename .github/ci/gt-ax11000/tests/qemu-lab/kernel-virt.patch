@@ -1,0 +1,50 @@
+--- a/Makefile
++++ b/Makefile
+@@ -417,7 +417,9 @@
+ 		   -Wno-format-security \
+ 		   -std=gnu89
+ 
+-include ../../.config
++# Lab-only: do not require the router product configuration for virt.
++# Never apply this patch to a firmware build.
++BUILD_NAME ?= QEMU_LAB
+ MODEL = $(subst -,,$(BUILD_NAME))
+ KBUILD_CFLAGS += -D$(MODEL)
+ ifeq ($(SWITCH2),BCM53134)
+--- a/Kconfig
++++ b/Kconfig
+@@ -14,11 +14,14 @@
+ 
+ menu "Broadcom Specific Configurations"
+ 
++config QEMU_LAB
++	bool
++	default y
+-source "Kconfig.bcm_kf"
+-source "Kconfig.bcm"
++# Lab excludes Broadcom board selectors and generated external driver Kconfig.
+ 
+ endmenu
+ 
+ config BCM_IN_KERNEL
+ 	bool
++	default n if QEMU_LAB
+ 	default y
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -3840,6 +3840,7 @@
+ 					      bool more)
+ {
+ 	skb->xmit_more = more ? 1 : 0;
++#if defined(CONFIG_BCM_KF_WL)
+ 	if (PKTDEVQXMIT(skb) && (dev->priv_flags & IFF_EBRIDGE)) {
+ 		struct net_bridge *br = netdev_priv(dev);
+ 		const unsigned char *dest = skb->data;
+@@ -3849,6 +3850,7 @@
+ 			return txdev->netdev_ops->ndo_start_xmit(skb, txdev);
+ 		}
+ 	}	
++#endif
+ 	return ops->ndo_start_xmit(skb, dev);
+ }
+ 
