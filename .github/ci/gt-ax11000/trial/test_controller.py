@@ -426,6 +426,13 @@ class GuardSourceTests(unittest.TestCase):
         self.assertIn('/bin/bcm_bootstate "$FALLBACK_STATE"', hold_block)
         self.assertNotIn('"$CANDIDATE_STATE"', hold_block)
 
+    def test_persistent_guard_health_check_is_read_only(self):
+        source = Path(__file__).with_name("router-persistent-guard.sh").read_text()
+        check_block = source.split("\tcheck)", 1)[1].split("\t\t;;", 1)[0]
+        self.assertIn("if healthy", check_block)
+        self.assertNotIn("bcm_bootstate", check_block)
+        self.assertNotIn("set_state", check_block)
+
 
 if __name__ == "__main__":
     unittest.main()

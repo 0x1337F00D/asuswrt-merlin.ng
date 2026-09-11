@@ -7,8 +7,10 @@
 //! below and may only apply a change after successful validation.
 
 pub mod firewall;
+pub mod qos;
 pub mod testlab;
 pub mod vpn;
+pub mod vpn_runtime;
 pub mod wlan;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

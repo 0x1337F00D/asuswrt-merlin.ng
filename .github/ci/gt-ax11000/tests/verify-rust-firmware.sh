@@ -24,6 +24,7 @@ artifacts=(
 	"usr/sbin/infosvr"
 	"usr/sbin/Notify_Event2NC"
 	"usr/sbin/httpd"
+	"usr/sbin/networkmap"
 	"sbin/rc"
 )
 

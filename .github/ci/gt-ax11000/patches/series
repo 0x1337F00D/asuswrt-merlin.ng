@@ -3,7 +3,10 @@
 local-features.patch
 gt-ax11000-wsl.patch
 fast-parallel-build.patch
+jobserver-recursive-makes.patch
+kernel-cache-reuse.patch
 rust-components.patch
+rust-fast-httpd-relink.patch
 security-hardening.patch
 wps-shell-hardening.patch
 wireless-policy-ui.patch
@@ -13,3 +16,8 @@ wireless-service-testlab-stability.patch
 network-hardening.patch
 runtime-hardening-2026.patch
 wifi-upstream-security.patch
+firewall-guard-retry.patch
+networkmap-rust-compat.patch
+local-qos-rust.patch
+networkmap-shm-abi.patch
+private-firewall-capture.patch

@@ -540,6 +540,183 @@ pub unsafe extern "C" fn rust_httpd_wlan_security_validate(
     ))
 }
 
+const MAX_CONNTRACK_LINE: usize = 2_048;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConntrackTraffic {
+    pub protocol: String,
+    pub source: String,
+    pub destination: String,
+    pub source_port: u16,
+    pub destination_port: u16,
+    pub original_bytes: u64,
+    pub reply_bytes: u64,
+}
+
+fn token_value<'a>(token: &'a str, key: &str) -> Option<&'a str> {
+    token.strip_prefix(key)?.strip_prefix('=')
+}
+
+pub fn parse_conntrack_traffic(line: &str) -> Option<ConntrackTraffic> {
+    if line.is_empty() || line.len() > MAX_CONNTRACK_LINE || !line.is_ascii() {
+        return None;
+    }
+
+    let mut protocol = None;
+    let mut sources = Vec::with_capacity(2);
+    let mut destinations = Vec::with_capacity(2);
+    let mut source_ports = Vec::with_capacity(2);
+    let mut destination_ports = Vec::with_capacity(2);
+    let mut byte_counts = Vec::with_capacity(2);
+
+    for token in line.split_ascii_whitespace() {
+        if protocol.is_none() && matches!(token, "tcp" | "udp" | "icmp" | "icmpv6" | "gre") {
+            protocol = Some(token);
+        } else if let Some(value) = token_value(token, "src") {
+            if sources.len() < 2 && value.parse::<std::net::IpAddr>().is_ok() {
+                sources.push(value);
+            }
+        } else if let Some(value) = token_value(token, "dst") {
+            if destinations.len() < 2 && value.parse::<std::net::IpAddr>().is_ok() {
+                destinations.push(value);
+            }
+        } else if let Some(value) = token_value(token, "sport") {
+            if source_ports.len() < 2 {
+                source_ports.push(value.parse::<u16>().ok()?);
+            }
+        } else if let Some(value) = token_value(token, "dport") {
+            if destination_ports.len() < 2 {
+                destination_ports.push(value.parse::<u16>().ok()?);
+            }
+        } else if let Some(value) = token_value(token, "bytes") {
+            if byte_counts.len() < 2 {
+                byte_counts.push(value.parse::<u64>().ok()?);
+            }
+        }
+    }
+
+    let protocol = protocol?;
+    if sources.len() != 2 || destinations.len() != 2 || byte_counts.len() != 2 {
+        return None;
+    }
+    let ports_required = matches!(protocol, "tcp" | "udp");
+    if ports_required && (source_ports.len() != 2 || destination_ports.len() != 2) {
+        return None;
+    }
+
+    Some(ConntrackTraffic {
+        protocol: protocol.to_owned(),
+        source: sources[0].to_owned(),
+        destination: destinations[0].to_owned(),
+        source_port: source_ports.first().copied().unwrap_or(0),
+        destination_port: destination_ports.first().copied().unwrap_or(0),
+        original_bytes: byte_counts[0],
+        reply_bytes: byte_counts[1],
+    })
+}
+
+#[repr(C)]
+pub struct RustConntrackTraffic {
+    pub source: [c_char; 48],
+    pub destination: [c_char; 48],
+    pub protocol: [c_char; 8],
+    pub original_bytes: u64,
+    pub reply_bytes: u64,
+    pub source_port: u16,
+    pub destination_port: u16,
+}
+
+fn copy_c_field<const N: usize>(output: &mut [c_char; N], value: &str) -> bool {
+    if value.len() >= N || value.as_bytes().contains(&0) {
+        return false;
+    }
+    output.fill(0);
+    for (target, source) in output.iter_mut().zip(value.bytes()) {
+        *target = source as c_char;
+    }
+    true
+}
+
+/// Parse one bounded kernel conntrack record into a fixed, allocation-free C
+/// result.  Only validated IP addresses, protocol names, ports and counters
+/// cross the ABI boundary.
+///
+/// # Safety
+///
+/// `line` must reference exactly `length` readable bytes and `output` must be
+/// writable for one `RustConntrackTraffic` value.
+#[no_mangle]
+pub unsafe extern "C" fn rust_httpd_conntrack_traffic_parse(
+    line: *const c_char,
+    length: usize,
+    output: *mut RustConntrackTraffic,
+) -> c_int {
+    if line.is_null() || output.is_null() || length == 0 || length > MAX_CONNTRACK_LINE {
+        return 0;
+    }
+    // SAFETY: The caller contract requires exactly `length` readable bytes.
+    let bytes = unsafe { slice::from_raw_parts(line.cast::<u8>(), length) };
+    let Ok(line) = core::str::from_utf8(bytes) else {
+        return 0;
+    };
+    let Some(record) = parse_conntrack_traffic(line) else {
+        return 0;
+    };
+    let mut candidate = RustConntrackTraffic {
+        source: [0; 48],
+        destination: [0; 48],
+        protocol: [0; 8],
+        original_bytes: record.original_bytes,
+        reply_bytes: record.reply_bytes,
+        source_port: record.source_port,
+        destination_port: record.destination_port,
+    };
+    if !copy_c_field(&mut candidate.source, &record.source)
+        || !copy_c_field(&mut candidate.destination, &record.destination)
+        || !copy_c_field(&mut candidate.protocol, &record.protocol)
+    {
+        return 0;
+    }
+    // SAFETY: `output` is writable for one value by contract. The complete
+    // candidate is committed only after every field has validated.
+    unsafe { ptr::write(output, candidate) };
+    1
+}
+
+/// Reject the removed proprietary mode while retaining the two local modes.
+///
+/// # Safety
+///
+/// `mode` must address a NUL-terminated string for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_httpd_local_qos_mode_allowed(mode: *const c_char) -> c_int {
+    if mode.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    unsafe { CStr::from_ptr(mode) }
+        .to_str()
+        .is_ok_and(router_policy::qos::local_qos_mode_allowed)
+        .into()
+}
+
+/// Accept only bounded decimal kbit/s values before legacy QoS code reads NVRAM.
+///
+/// # Safety
+///
+/// `value` must address a NUL-terminated string for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_httpd_local_qos_bandwidth_allowed(value: *const c_char) -> c_int {
+    if value.is_null() {
+        return 0;
+    }
+    // SAFETY: The ABI contract requires a readable NUL-terminated string.
+    unsafe { CStr::from_ptr(value) }
+        .to_str()
+        .is_ok_and(|value| router_policy::qos::validate_bandwidth_kbit(value).is_ok())
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,5 +1079,66 @@ mod tests {
             1,
             "the deployed psk2sae/aes/PMF-optional tuple must remain applyable"
         );
+    }
+
+    #[test]
+    fn conntrack_parser_extracts_both_direction_counters() {
+        let line = "ipv4 2 tcp 6 431999 ESTABLISHED src=192.168.0.20 dst=1.1.1.1 sport=49152 dport=443 packets=12 bytes=1200 src=1.1.1.1 dst=192.168.0.20 sport=443 dport=49152 packets=20 bytes=9000 [ASSURED] mark=0 use=1";
+        assert_eq!(
+            parse_conntrack_traffic(line),
+            Some(ConntrackTraffic {
+                protocol: "tcp".into(),
+                source: "192.168.0.20".into(),
+                destination: "1.1.1.1".into(),
+                source_port: 49152,
+                destination_port: 443,
+                original_bytes: 1200,
+                reply_bytes: 9000,
+            })
+        );
+    }
+
+    #[test]
+    fn conntrack_parser_fails_closed_on_partial_or_ambiguous_records() {
+        for line in [
+            "",
+            "tcp src=192.168.0.2 dst=1.1.1.1 bytes=1",
+            "tcp src=not-an-ip dst=1.1.1.1 sport=1 dport=2 bytes=1 src=1.1.1.1 dst=192.168.0.2 sport=2 dport=1 bytes=2",
+            "tcp src=192.168.0.2 dst=1.1.1.1 sport=-1 dport=2 bytes=1 src=1.1.1.1 dst=192.168.0.2 sport=2 dport=1 bytes=2",
+            "unknown src=192.168.0.2 dst=1.1.1.1 bytes=1 src=1.1.1.1 dst=192.168.0.2 bytes=2",
+        ] {
+            assert!(parse_conntrack_traffic(line).is_none(), "accepted {line}");
+        }
+    }
+
+    #[test]
+    fn local_qos_ffi_rejects_trend_micro_mode() {
+        for (mode, expected) in [("0", 1), ("2", 1), ("1", 0), ("adaptive", 0)] {
+            let mode = CString::new(mode).unwrap();
+            // SAFETY: `mode` remains a live C string for the call.
+            assert_eq!(
+                unsafe { rust_httpd_local_qos_mode_allowed(mode.as_ptr()) },
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn local_qos_bandwidth_ffi_is_bounded_decimal_only() {
+        for (value, expected) in [
+            ("1", 1),
+            ("10000000", 1),
+            ("0", 0),
+            ("10000001", 0),
+            ("1;reboot", 0),
+            (" 1000", 0),
+        ] {
+            let value = CString::new(value).unwrap();
+            // SAFETY: `value` remains a live C string for the call.
+            assert_eq!(
+                unsafe { rust_httpd_local_qos_bandwidth_allowed(value.as_ptr()) },
+                expected
+            );
+        }
     }
 }

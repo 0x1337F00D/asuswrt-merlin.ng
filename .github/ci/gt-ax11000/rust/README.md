@@ -42,8 +42,10 @@ leaves `wanduck-transition` as a pure WAN state machine.
 The seventh component is `router-policy`, a dependency-free typed policy
 library. Its country-only test-lab and WLAN modules are enforced through
 `httpd-parsers`; its effective terminal-DROP invariant is enforced through
-`router-security`. WAN-admin and complete VPN kill-switch manifest coverage is
-typed and tested but is not yet wired into the running firewall.
+`router-security`. WAN-admin coverage is wired into the running firewall. The
+per-profile OpenVPN/WireGuard inbound-block and policy-route kill-switch
+validator is typed, fuzzed and exercised through its C ABI, but is not yet
+wired into the running firewall.
 
 `infosvr` security boundary:
 

@@ -1,0 +1,24 @@
+# Dependabot keeps the pinned GitHub Actions SHAs and the Rust overlay lockfile
+# current. Both surfaces are release-trust inputs (see CODEOWNERS): every bump
+# lands as a normal PR and must pass the full build-gt-ax11000 workflow.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # The Rust workspace is built with a pinned toolchain (rust_toolchain in
+  # .github/ci/gt-ax11000/inputs.lock, mirrored by rust/rust-toolchain.toml)
+  # and every cargo invocation runs --locked (the vendor build additionally
+  # --offline). Cargo.lock is part of overlay_sha, so a cargo bump invalidates
+  # the Rust/ccache caches and must pass the inputs.lock and overlay hash gates
+  # like any other overlay change. lockfile-only keeps Cargo.toml version
+  # requirements untouched; Dependabot only refreshes Cargo.lock, which the
+  # --locked CI checks then validate. inputs.lock itself is never bumped here.
+  - package-ecosystem: "cargo"
+    directory: "/.github/ci/gt-ax11000/rust"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    versioning-strategy: "lockfile-only"

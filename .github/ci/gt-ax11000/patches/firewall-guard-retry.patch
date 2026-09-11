@@ -1,0 +1,102 @@
+diff --git a/release/src/router/rc/firewall.c b/release/src/router/rc/firewall.c
+index d54e37bb5f8..7472319e4df 100644
+--- a/release/src/router/rc/firewall.c
++++ b/release/src/router/rc/firewall.c
+@@ -90,6 +90,41 @@ extern int rust_validate_effective_firewall_policy_files(const char *ipv4_path,
+ 	const char *wan_ipv6_interface, const char *admin_ports);
+ 
+ #define CODEX_WAN_GUARD "CODEX_WAN_GUARD"
++#define WAN_GUARD_COMMAND_ATTEMPTS 10
++#define WAN_GUARD_COMMAND_DELAY_US 100000
++
++/* The vendor firewall and user firewall-start hook can finish adjacent
++ * iptables updates after start_firewall() releases its file lock.  iptables
++ * 1.4.15 on this model has no --wait option, so retry only our fixed argv
++ * operations for a short bounded interval. */
++static int run_wan_guard_command(const char *tool, const char *stage,
++	unsigned int attempts, const char *const arguments[])
++{
++	char *argv[16];
++	unsigned int argc = 0, attempt;
++	int result = -1;
++
++	if (!tool || !tool[0] || !arguments || attempts == 0)
++		return 0;
++	argv[argc++] = (char *)tool;
++	while (*arguments && argc < sizeof(argv) / sizeof(argv[0]) - 1)
++		argv[argc++] = (char *)*arguments++;
++	if (*arguments)
++		return 0;
++	argv[argc] = NULL;
++
++	for (attempt = 0; attempt < attempts; ++attempt) {
++		result = _eval(argv, NULL, 0, NULL);
++		if (result == 0)
++			return 1;
++		if (attempt + 1 < attempts)
++			usleep(WAN_GUARD_COMMAND_DELAY_US);
++	}
++	if (stage)
++		logmessage("firewall", "WAN guard %s/%s failed after %u attempts (status %d)",
++			tool, stage, attempts, result);
++	return 0;
++}
+ 
+ static int add_unique_admin_port(char ports[][6], unsigned int *count, int port)
+ {
+@@ -110,27 +145,42 @@ static int install_wan_admin_guard_family(const char *tool, const char *wan_if,
+ 	char ports[][6], unsigned int count)
+ {
+ 	unsigned int i;
++	const char *delete_hook[] = { "-t", "filter", "-D", "INPUT", "-i",
++		wan_if, "-j", CODEX_WAN_GUARD, NULL };
++	const char *flush_chain[] = { "-t", "filter", "-F", CODEX_WAN_GUARD, NULL };
++	const char *delete_chain[] = { "-t", "filter", "-X", CODEX_WAN_GUARD, NULL };
++	const char *new_chain[] = { "-t", "filter", "-N", CODEX_WAN_GUARD, NULL };
++	const char *return_rule[] = { "-t", "filter", "-A", CODEX_WAN_GUARD,
++		"-j", "RETURN", NULL };
++	const char *insert_hook[] = { "-t", "filter", "-I", "INPUT", "1",
++		"-i", wan_if, "-j", CODEX_WAN_GUARD, NULL };
+ 
+ 	if (!wan_if || !wan_if[0])
+ 		return 0;
+-	/* Cleanup failures are harmless; creation and every active rule are checked. */
+-	eval(tool, "-t", "filter", "-D", "INPUT", "-i", wan_if,
+-		"-j", CODEX_WAN_GUARD);
+-	eval(tool, "-t", "filter", "-F", CODEX_WAN_GUARD);
+-	eval(tool, "-t", "filter", "-X", CODEX_WAN_GUARD);
+-	if (eval(tool, "-t", "filter", "-N", CODEX_WAN_GUARD) != 0)
++	/* Delete every possible stale hook left by an interrupted prior apply.
++	 * Expected cleanup misses are quiet and are never treated as success. */
++	for (i = 0; i < 8; ++i) {
++		if (!run_wan_guard_command(tool, NULL, 1, delete_hook))
++			break;
++	}
++	run_wan_guard_command(tool, NULL, 1, flush_chain);
++	run_wan_guard_command(tool, NULL, 1, delete_chain);
++	if (!run_wan_guard_command(tool, "new-chain", WAN_GUARD_COMMAND_ATTEMPTS,
++	    new_chain))
+ 		return 0;
+ 	for (i = 0; i < count; ++i) {
+-		if (eval(tool, "-t", "filter", "-A", CODEX_WAN_GUARD,
+-		    "-p", "tcp", "-m", "tcp", "--dport", ports[i],
+-		    "-j", "DROP") != 0)
++		const char *drop_rule[] = { "-t", "filter", "-A", CODEX_WAN_GUARD,
++			"-p", "tcp", "-m", "tcp", "--dport", ports[i],
++			"-j", "DROP", NULL };
++		if (!run_wan_guard_command(tool, "drop-port",
++		    WAN_GUARD_COMMAND_ATTEMPTS, drop_rule))
+ 			return 0;
+ 	}
+-	if (eval(tool, "-t", "filter", "-A", CODEX_WAN_GUARD,
+-	    "-j", "RETURN") != 0)
++	if (!run_wan_guard_command(tool, "return",
++	    WAN_GUARD_COMMAND_ATTEMPTS, return_rule))
+ 		return 0;
+-	return eval(tool, "-t", "filter", "-I", "INPUT", "1",
+-		"-i", wan_if, "-j", CODEX_WAN_GUARD) == 0;
++	return run_wan_guard_command(tool, "input-hook",
++		WAN_GUARD_COMMAND_ATTEMPTS, insert_hook);
+ }
+ 
+ static int install_wan_admin_guard(const char *wan_if)

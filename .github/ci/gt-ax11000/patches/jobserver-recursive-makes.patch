@@ -1,0 +1,22 @@
+diff --git a/release/src/router/Makefile b/release/src/router/Makefile
+--- a/release/src/router/Makefile
++++ b/release/src/router/Makefile
+@@ -8079,5 +8079,5 @@ strongswan: openssl strongswan/Makefile
+ 	@$(SEP)
+-	$(MAKE) -j 8 -C strongswan
++	+$(MAKE) $(PARALLEL_BUILD) -C strongswan
+ ifneq (,$(filter $(ASUSWRT_BRCM_SDK_VERSION),WIFI7_SDK_20250506 WIFI8_SDK_20251126))
+ 	@-patchelf --force-rpath --set-rpath /usr/lib/ipsec strongswan/src/libipsec/.libs/libipsec.so
+ 	@-sed -i '/relink_command/d' strongswan/src/libipsec/libipsec.la
+diff --git a/release/src/router/samba-3.6.x_opwrt/Makefile b/release/src/router/samba-3.6.x_opwrt/Makefile
+--- a/release/src/router/samba-3.6.x_opwrt/Makefile
++++ b/release/src/router/samba-3.6.x_opwrt/Makefile
+@@ -122,7 +122,7 @@
+ 
+ 
+ all: $(PKG_BUILD_DIR)/source3/Makefile
+-	$(MAKE) -C $(PKG_BUILD_DIR)/source3 include/proto.h && $(MAKE) -j 8 -C $(PKG_BUILD_DIR)/source3 $(MAKE_FLAGS)
++	+$(MAKE) -C $(PKG_BUILD_DIR)/source3 include/proto.h && $(MAKE) -C $(PKG_BUILD_DIR)/source3 $(MAKE_FLAGS)
+ 
+ $(PKG_BUILD_DIR)/source3/Makefile:
+ 	( cd $(PKG_BUILD_DIR)/source3 && \

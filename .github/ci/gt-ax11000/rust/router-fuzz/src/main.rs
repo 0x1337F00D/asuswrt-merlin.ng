@@ -67,6 +67,7 @@ fn fuzz_http(input: &[u8]) {
 
 fn fuzz_policy(input: &[u8]) {
     let text = ascii_projection(input);
+    let _ = router_policy::vpn_runtime::parse_snapshot(&text);
     let _ = TestlabRequest::parse(&text);
     let _ = WlanSecurityTuple::parse(&text).and_then(WlanSecurityTuple::validate);
     let _ = WireGuardEndpoint::from_str(&text);

@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "bwdpi-compat"
+version = "0.1.0"
+
+[[package]]
 name = "httpd-parsers"
 version = "0.1.0"
 dependencies = [
@@ -34,6 +38,13 @@ version = "0.1.0"
 
 [[package]]
 name = "router-security"
+version = "0.1.0"
+dependencies = [
+ "router-policy",
+]
+
+[[package]]
+name = "router-vpn-audit"
 version = "0.1.0"
 dependencies = [
  "router-policy",
