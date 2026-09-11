@@ -5,6 +5,9 @@ import re
 import subprocess
 import sys
 
+if not __debug__:
+    raise SystemExit('Run this verification gate without Python optimization')
+
 binary = pathlib.Path(sys.argv[1])
 readelf = sys.argv[2] if len(sys.argv) > 2 else 'readelf'
 

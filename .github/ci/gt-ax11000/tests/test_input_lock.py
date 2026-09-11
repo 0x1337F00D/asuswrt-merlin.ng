@@ -160,6 +160,18 @@ class InputLockTests(unittest.TestCase):
         git(source, "config", "core.abbrev", "40")
         self.assertEqual(short_hash, input_lock.patched_diff_hash(source))
 
+    def test_local_build_enforces_lock_by_default(self) -> None:
+        build = Path(__file__).resolve().parent.parent / "build.sh"
+        lines = [line for line in build.read_text().splitlines()
+                 if line.startswith("ENFORCE_INPUT_LOCK=")]
+        self.assertEqual(len(lines), 1)
+        for setup, expected in (("unset ASUSWRT_ENFORCE_INPUT_LOCK", "1"),
+                                ("ASUSWRT_ENFORCE_INPUT_LOCK=0", "0")):
+            output = subprocess.check_output(
+                ["bash", "-eu", "-c", setup + "\n" + lines[0]
+                 + '\nprintf "%s" "$ENFORCE_INPUT_LOCK"'], text=True)
+            self.assertEqual(output, expected)
+
     def test_build_writes_lock_state_outside_the_source_tree(self) -> None:
         build = Path(__file__).resolve().parent.parent / "build.sh"
         text = build.read_text(encoding="utf-8")

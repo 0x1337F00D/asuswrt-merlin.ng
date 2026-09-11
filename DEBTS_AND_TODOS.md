@@ -1881,3 +1881,34 @@ remaining compatibility debts and actual build/trial status. Prior successful
 CI images do not approve this changed candidate. The local full-image check
 must explicitly supply `WLIF_VENDOR_BASELINE` to verify preservation of vendor
 exports, as the general verification script accepts an optional baseline.
+
+### 2026-09-11 Tier 3 / alpha3 offline candidate
+
+- Tier-2 remainder fixes, server-side rustls/ring libmssl replacement and
+  blob triage are documented in TIER3_IMPLEMENTATION.md and
+  TIER3_BLOB_ANALYSIS.md. Independent review was waived; self-review only.
+- Alpha2 failed because overlay copying omitted vendored cc/src/target.
+  Corrected copy/hash boundaries have negative-control regression tests.
+  Alpha3 source: d0cd472a96ca3e3293e9a0f6d34ece030121bfe2.
+- Clean tmpfs-only build with swap off completed in 2725 seconds.
+  Image GT-AX11000_3006_102.9_alpha3_ubi.w is 78118932 bytes; SHA-256:
+  e1c841fa3438f5b922a306df96c0907bedfc342d3c3fec3e1dfaddfa03e5b3a7.
+  Native/ARM tests, extracted-image manifests, Web payload, ABI/size gates
+  and dynamic tests of the extracted TLS library passed; see report.
+- The build invocation omitted input-lock enforcement. Original BUILD-STATE
+  remains unchanged. Actual staged pre-Rust patch hash, copied Rust hash
+  and independent patch replay were checked retrospectively against the
+  lock/build state. Default enforcement and a Python -O ELF-gate bypass
+  were fixed afterwards, with regression tests. These gate/docs changes
+  are not part of the compiled source commit and do not change payloads.
+- OPEN: WAN multicast isolation, hardware/browser/login/settings parity,
+  cold-boot entropy and mobile roaming tests. No router access, deployment,
+  load test or boot-partition change occurred for this candidate.
+- Before any future deployment, preflight actual TLS credentials; synthetic
+  RSA-2048/P-256 coverage does not establish all custom-key compatibility.
+- ELF inventory: awsiot retains an unused libmssl dependency; httpd is the
+  only observed API caller. Existing wtfslhd lacks old OpenSSL 1.0 filenames
+  in both baseline and candidate; its binary is unchanged. Keep this as
+  optional-feature compatibility debt, do not restore obsolete crypto.
+- wsdd2 remains synchronous with a two-second connection budget and at most
+  two accepted connections per wakeup. Blob replacement is NOT implemented.

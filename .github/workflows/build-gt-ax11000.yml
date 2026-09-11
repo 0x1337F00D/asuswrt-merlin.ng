@@ -109,6 +109,7 @@ jobs:
           python3 "$root/tests/test_build_stage_failures.py"
           python3 "$root/tests/test_shared_repack.py"
           python3 "$root/tests/test_rust_overlay_copy.py"
+          python3 "$root/tests/test_mssl_gate.py"
           python3 "$root/tests/test_wlif_search_path.py"
           python3 "$root/tests/test_lltd_socket_mutation.py"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
@@ -382,7 +383,7 @@ jobs:
       # rootfs trees.  It is exact (no restore prefix), immutable, and saved
       # only after all firmware gates pass. Rust source is deliberately outside
       # the key because rust-fast rebuilds all boundary consumers and
-      # hash-verifies all fourteen manifested consumers.
+      # hash-verifies all fifteen manifested consumers.
       - name: Restore exact successful vendor build
         if: github.event_name != 'schedule' && inputs.force_clean != true
         id: vendor-cache
@@ -609,7 +610,7 @@ jobs:
           rootfs_excludes=(rom/etc/image_version)
           if [ "$same_rust" != true ]; then
             # rust-components-relink reinstalls every manifested consumer,
-            # so all fourteen may legitimately differ when the Rust state does:
+            # so all fifteen may legitimately differ when the Rust state does:
             # libshared.so and wlif-exec come from shared-install (install: all),
             # /usr/sbin/ntp comes from rc-install alongside sbin/rc,
             # networkmap and its libbwdpi.so provider from networkmap-install,
@@ -730,7 +731,7 @@ jobs:
           if [ "${{ steps.cache-baseline.outputs.same-rust }}" != true ]; then
             # Keep this list identical to the snapshot step: only the
             # reinstalled consumers may differ, and rust-components-relink
-            # reinstalls all fourteen of them.
+            # reinstalls all fifteen of them.
             rootfs_excludes+=(
               usr/lib/libshared.so
               usr/sbin/wlif-exec
