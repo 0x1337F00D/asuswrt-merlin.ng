@@ -58,6 +58,12 @@ test("the Rust gate actually receives and tests the workflow file", () => {
   assert.match(job("rust"), /sparse-checkout set \.github\/ci\/gt-ax11000 \.github\/workflows/);
   assert.match(job("rust"), /node --test .*tests\/ci-workflow\.test\.cjs/);
 });
+test("ARM headers are installed before ring's cross-check", () => {
+  const setup = job("rust").split("- name: Install ARM cross-check compiler")[1]?.split("- name: Restore Rust cache")[0];
+  assert.ok(setup, "early cross-check setup exists");
+  assert.match(setup, /apt-get install[^\n]*libc6-dev-armel-cross/);
+  assert.match(setup, /arm-linux-gnueabi-gcc -E -x c -include stdint\.h \/dev\/null -o \/dev\/null/);
+});
 test("the host gate executes GNU Make bootstrap regressions", () => {
   assert.match(job("rust"), /python3 "\$root\/tests\/test_gnu_make_bootstrap\.py"/);
 });

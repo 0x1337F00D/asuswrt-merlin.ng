@@ -83,7 +83,10 @@ jobs:
       - name: Install ARM cross-check compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabi iproute2 util-linux
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabi libc6-dev-armel-cross iproute2 util-linux
+          # --no-install-recommends omits target libc headers unless explicit.
+          # ring needs them here, before the later ARM execution step.
+          arm-linux-gnueabi-gcc -E -x c -include stdint.h /dev/null -o /dev/null
 
       - name: Restore Rust cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
