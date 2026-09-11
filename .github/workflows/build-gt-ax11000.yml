@@ -67,7 +67,7 @@ jobs:
             sha256sum overlay/.github/ci/gt-ax11000/build.sh
             sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
             find overlay/.github/ci/gt-ax11000/rust -type f \
-              -not -path '*/target/*' -print0 | sort -z | xargs -0 sha256sum
+              -not -path 'overlay/.github/ci/gt-ax11000/rust/target/*' -print0 | sort -z | xargs -0 sha256sum
           } | sha256sum | cut -d' ' -f1)"
           printf 'overlay_sha=%s\n' "$overlay_sha" >> "$GITHUB_OUTPUT"
 
@@ -108,6 +108,7 @@ jobs:
           python3 "$root/tests/test_gnu_make_bootstrap.py"
           python3 "$root/tests/test_build_stage_failures.py"
           python3 "$root/tests/test_shared_repack.py"
+          python3 "$root/tests/test_rust_overlay_copy.py"
           python3 "$root/tests/test_wlif_search_path.py"
           python3 "$root/tests/test_lltd_socket_mutation.py"
           node --test overlay/.github/ci/gt-ax11000/tests/ci-workflow.test.cjs
@@ -344,7 +345,7 @@ jobs:
             sha256sum overlay/.github/ci/gt-ax11000/build.sh
             sha256sum overlay/.github/ci/gt-ax11000/patches/*.patch
             find overlay/.github/ci/gt-ax11000/rust -type f \
-              -not -path '*/target/*' -print0 | sort -z | xargs -0 sha256sum
+              -not -path 'overlay/.github/ci/gt-ax11000/rust/target/*' -print0 | sort -z | xargs -0 sha256sum
           } | sha256sum | cut -d' ' -f1)"
           printf 'overlay_sha=%s\n' "$overlay_sha" >> "$GITHUB_OUTPUT"
 
@@ -582,7 +583,7 @@ jobs:
           test -s cache-equivalence/httpd-objects.before
           current_rust_state="$(
             cd overlay/.github/ci/gt-ax11000/rust
-            find . -type f -not -path '*/target/*' -print0 \
+            find . -type f -not -path './target/*' -print0 \
               | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1
           )"
           cached_rust_state="$(cat source/.asuswrt-rust-state)"

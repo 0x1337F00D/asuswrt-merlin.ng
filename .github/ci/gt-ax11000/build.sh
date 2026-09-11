@@ -514,7 +514,7 @@ compute_kernel_cache_contract_id() {
 compute_rust_state_id() {
 	(
 		cd "$RUST_OVERLAY"
-		find . -type f -not -path '*/target/*' -print0 \
+		find . -type f -not -path './target/*' -print0 \
 			| sort -z | xargs -0 sha256sum
 	) \
 		| sha256sum | awk '{print $1}'
@@ -528,7 +528,9 @@ install_rust_components() {
 		exit 1
 	fi
 	mkdir -p "$destination"
-	rsync --archive --delete --exclude target/ "$RUST_OVERLAY/" "$destination/"
+	# Only Cargo's workspace output is disposable. Vendored crates such as
+	# cc also contain source directories named target/.
+	rsync --archive --delete --exclude /target/ "$RUST_OVERLAY/" "$destination/"
 	if [ -n "${ASUSWRT_RUST_STATE_ID:-}" ]; then
 		printf '%s\n' "$ASUSWRT_RUST_STATE_ID" > "$ROOT/.asuswrt-rust-state"
 	fi

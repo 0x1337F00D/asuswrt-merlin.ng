@@ -14,6 +14,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod deadline;
 mod logging;
 mod sys;
 
@@ -644,10 +645,12 @@ impl State<'_> {
         }
     }
 
-    fn handle_metadata(&mut self, mut stream: TcpStream, peer: SocketAddr) {
+    fn handle_metadata(&mut self, stream: TcpStream, peer: SocketAddr) {
         let deadline = Instant::now().checked_add(TCP_DEADLINE);
-        let _ = stream.set_read_timeout(Some(TCP_READ_TIMEOUT));
-        let _ = stream.set_write_timeout(Some(TCP_READ_TIMEOUT));
+        let Ok(mut stream) = deadline::DeadlineStream::new(stream, TCP_DEADLINE, TCP_READ_TIMEOUT)
+        else {
+            return;
+        };
         let mut buffer: Vec<u8> = Vec::new();
         let mut chunk = [0_u8; 1024];
 
@@ -763,7 +766,7 @@ impl State<'_> {
     /// ~700-byte SOAP fault whose text echoed its own internal error string
     /// (`wsd.c:1114-1119`).  That is a larger reply to a worse request, so no
     /// fault body is generated here.
-    fn refuse_metadata(&mut self, stream: &mut TcpStream, status: Status) {
+    fn refuse_metadata(&mut self, stream: &mut deadline::DeadlineStream, status: Status) {
         if !self.wsd_budget.allow(self.started.elapsed()) {
             return;
         }

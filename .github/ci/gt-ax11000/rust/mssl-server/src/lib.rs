@@ -34,25 +34,24 @@ fn credentials(cert: &[u8], key: &[u8]) -> Result<CertifiedKey, ConfigurationErr
     {
         return Err(ConfigurationError::Limits);
     }
-    let chain = if cert.starts_with(b"-----BEGIN") {
-        let mut chain = Vec::new();
-        for item in CertificateDer::pem_slice_iter(cert) {
-            if chain.len() == MAX_CHAIN {
-                return Err(ConfigurationError::Limits);
-            }
-            chain.push(item.map_err(|_| ConfigurationError::Certificate)?);
+    // The upstream PEM reader handles legal preambles (including OpenSSL
+    // PKCS#12 export attributes). Do not guess the encoding from byte zero.
+    let mut chain = Vec::new();
+    for item in CertificateDer::pem_slice_iter(cert) {
+        if chain.len() == MAX_CHAIN {
+            return Err(ConfigurationError::Limits);
         }
-        chain
-    } else {
-        vec![CertificateDer::from(cert.to_vec())]
-    };
-    if chain.is_empty() {
-        return Err(ConfigurationError::Certificate);
+        chain.push(item.map_err(|_| ConfigurationError::Certificate)?);
     }
-    let key = if key.starts_with(b"-----BEGIN") {
-        PrivateKeyDer::from_pem_slice(key).map_err(|_| ConfigurationError::Key)?
-    } else {
-        PrivateKeyDer::try_from(key.to_vec()).map_err(|_| ConfigurationError::Key)?
+    if chain.is_empty() {
+        chain.push(CertificateDer::from(cert.to_vec()));
+    }
+    let key = match PrivateKeyDer::from_pem_slice(key) {
+        Ok(key) => key,
+        Err(rustls::pki_types::pem::Error::NoItemsFound) => {
+            PrivateKeyDer::try_from(key.to_vec()).map_err(|_| ConfigurationError::Key)?
+        }
+        Err(_) => return Err(ConfigurationError::Key),
     };
     let provider = rustls::crypto::ring::default_provider();
     let signing = provider

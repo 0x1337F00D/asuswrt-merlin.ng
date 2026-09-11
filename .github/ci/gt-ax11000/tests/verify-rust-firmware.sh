@@ -44,6 +44,8 @@ shared_objects=(
 	"usr/lib/libshared.so"
 )
 
+python3 "$(dirname "$0")/verify-mssl-elf.py" "$rootfs/usr/lib/libmssl.so" "$readelf"
+
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/gtax-rust-verify.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
 

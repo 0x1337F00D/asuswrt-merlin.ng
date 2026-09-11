@@ -1,4 +1,4 @@
-# Tier 3 implementation / candidate alpha2
+# Tier 3 implementation / candidate alpha3
 
 Base: b2bae581786. Work branch: codex/tier3-implementation.
 No router access, changes, install, reboot or load tests in this work.
@@ -12,6 +12,9 @@ Independent subagent review waived by user; this is self-review.
   checks that enabling the protocol early breaks the existing unit test.
 - wsdd2 rejects malformed HTTP versions, header names/control bytes, bare
   CR/LF and duplicate Content-Type. Regression failed before the correction.
+- A safe DeadlineStream gives metadata reads and writes a shared two-second
+  budget. Timeout-setting failures propagate. The fixed per-call-timeout
+  mutation fails the regression. The daemon remains synchronous.
 - mssl-server uses rustls 0.23.44 / ring 0.17.14 with exact vendored lock.
   CertifiedKey::keys_match compares keys; no custom cryptography.
 - Small Rust/C boundary preserves seven public mssl symbols and glibc FILE
@@ -22,6 +25,13 @@ Independent subagent review waived by user; this is self-review.
   five seconds; shutdown cap 200 ms. Credential files are bounded and must
   be regular; FIFO opens cannot block. Connections retain their config.
 - Conditional GT-AX11000 Makefile overlay and fifteen consumer entries added.
+- PEM preambles are delegated to the upstream parser, not guessed from the
+  first byte; the regression fails on alpha2 and passes after correction.
+- Rust source copying and local/CI state hashes exclude only workspace
+  /target, not vendored cc/src/target. Both old rules fail regression probes.
+- Final shared-object gate checks the seven API exports, soft-float ABI,
+  non-executable stack, RELRO, no text relocations, dependency allowlist and
+  a 1 MiB linked-size review budget.
 
 ## Evidence
 
@@ -41,10 +51,15 @@ Historical Claude measurements (2026-09-10; archives, NOT shipped sizes):
 
 ## Outstanding
 
-Full firmware build/extraction and blob make-n triage remain pending.
+Alpha2 (d4f3886eaa1) full clean RAM build failed at mssl: rsync omitted
+vendored cc/src/target/llvm.rs; Cargo checksum validation stopped the build.
+No alpha2 image was published. Alpha3 is reserved for the corrections.
+All vendored files match a fresh locked cargo vendor output byte-for-byte.
+Package-level blob and mssl dry-runs pass; final-image membership is pending.
+Full alpha3 firmware build/extraction remains pending.
 No browser/login/settings parity, Windows discovery, mobile room-transition,
 cold-boot entropy or factory-reset restore claim. WAN multicast isolation of
 infosvr remains unproven. wsdd2 metadata processing is still synchronous;
-its per-read timeout can exceed its nominal total deadline.
+at most two accepted connections can occupy a wakeup for two seconds each.
 
-Alpha2 is a candidate, not approved for installation.
+Alpha3 is a candidate, not approved for installation.

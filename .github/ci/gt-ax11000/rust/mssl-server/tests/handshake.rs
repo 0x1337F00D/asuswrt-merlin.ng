@@ -143,3 +143,13 @@ fn mismatched_valid_keys_are_refused() {
     assert!(!certificate_key_match(&a.cert(), &b.key()));
     assert!(Configuration::new(&a.cert(), &b.key(), None).is_err());
 }
+
+#[test]
+fn pem_preamble_is_parsed_by_the_upstream_pem_parser() {
+    let fixture = Fixture::new(false);
+    let mut cert = b"\nBag Attributes\n    friendlyName: fixture\n".to_vec();
+    cert.extend(fixture.cert());
+    let mut key = b"\nBag Attributes\n    friendlyName: fixture\n".to_vec();
+    key.extend(fixture.key());
+    assert!(Configuration::new(&cert, &key, None).is_ok());
+}

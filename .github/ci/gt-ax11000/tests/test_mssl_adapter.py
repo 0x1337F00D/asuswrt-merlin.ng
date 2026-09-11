@@ -4,6 +4,7 @@ import ctypes
 import pathlib
 import os
 import socket
+import struct
 import ssl
 import subprocess
 import sys
@@ -116,6 +117,29 @@ class Adapter(unittest.TestCase):
             self.assertFalse(tls.ssl_server_fopen(a.fileno()))
             self.assertLess(time.monotonic() - start, 1)
             self.assertEqual(a.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE), socket.SOCK_STREAM)
+
+    def test_silent_handshake_respects_existing_socket_timeout(self):
+        server, peer = socket.socketpair()
+        with server, peer:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVTIMEO,
+                              struct.pack('@ll', 0, 100000))
+            started = time.monotonic()
+            self.assertFalse(tls.ssl_server_fopen(server.fileno()))
+            elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, .07)
+            self.assertLess(elapsed, .75)
+            self.assertEqual(ctypes.get_errno(), 110)
+            self.assertEqual(server.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE), socket.SOCK_STREAM)
+
+    def test_failed_reload_and_explicit_ciphers_keep_valid_configuration(self):
+        tls.mssl_init_ex.argtypes = [ctypes.c_char_p] * 3
+        tls.mssl_init_ex.restype = ctypes.c_int
+        for cipher in (b'', b'DEFAULT', b'AES128-SHA'):
+            self.assertEqual(tls.mssl_init_ex(bytes(self.cert), bytes(self.key), cipher), 0)
+        bad = pathlib.Path(self.directory.name) / 'bad.pem'
+        bad.write_bytes(b'-----BEGIN CERTIFICATE-----\ninvalid\n')
+        self.assertEqual(tls.mssl_init(bytes(bad), bytes(self.key)), 0)
+        self.test_stdio_exchange_reload_and_descriptor_ownership()
 
 
 if __name__ == "__main__":
