@@ -1,7 +1,8 @@
 # Firmware iterations
 
-The deployed fb093681 image is legacy alpha1. The next candidate is alpha2,
-reserved by the committed `firmware-iteration` file. Increment this integer
+The deployed fb093681 image is legacy alpha1. Alpha2 failed its build;
+alpha3 was built and verified offline, not installed. Alpha4 is now reserved
+by the committed `firmware-iteration` file. Increment this integer
 before building each new candidate; never reuse a number for changed sources.
 Rebuilding the identical candidate keeps its number for reproducibility.
 Local and CI builds use the same committed reservation, not independent counters
@@ -21,5 +22,5 @@ NVRAM version plus exact binary/web hashes. Never rewrite NVRAM merely to rename
 an installed image. Original hashes remain the authoritative artifact identity.
 
 Tests cover strict number parsing, changed upstream layouts, GNU Make recursive
-version propagation and guard injection rejection. A full alpha2 build and
-hardware check remain required; the running alpha1 router is unchanged.
+version propagation and guard injection rejection. Alpha4 installation and
+hardware checks are deferred to a separately authorized evening session.

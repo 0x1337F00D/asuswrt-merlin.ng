@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native ABI/stdio tests against the actual linked adapter (no router)."""
 import ctypes
+import concurrent.futures
 import pathlib
 import os
 import socket
@@ -140,6 +141,81 @@ class Adapter(unittest.TestCase):
         bad.write_bytes(b'-----BEGIN CERTIFICATE-----\ninvalid\n')
         self.assertEqual(tls.mssl_init(bytes(bad), bytes(self.key)), 0)
         self.test_stdio_exchange_reload_and_descriptor_ownership()
+
+    def test_parallel_https_and_rsa_to_ec_rotation(self):
+        def exchange_batch(cert):
+            failures = []
+            workers = []
+            with socket.socket() as listener:
+                listener.bind(('127.0.0.1', 0))
+                listener.listen(8)
+                listener.settimeout(5)
+
+                def server(sock):
+                    with sock:
+                        stream = tls.ssl_server_fopen(sock.fileno())
+                        try:
+                            self.assertTrue(stream)
+                            line = ctypes.create_string_buffer(256)
+                            self.assertTrue(stdio.fgets(line, len(line), stream))
+                            self.assertEqual(line.value, b'GET / HTTP/1.0\r\n')
+                            self.assertGreaterEqual(stdio.fputs(b'HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nOK', stream), 0)
+                            self.assertEqual(stdio.fflush(stream), 0)
+                        except BaseException as error:
+                            failures.append(error)
+                        finally:
+                            if stream:
+                                stdio.fclose(stream)
+
+                def accept():
+                    try:
+                        for _ in range(6):
+                            worker = threading.Thread(target=server, args=(listener.accept()[0],))
+                            workers.append(worker)
+                            worker.start()
+                    except BaseException as error:
+                        failures.append(error)
+
+                def client(index):
+                    context = ssl.create_default_context(cafile=str(cert))
+                    version = ssl.TLSVersion.TLSv1_2 if index % 2 else ssl.TLSVersion.TLSv1_3
+                    context.minimum_version = context.maximum_version = version
+                    with socket.create_connection(listener.getsockname(), timeout=5) as raw:
+                        with context.wrap_socket(raw, server_hostname='localhost') as peer:
+                            self.assertEqual(peer.getpeercert(binary_form=True),
+                                ssl.PEM_cert_to_DER_cert(cert.read_text()))
+                            for part in (b'GET / ', b'HTTP/1.0\r\n'):
+                                peer.sendall(part)
+                            response = bytearray()
+                            while chunk := peer.recv(4096):
+                                response.extend(chunk)
+                            self.assertTrue(response.endswith(b'\r\n\r\nOK'))
+                acceptor = threading.Thread(target=accept)
+                acceptor.start()
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                        list(pool.map(client, range(6)))
+                finally:
+                    acceptor.join(6)
+                    for worker in workers:
+                        worker.join(6)
+                    self.assertFalse(acceptor.is_alive())
+                    self.assertFalse(any(worker.is_alive() for worker in workers))
+                if failures:
+                    raise failures[0]
+
+        exchange_batch(self.cert)
+        root = pathlib.Path(self.directory.name)
+        cert, key = root/'ec-cert.pem', root/'ec-key.pem'
+        subprocess.run(['openssl','req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256',
+                        '-nodes','-keyout',str(key),'-out',str(cert),'-days','1',
+                        '-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost',
+                        '-addext','basicConstraints=critical,CA:FALSE'],check=True,
+                        stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        self.assertEqual(tls.mssl_init(bytes(cert), bytes(key)), 1)
+        # A mismatched replacement must not displace the current EC identity.
+        self.assertEqual(tls.mssl_init(bytes(self.cert), bytes(key)), 0)
+        exchange_batch(cert)
 
 
 if __name__ == "__main__":

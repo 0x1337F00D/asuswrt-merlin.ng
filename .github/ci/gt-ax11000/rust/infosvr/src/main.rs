@@ -1,3 +1,5 @@
+mod ingress;
+
 #[cfg(not(target_arch = "arm"))]
 use infosvr::calculate_capabilities;
 use infosvr::{
@@ -8,11 +10,11 @@ use std::collections::VecDeque;
 use std::env;
 #[cfg(target_arch = "arm")]
 use std::ffi::{c_char, CStr};
+#[cfg(target_arch = "arm")]
 use std::ffi::{c_int, c_void, CString};
 use std::fs;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::os::fd::AsRawFd;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::process::Command;
 #[cfg(any(target_arch = "arm", test))]
@@ -21,8 +23,6 @@ use std::time::{Duration, Instant};
 #[cfg(target_arch = "arm")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SOL_SOCKET: c_int = 1;
-const SO_BINDTODEVICE: c_int = 25;
 const MAX_INTERFACES: usize = 5;
 const DUPLICATE_WINDOW: Duration = Duration::from_secs(2);
 const MAX_RECENT_REQUESTS: usize = 64;
@@ -49,16 +49,6 @@ extern "C" {
     fn dlclose(handle: *mut c_void) -> c_int;
     #[cfg(target_arch = "arm")]
     fn free(pointer: *mut c_void);
-}
-
-extern "C" {
-    fn setsockopt(
-        socket: c_int,
-        level: c_int,
-        option_name: c_int,
-        option_value: *const c_void,
-        option_len: u32,
-    ) -> c_int;
 }
 
 trait Config {
@@ -154,8 +144,7 @@ fn main() -> io::Result<()> {
     let interfaces = parse_interfaces(env::args().skip(1))?;
     write_pid_file()?;
 
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, SERVER_PORT))?;
-    socket.set_broadcast(true)?;
+    let mut ingress = ingress::Ingress::open(&interfaces, SERVER_PORT)?;
     // One extra byte distinguishes an exact PDU from a truncated oversized
     // UDP datagram; recv_from otherwise reports only the destination length.
     let mut packet = [0_u8; PDU_LEN + 1];
@@ -164,7 +153,7 @@ fn main() -> io::Result<()> {
 
     eprintln!("infosvr-rs: listening on UDP/{SERVER_PORT} via {interfaces:?}");
     loop {
-        let (received, source) = match socket.recv_from(&mut packet) {
+        let (received, source) = match ingress.recv_from(&mut packet) {
             Ok(value) => value,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error),
@@ -190,7 +179,7 @@ fn main() -> io::Result<()> {
 
         let state = load_state(&config, request);
         let response = build_response(request, &state);
-        send_broadcast(&socket, &interfaces, source.port(), &response);
+        ingress.broadcast(source.port(), &response);
     }
 }
 
@@ -511,41 +500,6 @@ fn valid_mount_path(path: &str) -> bool {
         && !path
             .bytes()
             .any(|byte| byte == 0 || byte.is_ascii_control())
-}
-
-fn send_broadcast(socket: &UdpSocket, interfaces: &[String], port: u16, packet: &[u8]) {
-    let destination = SocketAddr::from((Ipv4Addr::BROADCAST, port));
-    for interface in interfaces {
-        if let Err(error) = bind_to_device(socket, Some(interface)) {
-            eprintln!("infosvr-rs: cannot bind to {interface}: {error}");
-            continue;
-        }
-        if let Err(error) = socket.send_to(packet, destination) {
-            eprintln!("infosvr-rs: send on {interface} failed: {error}");
-        }
-    }
-    let _ = bind_to_device(socket, None);
-}
-
-fn bind_to_device(socket: &UdpSocket, interface: Option<&str>) -> io::Result<()> {
-    let name = CString::new(interface.unwrap_or_default())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "interface contains NUL"))?;
-    // SAFETY: `name` remains alive for the call, its pointer references
-    // `as_bytes_with_nul().len()` initialized bytes, and the socket FD is valid.
-    let result = unsafe {
-        setsockopt(
-            socket.as_raw_fd(),
-            SOL_SOCKET,
-            SO_BINDTODEVICE,
-            name.as_ptr().cast(),
-            name.as_bytes_with_nul().len() as u32,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
 }
 
 #[cfg(test)]

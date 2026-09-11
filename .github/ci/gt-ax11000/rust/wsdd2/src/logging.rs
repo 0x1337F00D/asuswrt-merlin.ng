@@ -42,6 +42,8 @@ impl Logger {
     pub fn new(llmnr_level: u8, wsd_level: u8, stderr: bool) -> Self {
         let socket = UnixDatagram::unbound().ok().and_then(|socket| {
             socket.connect("/dev/log").ok()?;
+            // A stopped/full syslog receiver must not block LAN discovery.
+            socket.set_nonblocking(true).ok()?;
             Some(socket)
         });
         Self {

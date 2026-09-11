@@ -1912,3 +1912,28 @@ exports, as the general verification script accepts an optional baseline.
   optional-feature compatibility debt, do not restore obsolete crypto.
 - wsdd2 remains synchronous with a two-second connection budget and at most
   two accepted connections per wakeup. Blob replacement is NOT implemented.
+
+### 2026-09-11 Alpha4 follow-up (build pending)
+
+- infosvr: replaced wildcard ingress/IP-only trust with permanently bound
+  per-interface sockets, bound before port activation; preserved source port
+  9999. Host veth test accepts LAN and refuses spoofed LAN-source WAN unicast
+  and multicast. The same executable test fails against alpha3.
+- wsdd2: bounded nonblocking metadata pool replaces synchronous service.
+  Two silent clients no longer block UDP discovery or termination. Real-daemon
+  namespace test passes and fails against alpha3. Syslog sends are nonblocking.
+  Eight connections, 8 KiB requests, 64 KiB replies, two-second deadlines.
+- TLS: existing credentials are no longer destroyed on unsupported keys or
+  initialization failure. Extracted start_ssl C function passes four mocked
+  lifecycle cases; the original fails preservation. Native TLS adapter passes
+  six parallel sessions per RSA/EC identity and rejects a mismatched rotation.
+- awsiot unused mssl link removed only for the GT-AX11000 Rust overlay. Final
+  ELF dependency/size comparison pending. WTFast existing compatibility debt
+  remains deliberately unresolved; no obsolete crypto or blob port added.
+- Input lock verified before the new overlay sources were introduced into
+  replay. Local alpha4 build will explicitly enforce the lock. New native
+  network-namespace and credential lifecycle regressions wired into CI.
+- Hardware isolation, private certificate preflight and authenticated browser
+  behavior remain untested. ALPHA4_TEST_PLAN.md describes evening preflight,
+  one-shot installation, positive/negative controls, monitoring and rollback.
+  No automatic installation or promotion is authorized by this build task.

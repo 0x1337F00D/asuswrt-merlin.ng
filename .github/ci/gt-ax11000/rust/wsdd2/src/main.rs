@@ -14,22 +14,26 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+#[cfg(test)]
 mod deadline;
 mod logging;
+mod metadata;
 mod sys;
 
 use logging::{Channel, Logger};
 use std::fs::File;
-use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket};
 use std::os::fd::{AsRawFd, RawFd};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 use sys::Readiness;
 use wsdd2::budget::Budget;
 use wsdd2::cli::{self, Options, Outcome};
 use wsdd2::config;
-use wsdd2::http::{self, Progress, Status};
+use wsdd2::http::{self, Status};
 use wsdd2::llmnr;
 use wsdd2::wsd::{self, DiscoveryRequest, Identity, MetadataRequest};
 use wsdd2::{answer_discovery, answer_metadata, ReplyContext, SELF_TEST_MARKER};
@@ -54,10 +58,6 @@ const POLL_TIMEOUT_MS: i32 = 500;
 const MAX_DATAGRAMS_PER_WAKEUP: usize = 32;
 /// Metadata connections accepted in a single readable wakeup.
 const MAX_CONNECTIONS_PER_WAKEUP: usize = 2;
-/// Per-read timeout on a metadata connection.
-const TCP_READ_TIMEOUT: Duration = Duration::from_millis(1_000);
-/// Total time one metadata connection may occupy the daemon.
-const TCP_DEADLINE: Duration = Duration::from_millis(2_000);
 /// Largest WS-Discovery datagram accepted: one byte more than the scanner's
 /// cap, so an oversized datagram is detected rather than silently truncated.
 const WSD_BUFFER: usize = wsdd2::xml::MAX_DOCUMENT + 1;
@@ -293,12 +293,20 @@ fn serve(
         }
     }
 
+    let mut metadata = metadata::Pool::default();
     let exit = loop {
         let descriptors: Vec<RawFd> = endpoints
             .iter()
             .map(Endpoint::descriptor)
             .collect::<Vec<_>>();
-        let readiness = match sys::poll_readable(&descriptors, POLL_TIMEOUT_MS) {
+        let readiness = match sys::poll_readable(
+            &descriptors,
+            if metadata.is_empty() {
+                POLL_TIMEOUT_MS
+            } else {
+                25
+            },
+        ) {
             Ok(readiness) => readiness,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Vec::new(),
             Err(error) => {
@@ -314,7 +322,19 @@ fn serve(
         let mut failed: Vec<usize> = Vec::new();
         for (position, endpoint) in endpoints.iter().enumerate() {
             match readiness.get(position) {
-                Some(Readiness::Readable) => state.service(endpoint),
+                Some(Readiness::Readable) => match endpoint {
+                    Endpoint::Metadata { listener } => {
+                        for _ in 0..MAX_CONNECTIONS_PER_WAKEUP {
+                            match listener.accept() {
+                                Ok((stream, _)) => {
+                                    let _ = metadata.insert(stream);
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                    _ => state.service(endpoint),
+                },
                 Some(Readiness::Errored) => {
                     logger.warning("a service socket failed; dropping it");
                     failed.push(position);
@@ -322,6 +342,7 @@ fn serve(
                 _ => {}
             }
         }
+        metadata.tick(&identity.endpoint, |body| state.metadata_reply(body));
         if !failed.is_empty() {
             let mut position = 0_usize;
             endpoints.retain(|_| {
@@ -456,7 +477,7 @@ impl State<'_> {
         match endpoint {
             Endpoint::Discovery { socket, v6, .. } => self.serve_discovery(socket, *v6),
             Endpoint::Llmnr { socket, v6 } => self.serve_llmnr(socket, *v6),
-            Endpoint::Metadata { listener } => self.serve_metadata(listener),
+            Endpoint::Metadata { .. } => {}
         }
     }
 
@@ -630,149 +651,40 @@ impl State<'_> {
         }
     }
 
-    fn serve_metadata(&mut self, listener: &TcpListener) {
-        for _ in 0..MAX_CONNECTIONS_PER_WAKEUP {
-            let (stream, peer) = match listener.accept() {
-                Ok(accepted) => accepted,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(error) => {
-                    self.logger.warning(&format!("accept failed: {error}"));
-                    return;
+    /// Build one bounded protocol response without performing socket I/O.
+    fn metadata_reply(&mut self, body: Result<&[u8], Status>) -> Option<Vec<u8>> {
+        let mut status = Status::Ok;
+        let mut message = String::new();
+        match body.and_then(|body| {
+            MetadataRequest::parse(body, &self.identity.endpoint).map_err(|_| Status::BadRequest)
+        }) {
+            Ok(request) => {
+                let message_id = self.random.uuid();
+                let context = ReplyContext {
+                    identity: self.identity,
+                    message_id: &message_id,
+                    number: self.counter.peek(),
+                    host: "",
+                    port: wsd::WSD_PORT,
+                };
+                match answer_metadata(&request, &context) {
+                    Some(reply) => message = reply,
+                    None => status = Status::BadRequest,
                 }
-            };
-            self.handle_metadata(stream, peer);
+            }
+            Err(refusal) => status = refusal,
         }
-    }
-
-    fn handle_metadata(&mut self, stream: TcpStream, peer: SocketAddr) {
-        let deadline = Instant::now().checked_add(TCP_DEADLINE);
-        let Ok(mut stream) = deadline::DeadlineStream::new(stream, TCP_DEADLINE, TCP_READ_TIMEOUT)
-        else {
-            return;
-        };
-        let mut buffer: Vec<u8> = Vec::new();
-        let mut chunk = [0_u8; 1024];
-
-        let framing = loop {
-            match http::parse_header(&buffer, &self.identity.endpoint) {
-                Progress::Incomplete => {}
-                other => break other,
-            }
-            if !before(deadline) {
-                return;
-            }
-            match stream.read(&mut chunk) {
-                Ok(0) => return,
-                Ok(read) => match chunk.get(..read) {
-                    Some(bytes) => buffer.extend_from_slice(bytes),
-                    None => return,
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => return,
-            }
-            if buffer.len() > http::MAX_REQUEST {
-                self.refuse_metadata(&mut stream, Status::TooLarge);
-                return;
-            }
-        };
-
-        let (body_offset, content_length) = match framing {
-            Progress::Header {
-                body_offset,
-                content_length,
-            } => (body_offset, content_length),
-            Progress::Failed(status) => {
-                self.logger.debug(
-                    Channel::Wsd,
-                    1,
-                    &format!("refused a metadata request from {}", peer.ip()),
-                );
-                self.refuse_metadata(&mut stream, status);
-                return;
-            }
-            Progress::Incomplete => return,
-        };
-
-        let Some(total) = body_offset.checked_add(content_length) else {
-            return;
-        };
-        while buffer.len() < total {
-            if !before(deadline) {
-                return;
-            }
-            match stream.read(&mut chunk) {
-                Ok(0) => return,
-                Ok(read) => match chunk.get(..read) {
-                    Some(bytes) => buffer.extend_from_slice(bytes),
-                    None => return,
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => return,
-            }
-            if buffer.len() > http::MAX_REQUEST {
-                self.refuse_metadata(&mut stream, Status::TooLarge);
-                return;
-            }
-        }
-
-        let Some(body) = buffer.get(body_offset..total) else {
-            return;
-        };
-        let request = match MetadataRequest::parse(body, &self.identity.endpoint) {
-            Ok(request) => request,
-            Err(refusal) => {
-                self.logger.debug(
-                    Channel::Wsd,
-                    1,
-                    &format!("refused a metadata body from {}: {refusal}", peer.ip()),
-                );
-                self.refuse_metadata(&mut stream, Status::BadRequest);
-                return;
-            }
-        };
-        let message_id = self.random.uuid();
-        let context = ReplyContext {
-            identity: self.identity,
-            message_id: &message_id,
-            number: self.counter.peek(),
-            host: "",
-            port: wsd::WSD_PORT,
-        };
-        let Some(message) = answer_metadata(&request, &context) else {
-            self.refuse_metadata(&mut stream, Status::BadRequest);
-            return;
-        };
         if !self.wsd_budget.allow(self.started.elapsed()) {
-            self.logger.debug(
-                Channel::Wsd,
-                1,
-                "reply budget exhausted; dropping a metadata request",
-            );
-            return;
+            return None;
         }
-        let header = http::response_header(Status::Ok, &self.date(), message.len());
-        if stream.write_all(header.as_bytes()).is_ok()
-            && stream.write_all(message.as_bytes()).is_ok()
-        {
+        // Reserve a unique sequence before asynchronous transmission; aborted
+        // connections may leave gaps, but never reuse a published sequence.
+        if status == Status::Ok {
             self.counter.advance();
         }
-        let _ = stream.flush();
-    }
-
-    /// Sends a status line with an empty body.
-    ///
-    /// The vendor answered a refused request with the status line *and* a
-    /// ~700-byte SOAP fault whose text echoed its own internal error string
-    /// (`wsd.c:1114-1119`).  That is a larger reply to a worse request, so no
-    /// fault body is generated here.
-    fn refuse_metadata(&mut self, stream: &mut deadline::DeadlineStream, status: Status) {
-        if !self.wsd_budget.allow(self.started.elapsed()) {
-            return;
-        }
-        let header = http::response_header(status, &self.date(), 0);
-        let _ = stream.write_all(header.as_bytes());
-        let _ = stream.flush();
+        let mut bytes = http::response_header(status, &self.date(), message.len()).into_bytes();
+        bytes.extend_from_slice(message.as_bytes());
+        Some(bytes)
     }
 
     fn date(&self) -> String {
@@ -819,6 +731,7 @@ impl State<'_> {
     }
 }
 
+#[cfg(test)]
 fn before(deadline: Option<Instant>) -> bool {
     match deadline {
         Some(deadline) => Instant::now() < deadline,
@@ -920,6 +833,20 @@ mod tests {
             wsd_budget: Budget::default(),
             llmnr_budget: Budget::default(),
             started: Instant::now(),
+        });
+    }
+
+    #[test]
+    fn refused_metadata_has_no_reflected_body() {
+        with_state(|state| {
+            for request in [Err(Status::BadRequest), Ok(b"hostile body".as_slice())] {
+                let response = state.metadata_reply(request).unwrap();
+                let text = String::from_utf8(response).unwrap();
+                assert!(text.starts_with("HTTP/1.1 400"));
+                assert!(text.contains("Content-Length: 0\r\n"));
+                assert!(text.ends_with("\r\n\r\n"));
+                assert!(!text.contains("hostile"));
+            }
         });
     }
 

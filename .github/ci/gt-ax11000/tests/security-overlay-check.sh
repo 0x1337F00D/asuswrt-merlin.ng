@@ -63,6 +63,12 @@ httpd_rust="$router/rust-components/httpd-parsers/src/lib.rs"
 httpd_c="$router/httpd/httpd.c"
 httpd_h="$router/httpd/httpd.h"
 httpd_request_rust="$router/rust-components/httpd-parsers/src/request.rs"
+require_text "$httpd_c" 'TLS credentials unsupported or invalid; preserved, HTTPS stopped:'
+require_text "$httpd_c" 'TLS initialization failed; credentials preserved:'
+require_text "$router/httpd/Makefile" '-DRUST_MSSL_PRESERVE_CREDENTIALS'
+require_text "$router/rust-components/infosvr/src/ingress.rs" 'libc::SO_BINDTODEVICE,'
+require_text "$router/rust-components/infosvr/src/main.rs" 'ingress::Ingress::open(&interfaces, SERVER_PORT)?;'
+reject_text "$router/rust-components/infosvr/src/main.rs" 'bind_to_device(socket, None)'
 httpd_manifest="$router/rust-components/httpd-parsers/Cargo.toml"
 clientlist_rust="$router/rust-components/clientlist/src"
 security_rust="$router/rust-components/router-security/src/lib.rs"
@@ -467,7 +473,10 @@ require_text "$wsdd2_rust/main.rs" 'if message.len() > wsd::MAX_DATAGRAM_REPLY {
 # The metadata endpoint answers a refused request with a status line only.
 # The vendor followed it with a ~700-byte SOAP fault echoing its own error.
 require_text "$wsdd2_rust/http.rs" 'pub fn response_header(status: Status, date: &str, length: usize) -> String'
-require_text "$wsdd2_rust/main.rs" 'let header = http::response_header(status, &self.date(), 0);'
+require_text "$wsdd2_rust/main.rs" 'http::response_header(status, &self.date(), message.len())'
+require_text "$wsdd2_rust/main.rs" 'fn refused_metadata_has_no_reflected_body()'
+require_text "$wsdd2_rust/metadata.rs" 'const MAX_CONNECTIONS: usize = 8;'
+require_text "$wsdd2_rust/metadata.rs" 'stream.set_nonblocking(true)?;'
 reject_text "$wsdd2_rust/wsd.rs" 'soap:Fault'
 
 # Compatibility gaps must fail closed instead of reporting successful work.

@@ -1,0 +1,19 @@
+diff --git a/release/src/router/aws-iot/src/Makefile b/release/src/router/aws-iot/src/Makefile
+--- a/release/src/router/aws-iot/src/Makefile
++++ b/release/src/router/aws-iot/src/Makefile
+@@ -56,7 +56,15 @@
+ ifeq ($(RTCONFIG_HTTPS),y)
+ CFLAGS += -I$(TOP)/mssl
+ CFLAGS += -I$(TOP)/openssl/include
++# awsiot uses OpenSSL directly, not the server-only mssl API. Keep the
++# vendor recipe unchanged outside this model's Rust overlay.
++ifeq ($(BUILD_NAME),GT-AX11000)
++ifeq ($(wildcard $(TOP)/rust-components/mssl-server/Cargo.toml),)
+ LIBS += -L$(TOP)/mssl -lmssl
++endif
++else
++LIBS += -L$(TOP)/mssl -lmssl
++endif
+ LIBS += -L$(TOP)/openssl -lssl -lcrypto -ldl
+ endif
+ 

@@ -34,3 +34,5 @@ httpd-httparse.patch
 lltd-rust.patch
 wsdd2-rust.patch
 mssl-rust.patch
+awsiot-unused-mssl.patch
+httpd-preserve-tls-credentials.patch

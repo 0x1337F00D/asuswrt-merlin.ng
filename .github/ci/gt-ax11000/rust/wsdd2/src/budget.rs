@@ -5,7 +5,8 @@
 //! the bridge, a compromised IoT client included.  The vendor had no rate
 //! limit of any kind.
 //!
-//! The budget is charged **only when a reply is actually emitted**.  Charging
+//! The budget is charged when a reply is admitted for transmission (an I/O
+//! failure may still consume a reservation). Charging
 //! on arrival would let a flood of malformed datagrams -- which cost almost
 //! nothing to produce -- spend the budget a legitimate client needs, which
 //! protects the attacker rather than the service.

@@ -82,7 +82,7 @@ jobs:
       - name: Install ARM cross-check compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabi
+          sudo apt-get install -y --no-install-recommends gcc-arm-linux-gnueabi iproute2 util-linux
 
       - name: Restore Rust cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -123,6 +123,12 @@ jobs:
           cargo +"${{ steps.inputs.outputs.rust_toolchain }}" clippy \
             --manifest-path "$root/rust/Cargo.toml" \
             --workspace --all-targets --locked -- -D warnings
+          # Disposable namespaces only. No host interfaces or router access.
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" build --locked --offline -p infosvr -p wsdd2
+          sudo -n env PARENT_NETNS="$(readlink /proc/self/ns/net)" unshare -nm \
+            python3 "$root/tests/infosvr-ingress-netns.py" "$CARGO_TARGET_DIR/debug/infosvr"
+          sudo -n env PARENT_NETNS="$(readlink /proc/self/ns/net)" unshare -n \
+            python3 "$root/tests/wsdd2-slow-client-netns.py" "$CARGO_TARGET_DIR/debug/wsdd2"
           RUSTFLAGS="-Dwarnings -Ctarget-cpu=${{ steps.inputs.outputs.rust_target_cpu }}" \
             cargo +"${{ steps.inputs.outputs.rust_toolchain }}" check \
             --manifest-path "$root/rust/Cargo.toml" --workspace --locked \
@@ -223,6 +229,7 @@ jobs:
           printf 'patched_diff_expected=%s\npatched_diff_actual=%s\n' \
             "$expected_diff" "$actual_diff"
           test "$actual_diff" = "$expected_diff"
+          python3 "$root/tests/test_tls_credential_preservation.py" "$GITHUB_WORKSPACE/source"
           printf 'patched_diff_actual=%s\n' "$actual_diff" >> "$GITHUB_OUTPUT"
           mkdir -p source/release/src/router/rust-components
           cp -a "$root/rust/." source/release/src/router/rust-components/
