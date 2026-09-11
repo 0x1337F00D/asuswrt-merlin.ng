@@ -22,6 +22,7 @@ for (const [event, ref, expected] of [
   ["push", "refs/heads/main", true],
   ["push", "refs/heads/codex/gt-ax11000-parallel-dag-ci", false],
   ["push", "refs/heads/codex/rust-porting", false],
+  ["push", "refs/heads/codex/tier3-implementation", false],
   ["push", "refs/heads/not-main", false],
   ["pull_request", "refs/pull/15/merge", true],
   ["workflow_dispatch", "refs/heads/codex/gt-ax11000-parallel-dag-ci", true],
@@ -40,6 +41,7 @@ test("branch pushes still run all three inexpensive gates", () => {
     assert.doesNotMatch(job(name), /^    if:/m);
   }
   assert.match(workflow, /^      - codex\/gt-ax11000-parallel-dag-ci$/m);
+  assert.match(workflow, /^      - codex\/tier3-implementation$/m);
 });
 test("firmware still depends on successful Rust and security checks", () => {
   assert.match(job("build"), /^    needs:\n      - rust\n      - security-overlay\n/m);

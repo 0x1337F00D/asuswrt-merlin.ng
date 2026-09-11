@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run ONLY in a fresh user/network/mount namespace; never against a router.
 
-Caller: PARENT_NETNS=$(readlink /proc/self/ns/net) unshare -Urnm
+Caller: PARENT_NETNS=$(readlink /proc/self/ns/net)
+        PARENT_MNTNS=$(readlink /proc/self/ns/mnt) unshare -Urnm
         python3 THIS_SCRIPT /absolute/path/to/native/infosvr
 Creates disposable LAN/WAN veth pairs; spoofed LAN-source WAN unicast and
 multicast must not trigger a reply. LAN discovery must retain source port 9999.
@@ -28,6 +29,8 @@ def main():
     # Refuse execution outside isolation or in an existing configured network.
     if not os.environ.get('PARENT_NETNS') or os.readlink('/proc/self/ns/net') == os.environ['PARENT_NETNS']:
         raise RuntimeError('a fresh network namespace is mandatory')
+    if not os.environ.get('PARENT_MNTNS') or os.readlink('/proc/self/ns/mnt') == os.environ['PARENT_MNTNS']:
+        raise RuntimeError('a fresh mount namespace is mandatory')
     if set(os.listdir('/sys/class/net')) - {'lo'}:
         # sysfs can reflect the parent namespace: ip is authoritative here.
         links = subprocess.check_output(['ip', '-o', 'link'], text=True)
@@ -49,7 +52,8 @@ def main():
         Path(f'/proc/sys/net/ipv4/conf/{name}/accept_local').write_text('1')
     env = dict(os.environ, INFOSVR_LAN_IPADDR='192.0.2.1',
                INFOSVR_LAN_NETMASK='255.255.255.0')
-    process = subprocess.Popen([str(Path(sys.argv[1]).resolve()), 'lan0'], env=env,
+    interfaces = ['lan0', 'lo'] if '--multi' in sys.argv else ['lan0']
+    process = subprocess.Popen([str(Path(sys.argv[1]).resolve()), *interfaces], env=env,
                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
     try:
         time.sleep(.1)

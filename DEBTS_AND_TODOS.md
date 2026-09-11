@@ -1913,7 +1913,7 @@ exports, as the general verification script accepts an optional baseline.
 - wsdd2 remains synchronous with a two-second connection budget and at most
   two accepted connections per wakeup. Blob replacement is NOT implemented.
 
-### 2026-09-11 Alpha4 follow-up (build pending)
+### 2026-09-11 Alpha4 follow-up (offline build verified; not installed)
 
 - infosvr: replaced wildcard ingress/IP-only trust with permanently bound
   per-interface sockets, bound before port activation; preserved source port
@@ -1928,12 +1928,17 @@ exports, as the general verification script accepts an optional baseline.
   lifecycle cases; the original fails preservation. Native TLS adapter passes
   six parallel sessions per RSA/EC identity and rejects a mismatched rotation.
 - awsiot unused mssl link removed only for the GT-AX11000 Rust overlay. Final
-  ELF dependency/size comparison pending. WTFast existing compatibility debt
+  ELF scan confirms removal; wsdd2 is 4096 bytes smaller, firmware size unchanged.
+  WTFast existing compatibility debt
   remains deliberately unresolved; no obsolete crypto or blob port added.
 - Input lock verified before the new overlay sources were introduced into
-  replay. Local alpha4 build will explicitly enforce the lock. New native
+  replay. Completed clean RAM build explicitly enforced the lock. New native
   network-namespace and credential lifecycle regressions wired into CI.
 - Hardware isolation, private certificate preflight and authenticated browser
   behavior remain untested. ALPHA4_TEST_PLAN.md describes evening preflight,
   one-shot installation, positive/negative controls, monitoring and rollback.
   No automatic installation or promotion is authorized by this build task.
+- Image source `4d093a18788`, size 78118932 bytes, clean build 2753 seconds.
+  Extracted image and TLS/ABI/Web gates pass. Additional extracted ARM
+  network tests pass with QEMU 10.0.11; old QEMU 8.2.2 lacked IP_MULTICAST_IF
+  emulation (failure retained, no firmware workaround). See ALPHA4_BUILD_REPORT.md.

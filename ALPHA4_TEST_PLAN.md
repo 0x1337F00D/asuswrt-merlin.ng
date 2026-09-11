@@ -47,6 +47,8 @@ router automatically; fallback may require the user to power-cycle it.
    in private tmpfs, or a separately approved RAM-only router probe. Use
    mssl_cert_key_match AND mssl_init; never print key bytes. Record only
    pass/fail and public certificate fingerprint. No key replacement fallback.
+   Also read the existing https_crt_gen flag: an already requested explicit
+   regeneration retains its vendor semantics and must not be overlooked.
 6. If unsupported: STOP before flash. Decide separately whether to retain
    the old TLS image or explicitly issue compatible credentials. Do not
    silently regenerate a certificate to make this candidate boot.
@@ -57,6 +59,16 @@ Use the existing manifest-bound trial controller with alpha4's
 FIRMWARE-VERSION.json and exact binary/Web hashes. Verify the inactive slot
 and retain the known-good slot. Check image write/verification evidence
 before selecting one-shot boot. Do not use raw guessed flash commands.
+
+Important: controller.py is a complete smoke-and-fallback cycle. On success
+it intentionally reboots a second time back to the baseline; it has no
+"remain on candidate for 30 minutes" switch. Do not run it expecting a
+long soak. First prove that cycle, then separately authorize the additional
+candidate boot for the held soak using the documented persistent guard.
+The hold-promotion marker must be in place BEFORE that candidate boot, and
+any old guard must be backed up and correctly rendered for alpha4's actual
+slot/manifests. See .github/ci/gt-ax11000/trial/README.md; do not install the
+unrendered template or assume an old alpha1 guard will accept alpha4.
 
 After boot, verify actual alpha4 identity before running tests. A reachable
 ping alone is not a successful trial. Hold promotion until all required
@@ -115,3 +127,36 @@ Permanent promotion is a separate explicit decision after functional checks.
 A successful short soak does not establish crash freedom or factory-reset
 restore capability. WTFast remains an existing broken optional feature
 (unchanged old OpenSSL dependencies); do not reinstall obsolete crypto.
+
+## Read-only command examples for the evening session
+
+On the wired computer in the saved artifact directory:
+
+```sh
+sha256sum -c SHA256SUMS
+ping -c 300 192.168.0.1
+```
+
+In the authenticated router SSH session (save output privately):
+
+```sh
+nvram get firmver
+nvram get buildno
+nvram get extendno
+nvram get https_lanport
+nvram get https_crt_gen
+uptime
+free
+pidof httpd dnsmasq wanduck infosvr wsdd2
+ip route show
+ip -6 route show
+iptables-save
+ip6tables-save
+```
+
+For repeated PID/fd/RSS snapshots, inspect /proc/PID/status and /proc/PID/fd
+for those recorded PIDs; a changed PID means restart, not successful memory
+reclamation. Keep logs local because rules/routes can reveal private network
+details. Do not run `nvram show`, `nvram commit`, firewall flushes or service
+restarts as part of a read-only baseline. Certificate and browser requests
+must use the actual configured HTTPS port/name, not an assumed 443/8443.

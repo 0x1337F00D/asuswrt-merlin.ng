@@ -9,6 +9,7 @@ on:
       - codex/gt-ax11000-parallel-dag-ci
       - codex/gt-ax11000-parallel-dag-v2
       - codex/gt-ax11000-rust-wifi-integration
+      - codex/tier3-implementation
       - claude/**
     paths:
       - release/**
@@ -124,11 +125,15 @@ jobs:
             --manifest-path "$root/rust/Cargo.toml" \
             --workspace --all-targets --locked -- -D warnings
           # Disposable namespaces only. No host interfaces or router access.
-          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" build --locked --offline -p infosvr -p wsdd2
-          sudo -n env PARENT_NETNS="$(readlink /proc/self/ns/net)" unshare -nm \
+          cargo +"${{ steps.inputs.outputs.rust_toolchain }}" build --locked --offline -p infosvr -p wsdd2 -p lltd
+          sudo -n env PARENT_NETNS="$(readlink /proc/self/ns/net)" PARENT_MNTNS="$(readlink /proc/self/ns/mnt)" unshare -nm \
             python3 "$root/tests/infosvr-ingress-netns.py" "$CARGO_TARGET_DIR/debug/infosvr"
+          sudo -n env PARENT_NETNS="$(readlink /proc/self/ns/net)" PARENT_MNTNS="$(readlink /proc/self/ns/mnt)" unshare -nm \
+            python3 "$root/tests/infosvr-ingress-netns.py" "$CARGO_TARGET_DIR/debug/infosvr" --multi
           sudo -n env PARENT_NETNS="$(readlink /proc/self/ns/net)" unshare -n \
             python3 "$root/tests/wsdd2-slow-client-netns.py" "$CARGO_TARGET_DIR/debug/wsdd2"
+          sudo -n env PARENT_NETNS="$(readlink /proc/self/ns/net)" PARENT_MNTNS="$(readlink /proc/self/ns/mnt)" unshare -nm \
+            python3 "$root/tests/discovery-isolation-netns.py" "$CARGO_TARGET_DIR/debug/wsdd2" "$CARGO_TARGET_DIR/debug/lld2d"
           RUSTFLAGS="-Dwarnings -Ctarget-cpu=${{ steps.inputs.outputs.rust_target_cpu }}" \
             cargo +"${{ steps.inputs.outputs.rust_toolchain }}" check \
             --manifest-path "$root/rust/Cargo.toml" --workspace --locked \
