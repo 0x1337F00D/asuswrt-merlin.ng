@@ -1,0 +1,63 @@
+name: QEMU lab host regressions
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/qemu-lab-host.yml
+      - .github/ci/gt-ax11000/tests/qemu-lab/**
+      - .github/ci/gt-ax11000/tests/infosvr-ingress-netns.py
+      - .github/ci/gt-ax11000/tests/wsdd2-slow-client-netns.py
+      - .github/ci/gt-ax11000/tests/discovery-isolation-netns.py
+      - QEMU_TEST_PLAN.md
+      - QEMU_TEST_RESULTS.md
+  push:
+    paths:
+      - .github/workflows/qemu-lab-host.yml
+      - .github/ci/gt-ax11000/tests/qemu-lab/**
+      - .github/ci/gt-ax11000/tests/infosvr-ingress-netns.py
+      - .github/ci/gt-ax11000/tests/wsdd2-slow-client-netns.py
+      - .github/ci/gt-ax11000/tests/discovery-isolation-netns.py
+      - QEMU_TEST_PLAN.md
+      - QEMU_TEST_RESULTS.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qemu-lab-host-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-regressions:
+    name: Harness semantics (no firmware execution)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Checkout exact test sources
+        run: |
+          set -euo pipefail
+          git init overlay
+          git -C overlay remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C overlay sparse-checkout init --cone
+          git -C overlay sparse-checkout set .github/ci/gt-ax11000/tests
+          git -C overlay fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
+          git -C overlay checkout --detach FETCH_HEAD
+          test "$(git -C overlay rev-parse HEAD)" = "$GITHUB_SHA"
+
+      # These tests use synthetic files and short local subprocesses only.
+      # Never add run.py/system.py/preinstall.py or artifact downloads here:
+      # PR refs are untrusted, and image execution requires separate review.
+      - name: Check runner failure, isolation and manifest semantics
+        run: |
+          set -euo pipefail
+          python3 --version
+          python3 overlay/.github/ci/gt-ax11000/tests/qemu-lab/test_runner.py -v
+
+      - name: Check archive, package locks and guest verdict semantics
+        run: |
+          set -euo pipefail
+          python3 overlay/.github/ci/gt-ax11000/tests/qemu-lab/test_system.py -v
